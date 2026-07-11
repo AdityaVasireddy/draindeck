@@ -1,0 +1,41 @@
+# v1 reference config (doc 08 §6). Copy to config.yaml and fill in the
+# StockAgent validation command. ⚠ Confirm directory name on disk:
+# decision says "StockAgent", path says "StockPhotoAgent".
+project:
+  name: StockAgent
+  repository: 'C:\Projects\StockPhotoAgent'
+  branch: agent-work
+  issues_file: Issues.md
+  validation:
+    commands:
+      - '<StockAgent test command — REQUIRED before first run>'
+    timeout_seconds: 600
+engine:
+  provider: claude-headless
+  auth_mode: subscription        # ADR-18; api_key requires ANTHROPIC_API_KEY
+  model: default
+  max_turns: 30
+  timeout_seconds: 1800
+reviewer:
+  provider: qwen                 # ADR-05: qwen | claude
+  qwen:
+    endpoint: 'http://localhost:11434'
+    model: qwen2.5-coder
+budget:                          # ADR-09
+  max_attempts_per_issue: 3
+  max_executions_per_run: 10
+  proxy_pricing: api_list_rates
+  hard_stop_proxy_cost_per_run_usd: 15.0
+experiment:                      # ADR-19 — do not edit after run begins
+  sample_size: 20
+  attempt1_success_min: 0.30
+  cost_per_shipped_issue_max_usd: 3.0
+billing:                         # checklist A1 record
+  posture: pro_subscription_headless
+  headless_split_status: paused
+  verified_on: '2026-07-10'
+  reverify_at: phase-2-gate
+event_log:
+  path: state/events.jsonl
+attempts:
+  ref_namespace: refs/attempts
