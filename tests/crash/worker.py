@@ -1,56 +1,40 @@
-"""Stub workload for the kill-9 harness — RECONCILED against doc 03.
+"""Stub workload for the kill-9 harness — GIT-WORLD edition (docs/11 §3).
 
-Drives the REAL log, projection, transition tables, and recovery through
-doc 03 §5's happy path, with LLM/git stages as filesystem "world"
-actions:
+Drives the REAL log, projection, transition tables, recovery, AND a REAL
+temp git repository through doc 03 §5's happy path. The filesystem "world"
+of the previous version is gone; every world effect is now a git operation
+through GitCliAdapter, and recovery runs the production seam bindings
+(bind_reconciler) — checks 2 and 3 are no longer SKIPPED.
 
-  engine stage  → world/engine-<execution>.done   (tmp + os.replace)
-  commit stage  → world/commit-<issue>.done       (tmp + os.replace)
-
-Happy-path event sequence (I5/I6 ordering, intents before effects):
-  IssueCreated → IssueActivated → ExecutionSpawned → [engine action] →
-  ExecutionFinished → ValidationPassed → ReviewApproved → CommitIntent →
-  [commit action] → CommitCreated → IssueCompleted
+Per-execution git lifecycle (on the persistent ``work`` branch):
+  engine  → reset_hard(base); edit issues/<issue>.txt + an untracked
+            scratch file; snapshot_commit → end_commit; set_attempt_ref
+  commit  → merge_to(trunk, end_commit)  (object-DB merge, §1.3)
 
 The dispatcher is a pure function of the replayed projection — that IS
-deterministic resume. Every world action is check-then-act. Recovery
-(check 1) crashes orphaned executions — never resumes them (doc 03:
-EXECUTING is abandonable) — and the retry policy spawns fresh. A
-pre-existing commit artifact without its fact is healed check-then-act
-with CommitCreated(backfilled=true), doc 03 check-2 semantics.
+deterministic resume. Recovery (check 1) crashes orphaned executions,
+never resumes them; check 2 backfills an unwitnessed merge; check 3
+archives+resets a dirty workspace. The retry policy spawns fresh.
 
-pid discipline: ExecutionSpawned and ExecutionFinished record os.getpid();
-the harness asserts they match per execution — proof that no execution
-is ever finished by a process other than the one that spawned it (the
-"never replayed" rule made observable).
+pid discipline (I-h) is unchanged: Spawned/Finished record os.getpid().
 
-Crash injection: RUNTIME_CRASH_POINT=<name>[:<nth>] → uncatchable self-
-termination (SIGKILL on POSIX, TerminateProcess on Windows) at the nth
-hit of the named point. See _hard_kill_self.
+Crash injection: RUNTIME_CRASH_POINT=<name>[:<nth>] self-terminates at the
+nth hit. Points are worker-level (after_append:*, engine:*) and adapter-
+internal (git:* via HarnessAdapter._checkpoint).
 """
 from __future__ import annotations
 
 import os
 import sys
-import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 
 def _hard_kill_self() -> None:
-    """Terminate THIS process uncatchably — no atexit, no finally, no
-    buffer flush — the SIGKILL guarantee, on either platform.
-
-    POSIX: SIGKILL cannot be caught or ignored.
-    Windows: TerminateProcess on our own handle is the closest analog —
-    the process stops immediately with no Python cleanup. We use a
-    distinctive exit code (137 = 128 + 9, the shell's convention for
-    'killed by SIGKILL') so the harness can positively distinguish a
-    kill from a clean exit (0) or an unhandled exception (1)."""
+    """Terminate THIS process uncatchably (SIGKILL / TerminateProcess)."""
     if os.name == "nt":
         import ctypes
-        # -1 (0xFFFFFFFF) is the pseudo-handle for the current process.
         ctypes.windll.kernel32.TerminateProcess(
             ctypes.c_void_p(-1), ctypes.c_uint(137)
         )
@@ -58,15 +42,19 @@ def _hard_kill_self() -> None:
         import signal
         os.kill(os.getpid(), signal.SIGKILL)
 
-from runtime.events.log import EventLog                      # noqa: E402
-from runtime.events.projections import StateProjection       # noqa: E402
-from runtime.events.schema import Event, EventType           # noqa: E402
-from runtime.recovery.reconciler import recover              # noqa: E402
-from runtime.state.model import ExecutionState, IssueState   # noqa: E402
+from runtime.events.log import EventLog                       # noqa: E402
+from runtime.events.projections import StateProjection        # noqa: E402
+from runtime.events.schema import Event, EventType            # noqa: E402
+from runtime.recovery.bindings import bind_reconciler         # noqa: E402
+from runtime.recovery.reconciler import recover               # noqa: E402
+from runtime.repo.git_adapter import GitCliAdapter            # noqa: E402
+from runtime.state.model import ExecutionState, IssueState    # noqa: E402
 
 ISSUES = ["042", "043", "044"]
-CAP = 8  # generous: injected crashes may burn several attempts
+CAP = 8            # generous: injected crashes may burn several attempts
 RUN_ID = "run-harness"
+TRUNK = "trunk"    # deliberately not 'main' — proves nothing hardcodes it
+WORK = "work"
 
 # ── crash injection ──────────────────────────────────────────────
 _spec = os.environ.get("RUNTIME_CRASH_POINT", "")
@@ -86,32 +74,11 @@ def crash_point(name: str) -> None:
             _hard_kill_self()
 
 
-# ── durable world actions (check-then-act) ───────────────────────
-def world_action(world: Path, stage: str, key: str) -> None:
-    artifact = world / f"{stage}-{key}.done"
-    if artifact.exists():
-        return
-    crash_point(f"before_world:{stage}")
-    tmp = world / f"tmp-{stage}-{key}"
-    tmp.write_text(f"{stage}:{key}\n")
-    crash_point(f"mid_world:{stage}")
-    os.replace(tmp, artifact)  # atomic on POSIX and Windows (same volume)
-    crash_point(f"after_world:{stage}")
-
-
-def residue_preserver(world: Path):
-    """preserve_residue seam: 'commit residue to attempt ref' in stub
-    form — clean torn tmp, report a ref if any residue existed."""
-    def preserve(execution_id: str):
-        residue = False
-        tmp = world / f"tmp-engine-{execution_id}"
-        if tmp.exists():
-            tmp.unlink()
-            residue = True
-        if (world / f"engine-{execution_id}.done").exists():
-            residue = True
-        return f"refs/attempts/stub/{execution_id}" if residue else None
-    return preserve
+class HarnessAdapter(GitCliAdapter):
+    """Routes the adapter's internal instrumentation seam to crash_point,
+    so kills can land between git's own steps (mid-snapshot, mid-merge)."""
+    def _checkpoint(self, name: str) -> None:
+        crash_point(f"git:{name}")
 
 
 def emit(log: EventLog, ev: Event) -> None:
@@ -120,7 +87,8 @@ def emit(log: EventLog, ev: Event) -> None:
 
 
 # ── the dispatcher: one deterministic step from projection state ─
-def step(log: EventLog, proj: StateProjection, world: Path, issue: str) -> None:
+def step(log: EventLog, proj: StateProjection, adapter: GitCliAdapter,
+         issue: str) -> None:
     istate = proj.issues.get(issue)
 
     if istate is None:
@@ -128,8 +96,10 @@ def step(log: EventLog, proj: StateProjection, world: Path, issue: str) -> None:
                         payload={"source": "stub", "title": f"issue {issue}"}))
         return
     if istate is IssueState.PENDING:
+        # base_commit = trunk's head at activation (pinned clean base)
+        base = adapter.head_of(TRUNK)
         emit(log, Event(EventType.ISSUE_ACTIVATED, issue_id=issue, run_id=RUN_ID,
-                        payload={"base_commit": "stub-base"}))
+                        payload={"base_commit": base}))
         return
 
     ex = proj.latest_execution(issue)
@@ -148,25 +118,35 @@ def step(log: EventLog, proj: StateProjection, world: Path, issue: str) -> None:
         return
 
     if ex.state is ExecutionState.EXECUTING:
-        world_action(world, "engine", ex.execution_id)
+        base = proj.issue_base_commit[issue]
+        adapter.reset_hard(base)                    # clean slate (incl. clean -fd)
+        (adapter.repo_path / "issues").mkdir(exist_ok=True)
+        (adapter.repo_path / "issues" / f"{issue}.txt").write_text(
+            f"{ex.execution_id}\n")                  # tracked work
+        (adapter.repo_path / f"scratch-{ex.execution_id}.tmp").write_text(
+            "engine byproduct\n")                    # untracked; snapshot captures it
+        crash_point("engine:post-edit")
+        end = adapter.snapshot_commit(f"work {ex.execution_id}")
+        crash_point("engine:post-snapshot")          # b5
+        adapter.set_attempt_ref(issue, ex.execution_id, end)
+        crash_point("engine:post-attempt-ref")       # b6
         emit(log, Event(EventType.EXECUTION_FINISHED, issue_id=issue,
                         execution_id=ex.execution_id, run_id=RUN_ID,
-                        payload={"start_commit": "stub-base",
-                                 "end_commit": f"attempt-{ex.execution_id}",
+                        payload={"start_commit": base, "end_commit": end,
                                  "exit_status": 0, "pid": os.getpid()}))
         return
 
     if ex.state is ExecutionState.VALIDATING:
         emit(log, Event(EventType.VALIDATION_PASSED, issue_id=issue,
                         execution_id=ex.execution_id, run_id=RUN_ID,
-                        payload={"validated_commit": f"attempt-{ex.execution_id}",
+                        payload={"validated_commit": ex.end_commit,
                                  "gate_results": []}))
         return
 
     if ex.state is ExecutionState.REVIEWING:
         emit(log, Event(EventType.REVIEW_APPROVED, issue_id=issue,
                         execution_id=ex.execution_id, run_id=RUN_ID,
-                        payload={"reviewed_commit": f"attempt-{ex.execution_id}",
+                        payload={"reviewed_commit": ex.end_commit,
                                  "reviewer_provider": "stub",
                                  "verdict": "APPROVE"}))
         return
@@ -175,19 +155,22 @@ def step(log: EventLog, proj: StateProjection, world: Path, issue: str) -> None:
         if not ex.commit_intended:
             emit(log, Event(EventType.COMMIT_INTENT, issue_id=issue,
                             execution_id=ex.execution_id, run_id=RUN_ID,
-                            payload={"end_commit": f"attempt-{ex.execution_id}",
-                                     "target_branch": "agent-work"}))
+                            payload={"end_commit": ex.end_commit,
+                                     "target_branch": TRUNK}))
             return
         if not ex.commit_created:
-            # check-then-act commit; a pre-existing artifact means a crash
-            # landed between the world effect and its fact — backfill
-            # (doc 03 reconciler check 2 semantics, healed at the seam here)
-            backfilled = (world / f"commit-{issue}.done").exists()
-            world_action(world, "commit", issue)
+            end = ex.intent_end_commit or ex.end_commit
+            # check-then-act (ADR-13): if a crash already advanced trunk,
+            # backfill; otherwise perform the object-DB merge.
+            if adapter.is_ancestor(end, TRUNK):
+                mc = adapter.find_merge_commit(TRUNK, end)
+                backfilled = True
+            else:
+                mc = adapter.merge_to(TRUNK, end, f"merge {issue}")
+                backfilled = False
             emit(log, Event(EventType.COMMIT_CREATED, issue_id=issue,
                             execution_id=ex.execution_id, run_id=RUN_ID,
-                            payload={"merge_commit": f"merge-{issue}",
-                                     "target_branch": "agent-work",
+                            payload={"merge_commit": mc, "target_branch": TRUNK,
                                      "backfilled": backfilled}))
             return
         emit(log, Event(EventType.ISSUE_COMPLETED, issue_id=issue, run_id=RUN_ID,
@@ -199,19 +182,19 @@ def step(log: EventLog, proj: StateProjection, world: Path, issue: str) -> None:
 
 def main() -> int:
     base = Path(sys.argv[1])
-    world = base / "world"
-    world.mkdir(parents=True, exist_ok=True)
+    repo = base / "repo"                             # created by the harness
+    adapter = HarnessAdapter(repo)
 
     log = EventLog(base / "events.jsonl")
-    # Recovery is unconditional at startup — same code path the real
-    # runtime will use, residue seam bound to the stub world.
-    proj, _report = recover(log, preserve_residue=residue_preserver(world))
+    # Recovery is unconditional at startup — the production path, with all
+    # three seams bound to the real repo (checks 2 & 3 no longer SKIPPED).
+    proj, _report = recover(log, **bind_reconciler(adapter, TRUNK))
 
     for issue in ISSUES:
         while proj.issues.get(issue) not in (
             IssueState.DONE, IssueState.NEEDS_HUMAN, IssueState.NEEDS_DECOMPOSITION
         ):
-            step(log, proj, world, issue)
+            step(log, proj, adapter, issue)
             # Re-derive from the log each step (replay, not memory-trust):
             # deliberately expensive-honest for the harness.
             proj = StateProjection().rebuild(log.replay())

@@ -27,6 +27,12 @@ class ExecutionView:
     state: ExecutionState
     commit_intended: bool = False   # CommitIntent seen (intent, I5/I6)
     commit_created: bool = False    # CommitCreated seen (fact)
+    # Widened for the reconciler seams (docs/11 §2). All derived straight
+    # from doc 03 §3 payloads — no new events, no schema change.
+    base_commit: Optional[str] = None          # issue's IssueActivated.base_commit
+    end_commit: Optional[str] = None           # ExecutionFinished.end_commit
+    intent_end_commit: Optional[str] = None     # CommitIntent.end_commit
+    intent_target_branch: Optional[str] = None  # CommitIntent.target_branch
 
 
 @dataclass
@@ -34,6 +40,7 @@ class StateProjection:
     issues: dict[str, IssueState] = field(default_factory=dict)
     executions: dict[str, ExecutionView] = field(default_factory=dict)
     issue_executions: dict[str, list[str]] = field(default_factory=dict)
+    issue_base_commit: dict[str, str] = field(default_factory=dict)  # IssueActivated
     last_event_id: int = 0
     counts: dict[str, int] = field(default_factory=dict)
 
@@ -67,10 +74,13 @@ class StateProjection:
         canon = {
             "issues": {k: v.value for k, v in sorted(self.issues.items())},
             "executions": {
-                k: [v.issue_id, v.state.value, v.commit_intended, v.commit_created]
+                k: [v.issue_id, v.state.value, v.commit_intended,
+                    v.commit_created, v.base_commit, v.end_commit,
+                    v.intent_end_commit, v.intent_target_branch]
                 for k, v in sorted(self.executions.items())
             },
             "issue_executions": dict(sorted(self.issue_executions.items())),
+            "issue_base_commit": dict(sorted(self.issue_base_commit.items())),
             "last_event_id": self.last_event_id,
             "counts": dict(sorted(self.counts.items())),
         }
@@ -105,6 +115,10 @@ def _issue_transition(p: StateProjection, ev: Event) -> None:
             f"illegal {ev.type.value} for issue {iid} in {cur.value} "
             f"(event {ev.event_id})")
     p.issues[iid] = fn(ev.payload)
+    if ev.type is EventType.ISSUE_ACTIVATED:
+        bc = ev.payload.get("base_commit")
+        if bc:
+            p.issue_base_commit[iid] = bc
 
 
 def _execution_spawned(p: StateProjection, ev: Event) -> None:
@@ -121,7 +135,10 @@ def _execution_spawned(p: StateProjection, ev: Event) -> None:
             f"ExecutionSpawned for {iid} while {prev.execution_id} is "
             f"{prev.state.value} (event {ev.event_id})")
     # SPAWNED is unobservable from the log (see model.py) — enter EXECUTING.
-    p.executions[xid] = ExecutionView(xid, iid, ExecutionState.EXECUTING)
+    p.executions[xid] = ExecutionView(
+        xid, iid, ExecutionState.EXECUTING,
+        base_commit=p.issue_base_commit.get(iid),
+    )
     p.issue_executions.setdefault(iid, []).append(xid)
 
 
@@ -137,6 +154,8 @@ def _execution_transition(p: StateProjection, ev: Event) -> None:
             f"illegal {ev.type.value} for execution {xid} in "
             f"{view.state.value} (event {ev.event_id})")
     view.state = fn(ev.payload)
+    if ev.type is EventType.EXECUTION_FINISHED:
+        view.end_commit = ev.payload.get("end_commit")
 
 
 def _commit_intent(p: StateProjection, ev: Event) -> None:
@@ -145,6 +164,8 @@ def _commit_intent(p: StateProjection, ev: Event) -> None:
         raise TransitionError(
             f"duplicate CommitIntent for {view.execution_id} (event {ev.event_id})")
     view.commit_intended = True
+    view.intent_end_commit = ev.payload.get("end_commit")
+    view.intent_target_branch = ev.payload.get("target_branch")
 
 
 def _commit_created(p: StateProjection, ev: Event) -> None:

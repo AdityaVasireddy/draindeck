@@ -22,15 +22,21 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..events.log import EventLog
-from ..events.projections import StateProjection
+from ..events.projections import ExecutionView, StateProjection
 from ..events.schema import Event, EventType
 
-# Seam signatures (bound to RepositoryAdapter in a later session):
+# Seam signatures (bound to RepositoryAdapter via recovery/bindings.py):
 #   is_execution_alive(execution_id) -> bool
-#   preserve_residue(execution_id) -> str | None
+#   preserve_residue(view: ExecutionView) -> str | None
 #       Commit workspace residue to refs/attempts/<issue>/<execution>,
 #       return the ref (None = nothing to preserve). Runs BEFORE the
-#       ExecutionCrashed fact, matching residue→ref→event ordering.
+#       ExecutionCrashed fact, matching residue→ref→event ordering. Takes
+#       the whole view (needs issue_id for the ref, base_commit to detect
+#       "nothing happened") — parsing issue ids out of execution ids would
+#       be a hidden format coupling.
+#   recover_workspace() -> list[str]
+#       Clear stale git locks / in-progress merge state left by a killed
+#       process (§1.2); runs ONCE before check 1. None ⇒ skipped.
 #   check_unwitnessed_commit(projection) -> list[Event]   (check 2)
 #   check_dirty_workspace(projection) -> list[Event]      (check 3)
 
@@ -42,13 +48,18 @@ class RecoveryReport:
     emitted: list[str] = field(default_factory=list)
     checks_run: list[str] = field(default_factory=list)
     checks_skipped: list[str] = field(default_factory=list)
+    # Check 3 (dirty workspace) has no event in doc 03's frozen vocabulary
+    # (inventing one would be an ADR); its evidence trail is the attempt ref
+    # plus these repair strings, so recovery still never silently claims work.
+    workspace_repairs: list[str] = field(default_factory=list)
 
 
 def recover(
     log: EventLog,
     *,
     is_execution_alive: Callable[[str], bool] = lambda _xid: False,
-    preserve_residue: Optional[Callable[[str], Optional[str]]] = None,
+    preserve_residue: Optional[Callable[[ExecutionView], Optional[str]]] = None,
+    recover_workspace: Optional[Callable[[], list[str]]] = None,
     check_unwitnessed_commit=None,
     check_dirty_workspace=None,
 ) -> tuple[StateProjection, RecoveryReport]:
@@ -65,12 +76,16 @@ def recover(
         proj.apply(ev)
         report.replayed_events += 1
 
+    # ── workspace repair: clear killed-git debris before any git op ──
+    if recover_workspace is not None:
+        report.workspace_repairs.extend(recover_workspace())
+
     # ── check 1: orphaned executions ─────────────────────────────
     report.checks_run.append("orphaned_execution")
     for view in proj.open_executions():
         if is_execution_alive(view.execution_id):
             continue  # legitimately still running
-        residue_ref = preserve_residue(view.execution_id) if preserve_residue else None
+        residue_ref = preserve_residue(view) if preserve_residue else None
         ev = Event(
             type=EventType.EXECUTION_CRASHED,
             issue_id=view.issue_id,
@@ -94,6 +109,12 @@ def recover(
         for ev in fn(proj):
             _emit(log, proj, ev)
             report.emitted.append(ev.type.value)
+        # A repo check with no doc-03 event (check 3) reports its work via a
+        # ``repairs`` attribute instead — harvest it so recovery still never
+        # silently claims work it did (see recovery/bindings.py).
+        repairs = getattr(fn, "repairs", None)
+        if repairs:
+            report.workspace_repairs.extend(repairs)
 
     return proj, report
 

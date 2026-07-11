@@ -204,7 +204,7 @@ def _spawned_log(tmp_path) -> EventLog:
 def test_recovery_crashes_orphan_with_residue(tmp_path):
     log = _spawned_log(tmp_path)
     proj, rep = recover(
-        log, preserve_residue=lambda xid: f"refs/attempts/042/{xid}")
+        log, preserve_residue=lambda v: f"refs/attempts/042/{v.execution_id}")
     assert rep.orphans_crashed == ["042-e1"]
     x = proj.executions["042-e1"]
     assert x.state is ExecutionState.CRASHED
@@ -221,7 +221,7 @@ def test_recovery_never_witnesses_finished(tmp_path):
     """Doc 03: EXECUTING is abandonable, never resumed — even when world
     evidence of completion exists, the orphan is CRASHED, not finished."""
     log = _spawned_log(tmp_path)
-    _, rep = recover(log, preserve_residue=lambda xid: "refs/attempts/x")
+    _, rep = recover(log, preserve_residue=lambda v: "refs/attempts/x")
     assert rep.emitted == [EventType.EXECUTION_CRASHED.value]
     assert EventType.EXECUTION_FINISHED.value not in rep.emitted
 

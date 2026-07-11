@@ -1,24 +1,37 @@
-"""Kill-9 durability harness — RECONCILED against doc 03 (Phase 1 gate).
+"""Kill-9 durability harness — GIT-WORLD edition (docs/11 §3, Phase 1 gate).
 
-Deterministic mode: an uncatchable kill injected at EVERY named transition point
-(×2 occurrences), then restart clean until completion. Random mode:
-external kill at random moments, self-calibrated to worker wall time and
-self-verifying that kills actually land. Cross-platform: SIGKILL on POSIX,
-TerminateProcess on Windows (see died_by_kill / run_worker).
+The "world" is now a REAL temp git repository, not filesystem stubs. An
+uncatchable kill is injected at every named transition — including inside
+git operations (mid-snapshot, mid-merge) via the adapter's instrumentation
+seam — then the worker is restarted clean until completion. Random mode
+kills at self-calibrated moments and self-verifies that kills land.
+Cross-platform: SIGKILL on POSIX, TerminateProcess on Windows.
 
-Invariants after every scenario:
+Log-level invariants (unchanged from the stub era):
   I-a  log replays cleanly, event_id contiguous from 1
   I-b  replay deterministic: two rebuilds ⇒ identical digests
   I-c  all issues DONE
   I-d  exactly one CommitCreated per issue (no double-commit)
-  I-e  every execution terminal-consistent: ACCEPTED+committed (exactly
-       one per issue) or REJECTED/CRASHED; nothing left mid-flight
-  I-f  world effects exactly once: one commit artifact per issue, an
-       engine artifact per accepted execution, no torn tmp files
+  I-e  every execution terminal-consistent: ACCEPTED+committed (one per
+       issue) or REJECTED/CRASHED; nothing left mid-flight
   I-g  intent/fact pairing: Finished/Crashed follow their Spawned;
        CommitCreated follows CommitIntent for the same execution
-  I-h  never-replayed rule observable: each execution's Finished pid ==
-       its Spawned pid (no process ever finishes another's execution)
+  I-h  never-replayed rule: each execution's Finished pid == its Spawned pid
+
+Git-level invariants (new — the world is git, docs/11 §3.2):
+  I-i  evidence exists: each Finished.end_commit is a real commit == its
+       attempt ref; each non-null Crashed.residue_ref resolves and is
+       diffable from base (ADR-15 — no evidence destroyed by resets)
+  I-j  exactly-once merge: each issue's accepted end_commit is the second
+       parent of exactly one merge on trunk's first-parent chain, and that
+       set equals the CommitCreated.merge_commit values
+  I-k  workspace hygiene: final tree clean, no index.lock, no MERGE_HEAD,
+       HEAD on a branch (not detached)
+  I-l  join-key integrity: each CommitCreated.merge_commit is an ancestor
+       of trunk; trunk's issues/<issue>.txt names the accepted execution
+  I-m  residue expectations: a kill at a provably-dirty point yields a
+       Crashed with a NON-null residue_ref (a lazy None-returning
+       preserve_residue cannot pass — see mutation M1)
 """
 from __future__ import annotations
 
@@ -30,6 +43,15 @@ import sys
 import time
 from pathlib import Path
 
+# Diagnostic output contains non-ASCII (→, —); the Windows console default
+# code page (cp1252) cannot encode them and would crash the harness — or,
+# worse, mask a real assertion message with an encoding error. Force UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 # Worker self-kill exit code (worker._hard_kill_self); mirrors 128+SIGKILL.
@@ -38,16 +60,9 @@ _SELF_KILL_CODE = 137
 
 def died_by_kill(rc: int) -> bool:
     """True iff the worker was terminated (self-kill or external), not a
-    clean exit (0) or an unhandled exception. Platform-aware:
-
-    POSIX: a signal death is reported as a negative return code; SIGKILL
-      (self or Popen.kill) is -9.
-    Windows: there are no negative signal codes. TerminateProcess sets
-      the exit code — Popen.kill() uses 1, and the worker's self-kill
-      uses 137. A clean success is 0; an unhandled Python exception is 1,
-      which we must NOT count as a kill, so on Windows an external
-      Popen.kill collides with exception-rc 1. We disambiguate by having
-      run_worker tag externally-killed runs explicitly (see below)."""
+    clean exit (0) or an unhandled exception. On POSIX a signal death is a
+    negative rc (SIGKILL = -9); on Windows we use the distinctive self-kill
+    code and tag externally-killed runs in run_worker."""
     if os.name != "nt":
         import signal
         return rc == -signal.SIGKILL
@@ -56,44 +71,74 @@ def died_by_kill(rc: int) -> bool:
 from runtime.events.log import EventLog                     # noqa: E402
 from runtime.events.projections import StateProjection      # noqa: E402
 from runtime.events.schema import EventType                 # noqa: E402
+from runtime.repo.git_adapter import GitCliAdapter          # noqa: E402
 from runtime.state.model import ExecutionState, IssueState  # noqa: E402
 
 WORKER = Path(__file__).with_name("worker.py")
 ISSUES = ["042", "043", "044"]
+TRUNK = "trunk"
 
 CRASH_POINTS = [
     "after_append:IssueCreated",
     "after_append:IssueActivated",
     "after_append:ExecutionSpawned",
-    "before_world:engine",
-    "mid_world:engine",
-    "after_world:engine",
+    "engine:post-edit",              # dirty tree, uncommitted (b2/b3)
+    "git:snapshot:post-add",         # killed after add, before commit (b4-like)
+    "engine:post-snapshot",          # committed residue, ref not set (b5)
+    "engine:post-attempt-ref",       # ref set, Finished not appended (b6)
     "after_append:ExecutionFinished",
     "after_append:ValidationPassed",
     "after_append:ReviewApproved",
     "after_append:CommitIntent",
-    "before_world:commit",
-    "mid_world:commit",
-    "after_world:commit",
+    "git:merge:post-tree",           # merged tree written, no commit-tree (c2)
+    "git:merge:post-commit-tree",    # merge commit sealed, ref not moved (c2)
+    "git:merge:post-update-ref",     # trunk moved, CommitCreated not appended (c3)
     "after_append:CommitCreated",
     "after_append:IssueCompleted",
 ]
 
+# Points at which the worktree was provably dirty (or a residue commit
+# existed) when killed → the orphan MUST be crashed WITH a residue ref.
+RESIDUE_POINTS = {
+    "engine:post-edit",
+    "git:snapshot:post-add",
+    "engine:post-snapshot",
+    "engine:post-attempt-ref",
+}
+
+
+def _git(repo: Path, *args: str) -> str:
+    p = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8",
+    )
+    if p.returncode != 0:
+        raise RuntimeError(f"harness git {args} failed: {p.stderr}")
+    return p.stdout.strip()
+
+
+def init_repo(base: Path) -> Path:
+    """One temp git repo as the world: seed commit on 'trunk', then a
+    persistent 'work' branch checked out (the worker never checks out
+    trunk; merge_to advances it purely in the object DB)."""
+    repo = base / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-b", TRUNK)
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / ".gitignore").write_text("*.ignored\n")
+    (repo / "README").write_text("seed\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "seed")
+    _git(repo, "checkout", "-b", "work")
+    return repo
+
 
 def run_worker(base: Path, crash: str | None = None,
                kill_after: float | None = None) -> tuple[str, int]:
-    """Run the worker once. Returns (outcome, rc) where outcome is:
-      'completed' — clean exit 0 (all issues DONE)
-      'killed'    — terminated by injected self-kill or our external kill
-      'errored'   — nonzero exit that is neither (e.g. an exception, or a
-                    worker rc=2 meaning it finished but not all DONE)
-
-    Deciding the outcome here — rather than inferring it from rc at the
-    assertion site — is what makes the harness platform-independent: on
-    Windows an external TerminateProcess and an unhandled exception both
-    surface as rc=1, indistinguishable after the fact, but run_worker
-    knows which kills it issued and whether the injected self-kill code
-    came back."""
+    """Run the worker once. Returns (outcome, rc): 'completed' (clean exit 0),
+    'killed' (injected self-kill or our external kill), or 'errored'
+    (anything else). Deciding here, not at the assertion site, is what makes
+    the harness platform-independent (see the prior version's note)."""
     env = dict(os.environ)
     env.pop("RUNTIME_CRASH_POINT", None)
     if crash:
@@ -103,20 +148,22 @@ def run_worker(base: Path, crash: str | None = None,
     if kill_after is not None:
         time.sleep(kill_after)
         if p.poll() is None:
-            p.kill()  # SIGKILL (POSIX) / TerminateProcess (Windows)
+            p.kill()
             externally_killed = True
     p.wait()
     rc = p.returncode
     if externally_killed:
         return "killed", rc
-    if died_by_kill(rc):          # injected self-kill inside the worker
+    if died_by_kill(rc):
         return "killed", rc
     if rc == 0:
         return "completed", rc
     return "errored", rc
 
 
-def verify(base: Path, scenario: str) -> None:
+def verify(base: Path, scenario: str, crash_point: str | None = None) -> None:
+    repo = base / "repo"
+    adapter = GitCliAdapter(repo)
     log = EventLog(base / "events.jsonl")
     events = list(log.replay())                              # I-a
     p1 = StateProjection().rebuild(iter(events))
@@ -127,9 +174,13 @@ def verify(base: Path, scenario: str) -> None:
         assert p1.issues.get(i) is IssueState.DONE, \
             f"{scenario}: issue {i} is {p1.issues.get(i)}, not DONE"
 
+    # ── log-level pairing / counting (I-d, I-g, I-h) ─────────────────
     created: dict[str, int] = {}
+    created_merge: dict[str, str] = {}
     spawned_pid: dict[str, int] = {}
     intent_seen: set[str] = set()
+    finished_end: dict[str, str] = {}
+    crashed_residue: list[tuple[str, str | None]] = []
     for ev in events:
         if ev.type is EventType.EXECUTION_SPAWNED:
             spawned_pid[ev.execution_id] = ev.payload.get("pid")
@@ -140,43 +191,82 @@ def verify(base: Path, scenario: str) -> None:
             assert ev.payload.get("pid") == spawned_pid[ev.execution_id], \
                 f"{scenario}: execution {ev.execution_id} finished by a " \
                 f"different process than spawned it — replayed execution!"
+            finished_end[ev.execution_id] = ev.payload.get("end_commit")
+        if ev.type is EventType.EXECUTION_CRASHED:
+            crashed_residue.append((ev.execution_id, ev.payload.get("residue_ref")))
         if ev.type is EventType.COMMIT_INTENT:
             intent_seen.add(ev.execution_id)
         if ev.type is EventType.COMMIT_CREATED:
             assert ev.execution_id in intent_seen, \
                 f"{scenario}: CommitCreated before CommitIntent (event {ev.event_id})"  # I-g
             created[ev.issue_id] = created.get(ev.issue_id, 0) + 1
+            created_merge[ev.issue_id] = ev.payload.get("merge_commit")
     for i in ISSUES:                                         # I-d
         assert created.get(i) == 1, \
             f"{scenario}: issue {i} has {created.get(i, 0)} CommitCreated events"
 
-    accepted_by_issue: dict[str, int] = {}                   # I-e
+    # ── execution terminal-consistency (I-e) ─────────────────────────
+    accepted_by_issue: dict[str, str] = {}
     for x in p1.executions.values():
         if x.state is ExecutionState.ACCEPTED:
             assert x.commit_intended and x.commit_created, \
                 f"{scenario}: {x.execution_id} ACCEPTED but commit sequence incomplete"
-            accepted_by_issue[x.issue_id] = accepted_by_issue.get(x.issue_id, 0) + 1
+            assert x.issue_id not in accepted_by_issue, \
+                f"{scenario}: issue {x.issue_id} has >1 accepted execution"
+            accepted_by_issue[x.issue_id] = x.execution_id
         else:
             assert x.state in (ExecutionState.REJECTED, ExecutionState.CRASHED), \
                 f"{scenario}: execution {x.execution_id} left in {x.state.value}"
     for i in ISSUES:
-        assert accepted_by_issue.get(i) == 1, \
-            f"{scenario}: issue {i} has {accepted_by_issue.get(i, 0)} accepted executions"
+        assert i in accepted_by_issue, f"{scenario}: issue {i} has no accepted execution"
 
-    world = base / "world"                                   # I-f
+    # ── I-i: evidence exists ─────────────────────────────────────────
+    for xid, end in finished_end.items():
+        assert adapter.commit_exists(end), \
+            f"{scenario}: Finished end_commit {end} for {xid} is not a real commit"
+        ref = f"{adapter.ns}/{p1.executions[xid].issue_id}/{xid}"
+        assert adapter.ref_target(ref) == end, \
+            f"{scenario}: attempt ref {ref} != end_commit {end}"
+    for xid, ref in crashed_residue:
+        if ref is None:
+            continue
+        sha = adapter.ref_target(ref)
+        assert sha is not None, f"{scenario}: residue_ref {ref} does not resolve"
+        base_commit = p1.issue_base_commit.get(p1.executions[xid].issue_id)
+        adapter.diff(base_commit, sha)  # derivable, must not raise (ADR-15)
+
+    # ── I-j / I-l: exactly-once merge + join-key integrity ───────────
     for i in ISSUES:
-        assert (world / f"commit-{i}.done").exists(), \
-            f"{scenario}: missing commit artifact for {i}"
-    for x in p1.executions.values():
-        if x.state is ExecutionState.ACCEPTED:
-            assert (world / f"engine-{x.execution_id}.done").exists(), \
-                f"{scenario}: accepted exec {x.execution_id} has no engine artifact"
-    leftovers = list(world.glob("tmp-*"))
-    assert not leftovers, f"{scenario}: torn tmp files remain: {leftovers}"
+        acc = accepted_by_issue[i]
+        end = finished_end[acc]
+        mc = adapter.find_merge_commit(TRUNK, end)
+        assert mc is not None, \
+            f"{scenario}: no merge on {TRUNK} carries {i}'s accepted end_commit"
+        assert mc == created_merge[i], \
+            f"{scenario}: issue {i} merge_commit {created_merge[i]} != world {mc}"  # I-j
+        assert adapter.is_ancestor(mc, TRUNK), \
+            f"{scenario}: merge_commit {mc} not an ancestor of {TRUNK}"            # I-l
+        shown = _git(repo, "show", f"{TRUNK}:issues/{i}.txt")
+        assert acc in shown, \
+            f"{scenario}: trunk issues/{i}.txt names {shown!r}, not accepted {acc}"  # I-l
+
+    # ── I-k: workspace hygiene ───────────────────────────────────────
+    assert not adapter.is_dirty(), f"{scenario}: workspace dirty at end"
+    assert not (repo / ".git" / "index.lock").exists(), f"{scenario}: stale index.lock"
+    assert not (repo / ".git" / "MERGE_HEAD").exists(), f"{scenario}: MERGE_HEAD left"
+    head_ref = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    assert head_ref != "HEAD", f"{scenario}: HEAD is detached"
+
+    # ── I-m: residue expectation for provably-dirty kills ────────────
+    if crash_point in RESIDUE_POINTS:
+        assert any(ref is not None for _xid, ref in crashed_residue), \
+            f"{scenario}: killed at {crash_point} (tree was dirty) but no " \
+            f"ExecutionCrashed carried a residue_ref — preserve_residue lazy?"
+
     log.close()
 
 
-def restart_until_done(base: Path, scenario: str, max_restarts: int = 40) -> None:
+def restart_until_done(base: Path, scenario: str, max_restarts: int = 60) -> None:
     for _ in range(max_restarts):
         outcome, rc = run_worker(base)
         if outcome == "completed":
@@ -186,25 +276,54 @@ def restart_until_done(base: Path, scenario: str, max_restarts: int = 40) -> Non
     raise AssertionError(f"{scenario}: not done after {max_restarts} restarts")
 
 
-def scenario_dir(root: Path, name: str) -> Path:
-    d = root / name.replace(":", "_")
-    if d.exists():
-        shutil.rmtree(d)
-    d.mkdir(parents=True)
-    return d
+def fresh_scenario(root: Path, name: str) -> Path:
+    base = root / name.replace(":", "_")
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    init_repo(base)
+    return base
+
+
+def run_fixtures(root: Path) -> int:
+    """Planted-state scenarios that a timed kill cannot produce (docs/11
+    §3.4). f3 (check-2 tamper) is covered by unit test
+    test_check2_tamper_raises — a raise mid-run would surface as 'errored'
+    here, which restart_until_done already forbids."""
+    passed = 0
+
+    # f1: stale index.lock + dirty tree at boot → recover_workspace must
+    # clear the lock (else every git mutation fails) AND check 3 resets.
+    base = fresh_scenario(root, "fixture[f1-stale-lock]")
+    repo = base / "repo"
+    (repo / ".git" / "index.lock").write_text("")
+    (repo / "planted.txt").write_text("dirty at boot")
+    restart_until_done(base, "fixture[f1-stale-lock]")
+    verify(base, "fixture[f1-stale-lock]")
+    passed += 1
+    print("PASS fixture[f1-stale-lock]")
+
+    # f2: dirty workspace, no open execution → check 3 archives + resets.
+    base = fresh_scenario(root, "fixture[f2-dirty-boot]")
+    repo = base / "repo"
+    (repo / "planted.txt").write_text("dirty at boot")
+    restart_until_done(base, "fixture[f2-dirty-boot]")
+    verify(base, "fixture[f2-dirty-boot]")
+    passed += 1
+    print("PASS fixture[f2-dirty-boot]")
+
+    return passed
 
 
 def main() -> int:
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/crash-harness")
     random.seed(int(sys.argv[2]) if len(sys.argv) > 2 else 42)
+    point_filter = sys.argv[3] if len(sys.argv) > 3 else None  # iterate one point
     passed = 0
 
     # Self-calibrate the random-kill window to THIS machine's worker wall
-    # time, so the harness is portable across OS process-spawn speeds
-    # (Windows spawns far slower than Linux). Time one clean control run,
-    # then aim kills across roughly its whole span. This replaces the old
-    # hardcoded 5–90 ms window that was tuned to Linux only.
-    cal = scenario_dir(root, "_calibration")
+    # time (git subprocesses make it far slower than the stub era).
+    cal = fresh_scenario(root, "_calibration")
     t0 = time.time()
     outcome, rc = run_worker(cal)
     assert outcome == "completed", f"calibration run failed: {outcome} rc={rc}"
@@ -213,44 +332,55 @@ def main() -> int:
     print(f"calibration: worker wall {wall:.3f}s → kill window "
           f"[{kill_lo:.3f}, {kill_hi:.3f}]s")
 
-    for point in CRASH_POINTS:
+    points = [p for p in CRASH_POINTS if point_filter is None or point_filter in p]
+    for point in points:
         for nth in (1, 2):
             name = f"det[{point}:{nth}]"
-            base = scenario_dir(root, name)
+            base = fresh_scenario(root, name)
             outcome, rc = run_worker(base, crash=f"{point}:{nth}")
-            assert outcome == "killed", \
-                f"{name}: expected kill death, got outcome={outcome} rc={rc} — injection not hit?"
+            if outcome != "killed":
+                # nth==2 may be unreachable if the point fires <2 times in a
+                # crash-free run to that stage; only nth==1 is guaranteed.
+                assert nth == 2 and outcome == "completed", \
+                    f"{name}: expected kill, got outcome={outcome} rc={rc}"
+                verify(base, name, crash_point=point)
+                passed += 1
+                print(f"PASS {name} (point fired <2x; ran clean)")
+                continue
             restart_until_done(base, name)
-            verify(base, name)
+            verify(base, name, crash_point=point)
             passed += 1
             print(f"PASS {name}")
 
-    total_kills = 0
-    for i in range(15):
-        name = f"rand[{i}]"
-        base = scenario_dir(root, name)
-        kills = 0
-        while True:
-            outcome, rc = run_worker(base, kill_after=random.uniform(kill_lo, kill_hi))
-            if outcome == "completed":
-                break
-            assert outcome == "killed", f"{name}: outcome={outcome} rc={rc}"
-            kills += 1
-            assert kills < 60, f"{name}: never completed"
-        verify(base, name)
-        passed += 1
-        total_kills += kills
-        print(f"PASS {name} ({kills} kills survived)")
-    assert total_kills >= 10, (
-        f"random mode landed only {total_kills} kills across 15 rounds — "
-        "window no longer overlaps the workload; recalibrate")
+    if point_filter is None:
+        total_kills = 0
+        for i in range(15):
+            name = f"rand[{i}]"
+            base = fresh_scenario(root, name)
+            kills = 0
+            while True:
+                outcome, rc = run_worker(base, kill_after=random.uniform(kill_lo, kill_hi))
+                if outcome == "completed":
+                    break
+                assert outcome == "killed", f"{name}: outcome={outcome} rc={rc}"
+                kills += 1
+                assert kills < 80, f"{name}: never completed"
+            verify(base, name)
+            passed += 1
+            total_kills += kills
+            print(f"PASS {name} ({kills} kills survived)")
+        assert total_kills >= 10, (
+            f"random mode landed only {total_kills} kills across 15 rounds — "
+            "window no longer overlaps the workload; recalibrate")
 
-    base = scenario_dir(root, "control")
-    outcome, rc = run_worker(base)
-    assert outcome == "completed", f"control: outcome={outcome} rc={rc}"
-    verify(base, "control")
-    passed += 1
-    print("PASS control")
+        passed += run_fixtures(root)
+
+        base = fresh_scenario(root, "control")
+        outcome, rc = run_worker(base)
+        assert outcome == "completed", f"control: outcome={outcome} rc={rc}"
+        verify(base, "control")
+        passed += 1
+        print("PASS control")
 
     print(f"\nALL {passed} SCENARIOS PASSED")
     return 0
