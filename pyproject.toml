@@ -1,0 +1,9 @@
+[project]
+name = "issue-runtime"
+version = "0.1.0"
+description = "Autonomous issue-resolution runtime — durability foundation"
+requires-python = ">=3.12"
+dependencies = ["pyyaml>=6", "pydantic>=2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
