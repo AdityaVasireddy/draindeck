@@ -182,8 +182,8 @@ docs/11 §4, marked explicitly not-frozen.
 
 ## Open Questions
 **Needs User Input**
-- StockAgent vs. StockPhotoAgent directory-name mismatch and the real
-  `project.validation.commands` test command for config.yaml — both still open
-  from the Session 2 handoff and still unresolved; `config.example.yaml` still
-  carries the placeholder/warning. Needed before any first real run against the
-  target repo, not before Session 4's engine-wrapper code itself.
+- ~~StockAgent vs. StockPhotoAgent directory-name mismatch~~ — resolved:
+  name/path are separate fields by design, no mismatch existed.
+- ~~project.validation.commands placeholder~~ — resolved in commit `efad497`
+  (config.yaml created with real values, package properly installed).
+  Both closed before Session 4 began.
