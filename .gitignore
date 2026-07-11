@@ -1,3 +1,5 @@
 state/
 __pycache__/
 *.torn.*
+
+*.egg-info/
