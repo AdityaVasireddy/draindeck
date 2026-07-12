@@ -32,6 +32,12 @@ Git-level invariants (new — the world is git, docs/11 §3.2):
   I-m  residue expectations: a kill at a provably-dirty point yields a
        Crashed with a NON-null residue_ref (a lazy None-returning
        preserve_residue cannot pass — see mutation M1)
+
+Engine-orphan invariant (Session 4 — checked by planted fixture f4):
+  I-n  a REAL engine child that outlived an orchestrator crash is reaped at
+       startup (reap_orphans, run BEFORE recover), its orphaned execution is
+       CRASHED with a residue_ref, and no pidfile is left behind. A no-op
+       reap_orphans cannot pass (see mutation M3).
 """
 from __future__ import annotations
 
@@ -285,6 +291,111 @@ def fresh_scenario(root: Path, name: str) -> Path:
     return base
 
 
+def run_engine_orphan_fixture(root: Path) -> int:
+    """f4 (I-n): a REAL engine child that outlived an orchestrator crash must be
+    reaped at startup, its orphaned execution CRASHED with residue, and no
+    pidfile left behind. Planted like f1/f2/f3 — a live worker cannot be timed
+    to die at the exact instant a real child is mid-run (and the blocking run()
+    cannot self-kill from inside), which is precisely the class of state
+    fixtures exist for (docs/11 §3.4). The production code under test is real:
+    ClaudeHeadlessEngine._write_pidfile, reap_orphans, is_execution_alive, and
+    recover()+bind_reconciler with is_execution_alive bound. Skips cleanly if
+    'claude' is not on PATH (the engine __init__ resolves it); the reap/liveness
+    logic is additionally unit-tested. Returns 1 if run, 0 if skipped."""
+    from runtime.config import EngineCfg                    # noqa: PLC0415
+    from runtime.engine.claude_headless import (            # noqa: PLC0415
+        ClaudeHeadlessEngine, EngineError,
+    )
+    from runtime.events.schema import Event                 # noqa: PLC0415
+    from runtime.recovery.bindings import bind_reconciler   # noqa: PLC0415
+    from runtime.recovery.reconciler import recover         # noqa: PLC0415
+
+    base = fresh_scenario(root, "fixture[f4-engine-orphan]")
+    repo = base / "repo"
+    artifacts = base / "artifacts"
+    xid = "042-e1"
+
+    try:
+        engine = ClaudeHeadlessEngine(
+            EngineCfg(provider="claude-headless", auth_mode="subscription"),
+            artifacts,
+        )
+    except EngineError:
+        print("SKIP fixture[f4-engine-orphan] (claude not on PATH)")
+        return 0
+
+    # Plant the log so the projection carries one EXECUTING orphan (042-e1).
+    base_commit = _git(repo, "rev-parse", TRUNK)
+    log = EventLog(base / "events.jsonl")
+    for ev in (
+        Event(EventType.ISSUE_CREATED, issue_id="042", run_id="run-f4",
+              payload={"source": "f4", "title": "orphan"}),
+        Event(EventType.ISSUE_ACTIVATED, issue_id="042", run_id="run-f4",
+              payload={"base_commit": base_commit}),
+        Event(EventType.EXECUTION_SPAWNED, issue_id="042", execution_id=xid,
+              run_id="run-f4",
+              payload={"spawn_reason": "initial", "engine": "claude-headless",
+                       "pid": os.getpid()}),
+    ):
+        log.append(ev)
+
+    # A REAL long-lived child that dirties the workspace, then sleeps; its
+    # pidfile is written via the PRODUCTION path (engine._write_pidfile).
+    scratch = repo / "orphan-scratch.tmp"
+    dummy_src = (
+        "import sys,time,pathlib;"
+        "pathlib.Path(sys.argv[1]).write_text('engine byproduct');"
+        "time.sleep(300)"
+    )
+    dummy = subprocess.Popen([sys.executable, "-c", dummy_src, str(scratch)])
+    try:
+        engine._xdir(xid).mkdir(parents=True, exist_ok=True)
+        engine._write_pidfile(engine._pidfile(xid), dummy.pid)
+        for _ in range(50):                       # wait until provably dirty
+            if scratch.exists():
+                break
+            time.sleep(0.1)
+        assert scratch.exists(), "f4: dummy never dirtied the workspace"
+
+        # PRODUCTION startup order: reap_orphans BEFORE recover.
+        adapter = GitCliAdapter(repo)
+        repairs = engine.reap_orphans()
+        proj, _report = recover(
+            log,
+            is_execution_alive=engine.is_execution_alive,
+            **bind_reconciler(adapter, TRUNK),
+        )
+    finally:
+        if dummy.poll() is None:
+            dummy.kill()
+        try:
+            dummy.wait(timeout=10)
+        except subprocess.SubprocessError:
+            pass
+        log.close()
+
+    # I-n(1): orphan reaped and dead.
+    assert any(xid in r for r in repairs), \
+        f"f4: reap_orphans did not report {xid}: {repairs}"
+    assert dummy.returncode is not None, \
+        "f4: orphan engine child survived reap_orphans (still running)"
+    # I-n(3): no pidfile left behind.
+    assert not list(artifacts.glob("*/pid")), "f4: pidfile leaked after recovery"
+    # I-n(2): orphan CRASHED with a non-null residue_ref.
+    view = proj.executions.get(xid)
+    assert view is not None and view.state is ExecutionState.CRASHED, \
+        f"f4: {xid} is {view.state.value if view else None}, not CRASHED"
+    residues = [
+        ev.payload.get("residue_ref")
+        for ev in EventLog(base / "events.jsonl").replay()
+        if ev.type is EventType.EXECUTION_CRASHED and ev.execution_id == xid
+    ]
+    assert residues and residues[0] is not None, \
+        f"f4: {xid} CRASHED without a residue_ref (dirty tree evidence lost)"
+    print("PASS fixture[f4-engine-orphan]")
+    return 1
+
+
 def run_fixtures(root: Path) -> int:
     """Planted-state scenarios that a timed kill cannot produce (docs/11
     §3.4). f3 (check-2 tamper) is covered by unit test
@@ -311,6 +422,9 @@ def run_fixtures(root: Path) -> int:
     verify(base, "fixture[f2-dirty-boot]")
     passed += 1
     print("PASS fixture[f2-dirty-boot]")
+
+    # f4 (I-n): engine-orphan reaping at startup. Skips if claude is absent.
+    passed += run_engine_orphan_fixture(root)
 
     return passed
 
