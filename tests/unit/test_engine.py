@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from runtime.config import EngineCfg                       # noqa: E402
 from runtime.engine.claude_headless import (               # noqa: E402
+    _DENY_TOOLS,
     ClaudeHeadlessEngine,
     EngineEnvError,
     _pid_image,
@@ -276,6 +277,45 @@ def test_is_execution_alive_false_after_stale_pid_reused(tmp_path):
     eng._write_pidfile(eng._pidfile("042-e1"), finished.pid)
     assert eng.is_execution_alive("042-e1") is False
     assert not eng._pidfile("042-e1").exists()
+
+
+# ── ADR-21 fence (the only working engine restriction) ───────────────
+def test_command_carries_the_adr21_fence(tmp_path):
+    """PROBE-VERIFIED: --allowedTools does NOT restrict in -p mode; only
+    --disallowedTools fences. The real _command() must therefore carry the
+    ADR-21 deny set. We call the CLASS method directly (the _DummyEngine
+    override is bypassed) to exercise the production argv."""
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    eng._claude_exe = "claude"  # value irrelevant — not exercised by the fence
+    eng.cfg = EngineCfg(
+        provider="claude-headless", auth_mode="subscription", model="claude-x",
+    )
+    argv = ClaudeHeadlessEngine._command(eng, tmp_path / "p.txt")
+
+    assert "--disallowedTools" in argv
+    # the load-bearing denies ride in the fence (egress, git, destruction,
+    # recursive-spawn, sub-agent escape)
+    for tok in ("WebFetch", "WebSearch", "Task", "Bash(curl:*)",
+                "Bash(git:*)", "Bash(rm:*)", "Bash(claude:*)"):
+        assert tok in argv, f"{tok} missing from fence"
+    # the fence is exactly _DENY_TOOLS, contiguous after the flag
+    di = argv.index("--disallowedTools")
+    assert argv[di + 1: di + 1 + len(_DENY_TOOLS)] == list(_DENY_TOOLS)
+    # the variadic fence must precede --model so it does not swallow the value
+    assert "--model" in argv and di < argv.index("--model")
+    assert argv[argv.index("--model") + 1] == "claude-x"
+
+
+def test_command_fence_present_without_model(tmp_path):
+    """model='default' emits no --model; the fence is still present and is the
+    argv tail (nothing after it to be swallowed)."""
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    eng._claude_exe = "claude"
+    eng.cfg = EngineCfg(provider="claude-headless", auth_mode="subscription")
+    argv = ClaudeHeadlessEngine._command(eng, tmp_path / "p.txt")
+    assert "--model" not in argv
+    di = argv.index("--disallowedTools")
+    assert argv[di + 1:] == list(_DENY_TOOLS)
 
 
 # ── recovery integration (unit-level M3 proof) ───────────────────────

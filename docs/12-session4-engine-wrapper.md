@@ -49,12 +49,24 @@ this document — it is no longer provisional.
 OS-level children requiring tree-kill (the live smoke and unit tests used no
 tools beyond a plain reply, so this specific case was never exercised;
 `_kill_tree` is written defensively — tree-kill by default — regardless). Any
-platform other than this Windows machine. The exact `--allowedTools` allowlist
-doc 02 §3 calls for is deliberately deferred — it depends on
-`config.project.validation.commands`, which the engine never reads (doc 09
-§7); building it is the orchestrator/context-pack session's job. Power-loss
-durability (same scope boundary as Sessions 2–3's harness — kill-tests prove
-process-crash durability only).
+platform other than this Windows machine. The exact tool-scoping doc 02 §3 calls
+for is deliberately deferred to the orchestrator session. Power-loss durability
+(same scope boundary as Sessions 2–3's harness — kill-tests prove process-crash
+durability only).
+
+> **CORRECTION (Session 5, 2026-07-12).** This document's assumption that the
+> engine would be fenced by a `--allowedTools` allowlist, and the shipped
+> docstring's claim that "in -p mode a disallowed tool is recorded as a
+> `permission_denial` rather than blocking," were both **falsified by probe**
+> against `claude` 2.1.207: `--allowedTools` does not restrict at all in `-p`
+> mode (a tool matching neither allow nor deny simply runs), so no
+> `permission_denial` was ever produced by an allowlist. The engine is instead
+> fenced by an explicit **denylist** (`--disallowedTools`, the only mechanism
+> that enforces). See **ADR-21** (doc 08 §5b) and the corrected
+> `engine/claude_headless.py` docstring. Tree-kill under a real timeout (the
+> other assumption above) was **confirmed** in Session 5's probe for an intact
+> process tree; the reparented-grandchild escape remains the documented,
+> unexercised limitation (§1.5).
 
 ---
 

@@ -93,7 +93,9 @@ CRASH_POINTS = [
     "engine:post-snapshot",          # committed residue, ref not set (b5)
     "engine:post-attempt-ref",       # ref set, Finished not appended (b6)
     "after_append:ExecutionFinished",
+    "after_append:ValidationFailed",   # reject fact durable; check 3 resets (043)
     "after_append:ValidationPassed",
+    "after_append:ReviewRejected",     # reject fact durable; check 3 resets (044)
     "after_append:ReviewApproved",
     "after_append:CommitIntent",
     "git:merge:post-tree",           # merged tree written, no commit-tree (c2)

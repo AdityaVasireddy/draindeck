@@ -56,6 +56,18 @@ RUN_ID = "run-harness"
 TRUNK = "trunk"    # deliberately not 'main' — proves nothing hardcodes it
 WORK = "work"
 
+# Scripted deterministic rejections (Session 5): the reject path must be
+# crash-durable too. 043 fails VALIDATION on attempt 1, 044 fails REVIEW on
+# attempt 1; each passes on attempt 2, so every issue still reaches DONE (I-c
+# holds) while exercising the after_append:ValidationFailed /
+# after_append:ReviewRejected crash windows and check 3's post-reject reset.
+VAL_FAIL = {"043": 1}      # {issue: attempt_number}
+REV_REJECT = {"044": 1}
+
+
+def _attempt_no(execution_id: str) -> int:
+    return int(execution_id.rsplit("-e", 1)[1])
+
 # ── crash injection ──────────────────────────────────────────────
 _spec = os.environ.get("RUNTIME_CRASH_POINT", "")
 _CRASH_POINT, _CRASH_NTH = _spec, 1
@@ -137,6 +149,16 @@ def step(log: EventLog, proj: StateProjection, adapter: GitCliAdapter,
         return
 
     if ex.state is ExecutionState.VALIDATING:
+        if VAL_FAIL.get(issue) == _attempt_no(ex.execution_id):
+            emit(log, Event(EventType.VALIDATION_FAILED, issue_id=issue,
+                            execution_id=ex.execution_id, run_id=RUN_ID,
+                            payload={"validated_commit": ex.end_commit,
+                                     "gate_results": [],
+                                     "taxonomy_category": "validation-test"}))
+            # crash between the reject fact and this reset leaves head at
+            # end_commit while the log says REJECTED (expects base) → check 3.
+            adapter.reset_hard(proj.issue_base_commit[issue])
+            return
         emit(log, Event(EventType.VALIDATION_PASSED, issue_id=issue,
                         execution_id=ex.execution_id, run_id=RUN_ID,
                         payload={"validated_commit": ex.end_commit,
@@ -144,6 +166,17 @@ def step(log: EventLog, proj: StateProjection, adapter: GitCliAdapter,
         return
 
     if ex.state is ExecutionState.REVIEWING:
+        if REV_REJECT.get(issue) == _attempt_no(ex.execution_id):
+            emit(log, Event(EventType.REVIEW_REJECTED, issue_id=issue,
+                            execution_id=ex.execution_id, run_id=RUN_ID,
+                            payload={"reviewed_commit": ex.end_commit,
+                                     "reviewer_provider": "stub",
+                                     "verdict": "REJECT", "severity": "blocking",
+                                     "taxonomy_category": "review-correctness",
+                                     "feedback": [{"category": "review-correctness",
+                                                   "message": "stub reject"}]}))
+            adapter.reset_hard(proj.issue_base_commit[issue])
+            return
         emit(log, Event(EventType.REVIEW_APPROVED, issue_id=issue,
                         execution_id=ex.execution_id, run_id=RUN_ID,
                         payload={"reviewed_commit": ex.end_commit,

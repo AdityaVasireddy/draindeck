@@ -88,6 +88,25 @@ The baseline-green requirement (doc 06) applies to StockAgent: its test suite mu
 
 ---
 
+## 5b. ADR-21 — Engine fence is a denylist; strict "no credential access" is accepted as unclosable while Bash exists
+
+**Status:** Accepted (Session 5, 2026-07-12). Supersedes the Session-4 forward-pointer that assumed `--allowedTools` would fence the engine.
+
+**Context — the probe that forced this.** doc 02 §3 requires the engine get "read/write on the worktree only, no network push, no credential access." The Session-4 plan intended to enforce that with a `--allowedTools` allowlist, deferring the exact list to Session 5. A probe of `claude` 2.1.207 (Windows, subscription — the live runtime) falsified that mechanism:
+
+- **`--allowedTools` does NOT restrict.** In `-p` mode a tool matching neither an allow nor a deny rule *runs*. `--allowedTools Read` still let Bash run `whoami`; `--allowedTools "Bash(echo:*)"` still let `whoami` run. True under `--permission-mode default` and `acceptEdits` alike. (Session 4's docstring claim that a non-allowlisted tool records a `permission_denial` is likewise false — corrected in `claude_headless.py` and doc 12.)
+- **The denylist is the only working fence.** `--disallowedTools` is enforced, is *selective* at the `Bash(cmd:*)` pattern level (`Bash(curl:*)` denies curl while `echo hello` still runs), and is *chaining-resistant* (`echo ok && curl …` is denied by `Bash(curl:*)`; `echo START && git push` is denied by the `git push` rule even though `git push` is not the leading token).
+- **Explicit flags compose with, and are not masked by, ambient `~/.claude/settings.json`; deny always wins.** The fence is therefore passed **entirely as explicit `--disallowedTools` flags** so it is self-contained and does not depend on any operator's settings.
+- **Detection nuance:** a pattern deny populates `result.permission_denials` *and* yields a tool-result `is_error`; a whole-tool removal (`--disallowedTools Bash`) yields only the tool-result error with `permission_denials` empty. Transcript-based fence auditing must key on **both** signals. (The transcript is advisory only, ADR-07 — none of this gates a transition.)
+
+**Decision.** The engine is fenced by an explicit denylist (`_DENY_TOOLS` in `engine/claude_headless.py`): whole tools `WebFetch`, `WebSearch`, `Task` (the sub-agent escape hatch), and `Bash(cmd:*)` patterns for network egress (curl/wget/ssh/scp/nc/telnet/powershell/pwsh/Invoke-WebRequest and `.exe` variants), the entire `git` CLI (`Bash(git:*)` — also enforcing ADR-07: the engine never touches git, the orchestrator owns it, which incidentally closes the push path), destruction/privilege (`rm`/`sudo`/`chmod`), and recursive engine spawns (`claude`/`npx`). All entries use the probe-proven one-word `Bash(cmd:*)` colon form.
+
+**Accepted deviation.** doc 02 §3's strict "no credential access" is **structurally unclosable while Bash is available** — a shell can read a local file and egress via curl/python, and denylist whack-a-mole cannot reliably prevent it. Rather than cripple the engine (removing Bash entirely tanks the falsification metric by preventing build/test/explore), ADR-21 fences **egress + destruction + push + recursive-spawn** and accepts the residual local-read exposure. Compensating controls: no push path, egress tools denied, the engine never touches git, reconciler check 3, the *supervised* Phase-2 gate, and ADR-20's deliberately safe-to-experiment target (StockAgent). A **sanitized-env** hardening (spawn the engine under a credential-free HOME) is recorded as a pre-Phase-4 item, not built in v1.
+
+**Rejected alternatives.** *Allowlist fence* — falsified above. *Remove Bash entirely* — closes egress but limits the engine to file edits, making attempt-1 success reflect the fence rather than the workflow. *Settings-file deny* — Session 4 proved `--settings` keys are silently dropped in print mode, so nothing settings-based is trusted; explicit flags were probe-verified instead.
+
+---
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml

@@ -33,6 +33,13 @@ class ExecutionView:
     end_commit: Optional[str] = None           # ExecutionFinished.end_commit
     intent_end_commit: Optional[str] = None     # CommitIntent.end_commit
     intent_target_branch: Optional[str] = None  # CommitIntent.target_branch
+    # Session-5 additions for the orchestrator loop: the I3 pin gate needs the
+    # commits validation and review pinned, and the retry/escalate policy needs
+    # each rejection's taxonomy + reviewer feedback. All from doc 03 §3 payloads.
+    validated_commit: Optional[str] = None      # ValidationPassed.validated_commit
+    reviewed_commit: Optional[str] = None        # ReviewApproved.reviewed_commit
+    taxonomy_category: Optional[str] = None      # set on any REJECTED/CRASHED exit
+    feedback: list = field(default_factory=list)  # ReviewRejected.feedback[]
 
 
 @dataclass
@@ -41,6 +48,10 @@ class StateProjection:
     executions: dict[str, ExecutionView] = field(default_factory=dict)
     issue_executions: dict[str, list[str]] = field(default_factory=dict)
     issue_base_commit: dict[str, str] = field(default_factory=dict)  # IssueActivated
+    issue_depends_on: dict[str, list[str]] = field(default_factory=dict)  # IssueCreated
+    # Static issue reference text (IssueCreated) for the context pack. Excluded
+    # from digest() — it is deterministic reference data, not state identity.
+    issue_meta: dict[str, dict] = field(default_factory=dict)
     last_event_id: int = 0
     counts: dict[str, int] = field(default_factory=dict)
 
@@ -70,17 +81,41 @@ class StateProjection:
     def attempts(self, issue_id: str) -> int:
         return len(self.issue_executions.get(issue_id) or [])
 
+    def deps_met(self, issue_id: str) -> bool:
+        """True iff every dependency of ``issue_id`` is DONE (idle-row guard,
+        doc 03 §5 'deps (if any) DONE'). Unknown deps count as unmet."""
+        return all(
+            self.issues.get(dep) is IssueState.DONE
+            for dep in self.issue_depends_on.get(issue_id, [])
+        )
+
+    def reviewer_feedback_categories(self, issue_id: str) -> list[str]:
+        """Reviewer-feedback categories across this issue's executions, in
+        order. Doc 02 §2 dedupe rule: a category appearing twice means the loop
+        will not converge → escalate. Reviewer categories ONLY — repeated
+        validation taxonomies are normal retry fodder, so they are not here."""
+        cats: list[str] = []
+        for xid in self.issue_executions.get(issue_id, []):
+            for fb in self.executions[xid].feedback:
+                c = fb.get("category") if isinstance(fb, dict) else None
+                if c:
+                    cats.append(c)
+        return cats
+
     def digest(self) -> str:
         canon = {
             "issues": {k: v.value for k, v in sorted(self.issues.items())},
             "executions": {
                 k: [v.issue_id, v.state.value, v.commit_intended,
                     v.commit_created, v.base_commit, v.end_commit,
-                    v.intent_end_commit, v.intent_target_branch]
+                    v.intent_end_commit, v.intent_target_branch,
+                    v.validated_commit, v.reviewed_commit, v.taxonomy_category,
+                    v.feedback]
                 for k, v in sorted(self.executions.items())
             },
             "issue_executions": dict(sorted(self.issue_executions.items())),
             "issue_base_commit": dict(sorted(self.issue_base_commit.items())),
+            "issue_depends_on": dict(sorted(self.issue_depends_on.items())),
             "last_event_id": self.last_event_id,
             "counts": dict(sorted(self.counts.items())),
         }
@@ -101,6 +136,14 @@ def _issue_created(p: StateProjection, ev: Event) -> None:
     if iid in p.issues:
         raise TransitionError(f"duplicate IssueCreated for {iid} (event {ev.event_id})")
     p.issues[iid] = IssueState.PENDING
+    deps = ev.payload.get("depends_on") or []
+    if deps:
+        p.issue_depends_on[iid] = list(deps)
+    p.issue_meta[iid] = {
+        "title": ev.payload.get("title", ""),
+        "body": ev.payload.get("body", ""),
+        "acceptance_criteria": ev.payload.get("acceptance_criteria") or [],
+    }
 
 
 def _issue_transition(p: StateProjection, ev: Event) -> None:
@@ -156,6 +199,19 @@ def _execution_transition(p: StateProjection, ev: Event) -> None:
     view.state = fn(ev.payload)
     if ev.type is EventType.EXECUTION_FINISHED:
         view.end_commit = ev.payload.get("end_commit")
+        if ev.payload.get("outcome") == "REJECTED":
+            view.taxonomy_category = ev.payload.get("taxonomy_category")
+    elif ev.type is EventType.EXECUTION_CRASHED:
+        view.taxonomy_category = ev.payload.get("last_known_state") or "crashed"
+    elif ev.type is EventType.VALIDATION_PASSED:
+        view.validated_commit = ev.payload.get("validated_commit")
+    elif ev.type is EventType.VALIDATION_FAILED:
+        view.taxonomy_category = ev.payload.get("taxonomy_category")
+    elif ev.type is EventType.REVIEW_APPROVED:
+        view.reviewed_commit = ev.payload.get("reviewed_commit")
+    elif ev.type is EventType.REVIEW_REJECTED:
+        view.taxonomy_category = ev.payload.get("taxonomy_category")
+        view.feedback = list(ev.payload.get("feedback") or [])
 
 
 def _commit_intent(p: StateProjection, ev: Event) -> None:

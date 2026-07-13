@@ -79,17 +79,58 @@ _SUBSCRIPTION_STRIP = (
     "CLAUDE_CODE_USE_VERTEX",
 )
 
-# doc 02 §3: worktree read/write only, no network push, no credential access.
-# "acceptEdits" auto-accepts file edit tool calls without a TTY prompt (-p mode
-# has none to show); in -p mode a disallowed tool is recorded as a
-# permission_denial rather than blocking, so a denied tool never hangs to the
-# timeout. A precise --allowedTools allowlist (which of Bash/Edit/Write/... the
-# task actually needs) is deliberately NOT set here: it depends on the target
-# repo's validation commands (config.project.validation.commands), which the
-# engine never reads (doc 09 §7 — no config beyond config.engine). That
-# allowlist is the orchestrator's job when it builds the prompt/context pack
-# (doc 02 §5) and belongs to the session that implements it, not this one.
+# "acceptEdits" auto-accepts file-edit tool calls without a TTY prompt (-p mode
+# has none to show). It does NOT act as a fence — see _DENY_TOOLS below.
 _DEFAULT_PERMISSION_MODE = "acceptEdits"
+
+# ─────────────────────── ADR-21: the engine fence ───────────────────────
+# PROBE-VERIFIED against claude 2.1.207 (Windows, subscription, 2026-07-12 —
+# re-pin on upgrade). The Session-4 forward-pointer assumed --allowedTools would
+# fence the engine and that a disallowed tool records a `permission_denial`
+# rather than running. BOTH are FALSE and were falsified empirically:
+#   * --allowedTools does NOT restrict. In -p mode a tool matching neither an
+#     allow nor a deny rule RUNS. `--allowedTools Read` still let Bash run
+#     `whoami`; `--allowedTools "Bash(echo:*)"` still let `whoami` run. True
+#     under both --permission-mode default AND acceptEdits.
+#   * The ONLY working fence is the DENYLIST (--disallowedTools / settings
+#     `deny`). It is enforced, SELECTIVE at the Bash(cmd:*) pattern level
+#     (`Bash(curl:*)` denies curl while `echo hello` still runs), and
+#     CHAINING-RESISTANT (`echo ok && curl ...` is denied by `Bash(curl:*)`).
+#   * Detection signal: a denied *pattern* populates result.permission_denials
+#     AND yields a tool_result is_error; a whole-tool removal
+#     (`--disallowedTools Bash`) yields only the tool_result is_error with
+#     permission_denials EMPTY. Transcript-based auditing must key on BOTH. The
+#     transcript is advisory only (ADR-07) — nothing here gates a transition.
+#
+# We pass the WHOLE fence EXPLICITLY so it is self-contained: it does not rely
+# on the operator's ambient ~/.claude/settings.json (explicit + ambient compose;
+# deny always wins; a masking ambient `allow` cannot re-enable a denied tool).
+#
+# doc 02 §3 asks for "no network push, no credential access". With Bash present
+# that is STRUCTURALLY UNCLOSABLE (a shell can read a local file and egress via
+# curl/python), so ADR-21 accepts the residual and fences EGRESS + DESTRUCTION +
+# PUSH + RECURSIVE-SPAWN instead. Compensating controls: no push path, egress
+# tools denied, the engine never touches git (Bash(git:*) — also enforces
+# ADR-07), reconciler check 3, the supervised Phase-2 run, and ADR-20's
+# safe-to-experiment target. Every entry uses the PROVEN one-word `Bash(cmd:*)`
+# colon form (or a whole-tool name) — no unprobed pattern shape is relied on.
+_DENY_TOOLS = (
+    # first-class network / sub-agent-escape tools (whole-tool removal)
+    "WebFetch", "WebSearch", "Task",
+    # network egress via the shell
+    "Bash(curl:*)", "Bash(curl.exe:*)", "Bash(wget:*)", "Bash(wget.exe:*)",
+    "Bash(ssh:*)", "Bash(scp:*)", "Bash(sftp:*)", "Bash(nc:*)", "Bash(telnet:*)",
+    "Bash(powershell:*)", "Bash(pwsh:*)",
+    "Bash(Invoke-WebRequest:*)", "Bash(iwr:*)",
+    # git is the orchestrator's alone (ADR-07); deny the whole CLI, which also
+    # closes the push path
+    "Bash(git:*)",
+    # destruction / privilege escalation
+    "Bash(rm:*)", "Bash(sudo:*)", "Bash(chmod:*)",
+    # block a recursive engine spawn (a child claude would re-bill and escape
+    # this fence)
+    "Bash(claude:*)", "Bash(claude.exe:*)", "Bash(npx:*)",
+)
 
 
 class EngineError(RuntimeError):
@@ -176,12 +217,17 @@ class ClaudeHeadlessEngine:
     def _command(self, prompt_file: Path) -> list[str]:
         """The claude argv. Overridable in tests to substitute a dummy child.
         The prompt is delivered on stdin, so ``prompt_file`` is unused by the
-        default command (a test dummy may consume it)."""
+        default command (a test dummy may consume it). Carries the ADR-21 fence
+        (``--disallowedTools _DENY_TOOLS``) — the sole working restriction on the
+        engine, self-contained (no reliance on ambient settings)."""
         argv = [
             self._claude_exe, "-p",
             "--output-format", "stream-json", "--verbose",
             "--no-session-persistence",
             "--permission-mode", _DEFAULT_PERMISSION_MODE,
+            # variadic flag: consumes tokens until the next "--flag", so it must
+            # precede --model (which follows and re-anchors the parser).
+            "--disallowedTools", *_DENY_TOOLS,
         ]
         if self.cfg.model and self.cfg.model != "default":
             argv += ["--model", self.cfg.model]
