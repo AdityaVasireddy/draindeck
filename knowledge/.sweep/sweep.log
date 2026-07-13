@@ -1,2 +1,6 @@
 2026-07-11 18:29:09 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-11.md (4 auto cases, 13 turns, 76ed0640-32e6-477c-bbf5-27318bb0b376)
 2026-07-11 18:29:10 [SessionEnd] OK committed
+2026-07-12 09:24:25 [SessionEnd] FAIL output not a day file (starts: 'Day file for `issue-') — queued in pending.log
+2026-07-12 21:19:04 [SessionEnd] FAIL output not a day file (reason=no-front-matter bytes=297 lines=1 bare-dashes=0 head='I need permission to write the file — please approve the write, and I'll proceed. The output content itself is ready (day file with 6 CASE blocks covering the ADR-21 fence redesign, detection signal') — raw preserved at C:/Projects/issue-runtime/knowledge/.sweep/failed/2026-07-12-192fd380-303f-4dff-9f40-18be3dc49e84.raw.md — queued in pending.log
+2026-07-12 22:54:18 [distill-retry] OK wrote knowledge/issue-runtime/2026-07-12.md base (6 auto cases, 19 turns, 2d5157cf-0991-4d65-b771-d3afac77fcc0) — manually re-swept by /distill step -1 (headless model call was unavailable)
+2026-07-12 22:54:19 [distill-retry] OK appended knowledge/issue-runtime/2026-07-12.md Session 2 (6 auto cases, 17 turns, 192fd380-303f-4dff-9f40-18be3dc49e84) — manually re-swept by /distill step -1
