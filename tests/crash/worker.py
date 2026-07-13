@@ -50,19 +50,45 @@ from runtime.recovery.reconciler import recover               # noqa: E402
 from runtime.repo.git_adapter import GitCliAdapter            # noqa: E402
 from runtime.state.model import ExecutionState, IssueState    # noqa: E402
 
-ISSUES = ["042", "043", "044"]
+ISSUES = ["042", "043", "044", "045"]
 CAP = 8            # generous: injected crashes may burn several attempts
+# Per-issue cap override (Session 6): 045 is capped at 2 so that two scripted
+# validation failures exhaust it and the spawn guard escalates it to
+# NEEDS_HUMAN — the deterministic source of the after_append:IssueEscalated
+# crash window. Default stays CAP for every other issue.
+CAP_BY_ISSUE = {"045": 2}
 RUN_ID = "run-harness"
 TRUNK = "trunk"    # deliberately not 'main' — proves nothing hardcodes it
 WORK = "work"
 
 # Scripted deterministic rejections (Session 5): the reject path must be
 # crash-durable too. 043 fails VALIDATION on attempt 1, 044 fails REVIEW on
-# attempt 1; each passes on attempt 2, so every issue still reaches DONE (I-c
+# attempt 1; each passes on attempt 2, so those issues still reach DONE (I-c
 # holds) while exercising the after_append:ValidationFailed /
 # after_append:ReviewRejected crash windows and check 3's post-reject reset.
-VAL_FAIL = {"043": 1}      # {issue: attempt_number}
+# Session 6: 045 fails VALIDATION on attempts 1 AND 2 → capped at 2 → escalates
+# to NEEDS_HUMAN (never DONE, never committed). Values are sets of attempt nos.
+VAL_FAIL = {"043": frozenset({1}), "045": frozenset({1, 2})}
 REV_REJECT = {"044": 1}
+
+
+def _cap(issue: str) -> int:
+    return CAP_BY_ISSUE.get(issue, CAP)
+
+
+# The terminal state each issue is scripted to reach. 042/043/044 ship (DONE);
+# 045 is capped-out and escalates (NEEDS_HUMAN). "Complete" = every issue at its
+# expected terminal, NOT every issue DONE — a run that leaves 045 escalated is a
+# clean exit (0), not an error, so restart_until_done accepts it.
+EXPECTED_TERMINAL = {
+    "042": IssueState.DONE,
+    "043": IssueState.DONE,
+    "044": IssueState.DONE,
+    "045": IssueState.NEEDS_HUMAN,
+}
+_TERMINAL_STATES = (
+    IssueState.DONE, IssueState.NEEDS_HUMAN, IssueState.NEEDS_DECOMPOSITION,
+)
 
 
 def _attempt_no(execution_id: str) -> int:
@@ -117,7 +143,7 @@ def step(log: EventLog, proj: StateProjection, adapter: GitCliAdapter,
     ex = proj.latest_execution(issue)
 
     if ex is None or ex.state in (ExecutionState.REJECTED, ExecutionState.CRASHED):
-        if proj.attempts(issue) >= CAP:
+        if proj.attempts(issue) >= _cap(issue):
             emit(log, Event(EventType.ISSUE_ESCALATED, issue_id=issue, run_id=RUN_ID,
                             payload={"reason": "cap", "taxonomy_category": "cap-hit"}))
             return
@@ -149,7 +175,21 @@ def step(log: EventLog, proj: StateProjection, adapter: GitCliAdapter,
         return
 
     if ex.state is ExecutionState.VALIDATING:
-        if VAL_FAIL.get(issue) == _attempt_no(ex.execution_id):
+        # Validation writes a cache byproduct, then cleans it up. A kill at
+        # validate:post-artifact leaves the tree dirty (untracked valcache) with
+        # the execution still VALIDATING. In PRODUCTION this crash relies on
+        # recovery check 3 (_expected_commit returns end_commit for VALIDATING) to
+        # reset the tree before _validate re-runs. This HARNESS worker, however,
+        # blanket-resets at every EXECUTING entry and re-unlinks the valcache
+        # here, so the point proves loop-level survival to the correct terminal —
+        # it does NOT isolate check-3's reset (doc 14 §1.3-1.5, deferred item R1).
+        # No ExecutionCrashed is emitted (resumable, not orphaned), so this point
+        # is deliberately NOT in the harness RESIDUE_POINTS.
+        valcache = adapter.repo_path / f"valcache-{ex.execution_id}.tmp"
+        valcache.write_text("validation byproduct\n")
+        crash_point("validate:post-artifact")
+        valcache.unlink()
+        if _attempt_no(ex.execution_id) in VAL_FAIL.get(issue, frozenset()):
             emit(log, Event(EventType.VALIDATION_FAILED, issue_id=issue,
                             execution_id=ex.execution_id, run_id=RUN_ID,
                             payload={"validated_commit": ex.end_commit,
@@ -224,15 +264,13 @@ def main() -> int:
     proj, _report = recover(log, **bind_reconciler(adapter, TRUNK))
 
     for issue in ISSUES:
-        while proj.issues.get(issue) not in (
-            IssueState.DONE, IssueState.NEEDS_HUMAN, IssueState.NEEDS_DECOMPOSITION
-        ):
+        while proj.issues.get(issue) not in _TERMINAL_STATES:
             step(log, proj, adapter, issue)
             # Re-derive from the log each step (replay, not memory-trust):
             # deliberately expensive-honest for the harness.
             proj = StateProjection().rebuild(log.replay())
 
-    ok = all(proj.issues.get(i) is IssueState.DONE for i in ISSUES)
+    ok = all(proj.issues.get(i) is EXPECTED_TERMINAL[i] for i in ISSUES)
     return 0 if ok else 2
 
 

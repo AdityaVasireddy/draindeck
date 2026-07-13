@@ -81,8 +81,18 @@ from runtime.repo.git_adapter import GitCliAdapter          # noqa: E402
 from runtime.state.model import ExecutionState, IssueState  # noqa: E402
 
 WORKER = Path(__file__).with_name("worker.py")
-ISSUES = ["042", "043", "044"]
+ISSUES = ["042", "043", "044", "045"]
 TRUNK = "trunk"
+
+# The terminal state each issue is scripted to reach (must mirror
+# worker.EXPECTED_TERMINAL — the two files are decoupled by design, worker runs
+# in its own process). 045 is capped-out and escalates; it never ships.
+EXPECTED_TERMINAL = {
+    "042": IssueState.DONE,
+    "043": IssueState.DONE,
+    "044": IssueState.DONE,
+    "045": IssueState.NEEDS_HUMAN,
+}
 
 CRASH_POINTS = [
     "after_append:IssueCreated",
@@ -93,6 +103,9 @@ CRASH_POINTS = [
     "engine:post-snapshot",          # committed residue, ref not set (b5)
     "engine:post-attempt-ref",       # ref set, Finished not appended (b6)
     "after_append:ExecutionFinished",
+    "validate:post-artifact",        # tree dirtied mid-validate (loop-level
+                                     # survival; does NOT isolate check-3 reset —
+                                     # see doc 14 §1.3-1.5 / deferred item R1)
     "after_append:ValidationFailed",   # reject fact durable; check 3 resets (043)
     "after_append:ValidationPassed",
     "after_append:ReviewRejected",     # reject fact durable; check 3 resets (044)
@@ -103,6 +116,7 @@ CRASH_POINTS = [
     "git:merge:post-update-ref",     # trunk moved, CommitCreated not appended (c3)
     "after_append:CommitCreated",
     "after_append:IssueCompleted",
+    "after_append:IssueEscalated",   # cap-hit escalation durable; 045 → NEEDS_HUMAN
 ]
 
 # Points at which the worktree was provably dirty (or a residue commit
@@ -179,12 +193,13 @@ def verify(base: Path, scenario: str, crash_point: str | None = None) -> None:
     assert p1.digest() == p2.digest(), f"{scenario}: replay not deterministic"  # I-b
 
     for i in ISSUES:                                         # I-c
-        assert p1.issues.get(i) is IssueState.DONE, \
-            f"{scenario}: issue {i} is {p1.issues.get(i)}, not DONE"
+        assert p1.issues.get(i) is EXPECTED_TERMINAL[i], \
+            f"{scenario}: issue {i} is {p1.issues.get(i)}, not {EXPECTED_TERMINAL[i]}"
 
     # ── log-level pairing / counting (I-d, I-g, I-h) ─────────────────
     created: dict[str, int] = {}
     created_merge: dict[str, str] = {}
+    escalated: dict[str, int] = {}
     spawned_pid: dict[str, int] = {}
     intent_seen: set[str] = set()
     finished_end: dict[str, str] = {}
@@ -192,6 +207,8 @@ def verify(base: Path, scenario: str, crash_point: str | None = None) -> None:
     for ev in events:
         if ev.type is EventType.EXECUTION_SPAWNED:
             spawned_pid[ev.execution_id] = ev.payload.get("pid")
+        if ev.type is EventType.ISSUE_ESCALATED:
+            escalated[ev.issue_id] = escalated.get(ev.issue_id, 0) + 1
         if ev.type in (EventType.EXECUTION_FINISHED, EventType.EXECUTION_CRASHED):
             assert ev.execution_id in spawned_pid, \
                 f"{scenario}: {ev.type.value} (event {ev.event_id}) precedes its intent"  # I-g
@@ -210,8 +227,17 @@ def verify(base: Path, scenario: str, crash_point: str | None = None) -> None:
             created[ev.issue_id] = created.get(ev.issue_id, 0) + 1
             created_merge[ev.issue_id] = ev.payload.get("merge_commit")
     for i in ISSUES:                                         # I-d
-        assert created.get(i) == 1, \
-            f"{scenario}: issue {i} has {created.get(i, 0)} CommitCreated events"
+        want = 1 if EXPECTED_TERMINAL[i] is IssueState.DONE else 0
+        assert created.get(i, 0) == want, \
+            f"{scenario}: issue {i} has {created.get(i, 0)} CommitCreated events (want {want})"
+
+    # Session 6: a capped-out issue escalates EXACTLY ONCE — a durable
+    # IssueEscalated makes the issue terminal, so a crash-restart never re-runs
+    # it (spawn guard idempotent from replay). Shipping issues never escalate.
+    for i in ISSUES:
+        want = 0 if EXPECTED_TERMINAL[i] is IssueState.DONE else 1
+        assert escalated.get(i, 0) == want, \
+            f"{scenario}: issue {i} has {escalated.get(i, 0)} IssueEscalated events (want {want})"
 
     # ── execution terminal-consistency (I-e) ─────────────────────────
     accepted_by_issue: dict[str, str] = {}
@@ -226,7 +252,12 @@ def verify(base: Path, scenario: str, crash_point: str | None = None) -> None:
             assert x.state in (ExecutionState.REJECTED, ExecutionState.CRASHED), \
                 f"{scenario}: execution {x.execution_id} left in {x.state.value}"
     for i in ISSUES:
-        assert i in accepted_by_issue, f"{scenario}: issue {i} has no accepted execution"
+        if EXPECTED_TERMINAL[i] is IssueState.DONE:
+            assert i in accepted_by_issue, f"{scenario}: issue {i} has no accepted execution"
+        else:
+            assert i not in accepted_by_issue, \
+                f"{scenario}: escalated issue {i} has accepted execution " \
+                f"{accepted_by_issue.get(i)}"
 
     # ── I-i: evidence exists ─────────────────────────────────────────
     for xid, end in finished_end.items():
@@ -245,6 +276,8 @@ def verify(base: Path, scenario: str, crash_point: str | None = None) -> None:
 
     # ── I-j / I-l: exactly-once merge + join-key integrity ───────────
     for i in ISSUES:
+        if EXPECTED_TERMINAL[i] is not IssueState.DONE:
+            continue  # escalated issue never merges (no accepted execution)
         acc = accepted_by_issue[i]
         end = finished_end[acc]
         mc = adapter.find_merge_commit(TRUNK, end)
