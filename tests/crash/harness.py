@@ -431,6 +431,84 @@ def run_engine_orphan_fixture(root: Path) -> int:
     return 1
 
 
+def run_reset_fixture(root: Path) -> int:
+    """f5 (R1, docs/14 SS1.5): prove check-3's reset_hard actually restores a
+    clean, correct worktree from a mid-VALIDATING dirty tree, WITHOUT the
+    worker loop in the picture. Every CRASH_POINTS scenario runs inside
+    worker.py, whose blanket reset_hard(base) at the next EXECUTING entry
+    masks whatever the reconciler's own reset did (or didn't do) -- so no
+    existing scenario can isolate this property, deterministically or
+    otherwise. f5 sidesteps the worker entirely (direct recover() call, f4's
+    pattern) so there is structurally no masking reset to hide behind.
+
+    Scope: this proves reconciler-path healing of the VALIDATING dirty-tree
+    state in isolation. It says nothing about what a live process does mid-
+    abort (a real kill hitting the running loop is a different code path --
+    the loop + OS signal handling -- that this fixture never exercises)."""
+    from runtime.events.schema import Event                 # noqa: PLC0415
+    from runtime.recovery.bindings import bind_reconciler    # noqa: PLC0415
+    from runtime.recovery.reconciler import recover          # noqa: PLC0415
+
+    base = fresh_scenario(root, "fixture[f5-reset]")
+    repo = base / "repo"
+    iid, xid = "042", "042-e1"
+
+    base_commit = _git(repo, "rev-parse", TRUNK)
+    log = EventLog(base / "events.jsonl")
+    for ev in (
+        Event(EventType.ISSUE_CREATED, issue_id=iid, run_id="run-f5",
+              payload={"source": "f5", "title": "reset-proof"}),
+        Event(EventType.ISSUE_ACTIVATED, issue_id=iid,
+              payload={"base_commit": base_commit}),
+        Event(EventType.EXECUTION_SPAWNED, issue_id=iid, execution_id=xid,
+              run_id="run-f5",
+              payload={"spawn_reason": "initial", "engine": "claude-headless",
+                       "pid": os.getpid()}),
+    ):
+        log.append(ev)
+
+    # A real commit on 'work' to serve as end_commit -- the "clean at
+    # end_commit" assertion below must be meaningful, not log fiction.
+    (repo / "validated.txt").write_text("validated artifact")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "validated artifact")
+    end_commit = _git(repo, "rev-parse", "HEAD")
+
+    log.append(Event(EventType.EXECUTION_FINISHED, issue_id=iid,
+                      execution_id=xid,
+                      payload={"end_commit": end_commit, "pid": os.getpid()}))
+
+    adapter = GitCliAdapter(repo)
+    adapter.set_attempt_ref(iid, xid, end_commit)
+    adapter.checkout_branch("work")  # already there, clean -- confirms idempotent
+
+    # Dirty the worktree exactly as a mid-VALIDATING crash would leave it.
+    (repo / "planted.txt").write_text("dirty at crash")
+
+    proj, report = recover(log, **bind_reconciler(adapter, TRUNK))
+    log.close()
+
+    assert "dirty_workspace" in report.checks_run, \
+        "f5: check_dirty_workspace did not run (seam not bound?)"
+    assert not adapter.is_dirty(), \
+        "f5: worktree still dirty after recover() -- check-3 reset did not run"
+    assert adapter.current_commit() == end_commit, \
+        f"f5: worktree at {adapter.current_commit()[:12]}, " \
+        f"not pinned end_commit {end_commit[:12]} -- check-3 reset landed wrong"
+
+    refs = adapter.list_attempt_refs(iid)
+    assert refs.get(f"{adapter.ns}/{iid}/{xid}") == end_commit, \
+        f"f5: execution attempt ref regressed: {refs}"
+    residue_refs = {k: v for k, v in refs.items() if k != f"{adapter.ns}/{iid}/{xid}"}
+    assert residue_refs, \
+        "f5: no reconciler residue ref -- dirty tree was reset without archiving"
+    assert all(v != end_commit for v in residue_refs.values()), \
+        f"f5: residue ref points at end_commit, not the dirtied residue: {residue_refs}"
+
+    print("PASS fixture[f5-reset]")
+    return 1
+
+
 def run_fixtures(root: Path) -> int:
     """Planted-state scenarios that a timed kill cannot produce (docs/11
     §3.4). f3 (check-2 tamper) is covered by unit test
@@ -460,6 +538,9 @@ def run_fixtures(root: Path) -> int:
 
     # f4 (I-n): engine-orphan reaping at startup. Skips if claude is absent.
     passed += run_engine_orphan_fixture(root)
+
+    # f5 (R1, docs/14 SS1.5): check-3 reset proof, worker-loop bypassed.
+    passed += run_reset_fixture(root)
 
     return passed
 
