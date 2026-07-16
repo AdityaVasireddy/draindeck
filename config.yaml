@@ -33,7 +33,7 @@ experiment:                      # ADR-19 — do not edit after run begins
 billing:                         # checklist A1 record
   posture: pro_subscription_headless
   headless_split_status: paused
-  verified_on: '2026-07-10'
+  verified_on: '2026-07-16'
   reverify_at: phase-2-gate
 event_log:
   path: state/events.jsonl

@@ -198,10 +198,116 @@ assumed answered by f5.
 
 ---
 
-## Steps 2–5 — NOT STARTED
+## Step 2 — Preflight: 2a billing re-verify + 2b fence re-probe — COMPLETE (VERIFIED 2026-07-16)
 
-Preflight (2), gated live smoke (3), supervised StockAgent runs (4), wrap (5) are
-the resume point. Preflight opens with **2a billing re-verification**
-(`billing.reverify_at: phase-2-gate`, last verified 2026-07-10) and **2b engine
-version pin + fence re-probe** (`claude --version`; ADR-21 is pinned to 2.1.207).
-See the plan for the full ordered contract, user-gated items, and the model split.
+Plan: `~/.claude/plans/floating-napping-pelican.md` (user-gated twice: six
+external-review amendments before execution, four more before C2–C4). Probe
+budget: 4 planned live runs used, 0 re-runs (ceiling was 7). Proxy costs:
+C1 $0.4026, C2 $0.2218, C3 $0.1973, C4 $0.3637. Probe workspaces p1–p4
+verified EMPTY immediately before each spawn; the six `_SUBSCRIPTION_STRIP`
+vars confirmed unset in the same shell instance as every spawn.
+
+### 2.1 — 2a billing / execution-provider re-verification (ADR-18)
+
+| Claim | Status | Evidence (this session) |
+|---|---|---|
+| Billing mode: no API-key/gateway routing | **VERIFIED** | All six strip vars unset per-spawn; `apiKeySource:"none"` on ALL FOUR live runs, incl. the production-path C4 (whose in-band `EngineEnvError` check passed) |
+| Which pool is billed (Pro subscription) | **INFERRED** | Policy (Help Center) + `apiKeySource:"none"`. No probe on this machine can observe the billing ledger directly |
+| Headless split status | **VERIFIED (policy level)** | Help Center art. 15036540 fetched 2026-07-16, same June 15 banner verbatim: "nothing has changed: Claude Agent SDK, `claude -p`, and third-party app usage still draw from your subscription's usage limits"; the monthly credit "isn't available." `headless_split_status: paused` stands |
+| Auth token readability | **VERIFIED** | `~/.claude/.credentials.json` exists (504 B, `rw-r--r--`) and a field-filtered read SUCCEEDED (user-authorized; first attempt was blocked by this session's own permission classifier — a session-layer control, not an OS one, so it does not weaken the doc 12 residual: a spawned engine child has no such classifier on plain `cat`) |
+| Session lifetime | **VERIFIED as timestamp; refresh INFERRED** | `claudeAiOauth.expiresAt = 1784232058801` → 2026-07-16T20:00:58Z (short-lived access token). That the CLI refreshes it transparently is inferred from continued operation, never observed |
+| doc 02 §3 "no credential access" | **Confirmed unchanged (A4)** | ADR-21 accepted-deviation text (doc 08 §5b) and doc 12's Session-5 correction note both intact; not re-litigated |
+| ADR-09 proxy-cost feed | **VERIFIED** | `total_cost_usd`, `usage{input,output}_tokens`, `num_turns` all present and parsed on 2.1.211 (C4 via production `_parse_result`) |
+
+`config.yaml → billing.verified_on` moved to `'2026-07-16'`.
+
+### 2.2 — 2b engine version + fence re-probe (ADR-21)
+
+**Version: `claude` 2.1.211 — OFF the 2.1.207 pin.** All findings below are
+re-derived by observation at 2.1.211; nothing carried forward.
+
+- **C1 (hand-built argv mirror, full `_DENY_TOOLS`): PASS, exact match with
+  ADR-21.** All three exact command strings present as `tool_use` blocks (no
+  vacuity). Allowed `echo` ran (`is_error:false`, marker file created) →
+  selective. `git init` denied (`is_error:true` + listed in
+  `permission_denials`; no `.git`). Chain `echo start > chain-marker.txt &&
+  git init` denied whole (`is_error:true` + in `permission_denials`; NEITHER
+  artifact created) → **chaining resistance holds; the pre-named row-3 mixed
+  outcome (chain-marker present, `.git` absent) did NOT occur.** Pattern-deny
+  detection signals unchanged: BOTH `permission_denials` AND `tool_result
+  is_error`.
+- **C2 (`--allowedTools Read`, no denies): ADR-21 finding HOLDS at 2.1.211 —
+  `--allowedTools` still does not restrict.** Transcript-primary
+  classification: `tool_use` with the exact absolute-path echo present, no
+  denial signal, `permission_denials:[]`, file created.
+- **C3 (whole-tool removal, `--disallowedTools WebFetch`): enforcement holds;
+  DETECTION SIGNAL CHANGED.** At 2.1.211 a whole-tool deny removes the tool
+  from the session's init `tools` manifest entirely — the model never
+  attempts it (num_turns 1, "unavailable", `permission_denials:[]`, no
+  tool_result at all). The 2.1.207 signal (tool_result `is_error` with empty
+  denials) is moot when nothing is attempted. Controlled cross-check: C1's
+  manifest (denying Task/WebFetch/WebSearch) lacked exactly those three;
+  C3's (denying WebFetch only) retained Task and WebSearch. **Transcript
+  auditing note: for whole-tool denies, key on manifest ABSENCE in the init
+  line, not on error signals.** Enforcement is structurally stronger, not
+  weaker; per the plan's pre-commitment C3's load-bearing claim was "no
+  execution," which held.
+- **C4 (production `ClaudeHeadlessEngine.run()`, deny exercised on the
+  production path): PASS on all pre-committed criteria.** `c4-marker.txt`
+  created, `.git` ABSENT, exact `git init` `tool_use` present with
+  `is_error:true` + `permission_denials` entry — deny enforced through the
+  production code path, not just the hand-built mirror. `_parse_result`
+  green on 2.1.211 (usage/dollars/num_turns non-None); no `EngineEnvError`.
+- **Spawned argv:** the recorder wrapping `subprocess.Popen` was overwritten
+  by a later internal `subprocess.run` (tasklist pid-image check — run() uses
+  Popen internally), so the literal spawn-site argv is
+  **INFERRED-from-code-reading** per the pre-committed fallback. Supplements:
+  (a) zero-cost in-process capture of the same `_command()` builder run()
+  passes to Popen — full 23-entry deny list, `claude.CMD` resolved path,
+  documented flag order; (b) the behavioral witness above (production child
+  denied `git init`) proves the fence flags reached the child regardless.
+- **Flag surface at 2.1.211:** `--max-turns` still ABSENT (grep count 0) —
+  **Steps 3–4 continue with no hard turn budget; post-hoc proxy cost per
+  ADR-19 only** (wall-clock timeout remains the hard backstop). New flags
+  observed: `--tools`, `--agents`, `--bg` — **observation only**; adopting
+  any of them (e.g. `--tools` as a stronger fence) is ADR territory and
+  would put an unprobed mechanism under a load-bearing invariant.
+- **Decision matrix outcome: row 2 WITH A CAVEAT.** Deny enforcement,
+  selectivity, chaining resistance, and `--allowedTools` non-restriction are
+  IDENTICAL → comment-only re-pin in `claude_headless.py` docstrings (2.1.211,
+  2026-07-16) + this record. BUT the whole-tool-removal detection mechanism
+  CHANGED (manifest drop; §2.2 C3) → **ADR-21 amendment note QUEUED (decision
+  for Adi)**, not resolved this session. Gate for the comment-only re-pin per
+  the pre-committed src/ rule: 103-unit suite + diff review confirming zero
+  non-comment lines changed.
+
+### 2.3 — NEW FINDING: ambient user config writes into engine-child cwd (Step-3 BLOCKER)
+
+Unrequested `knowledge/` trees (`.gitignore`, `.sweep/sweep.log`,
+`capture-rules.md` — the operator's engineering-historian hook/skill vault
+bootstrap) appeared in probe cwds: **p1 YES (C1), p2 no (C2), p3 YES (C3),
+p4 YES — the PRODUCTION `run()` path (C4)**. The writes never appear as
+`tool_use` blocks in any transcript (the hook runs outside the model's tool
+stream), so the pre-committed amendment-4 noise guard was not needed — and
+transcript auditing cannot see these writes at all.
+
+Consequences, recorded verbatim:
+- Every production engine run against a real repo would dirty the target
+  tree → `is_dirty()` / reconciler check 3 trips on every run → the Step-3
+  smoke becomes a guaranteed false failure at best, and at worst masks real
+  dirty-tree signals behind expected noise. **An ADR-level decision
+  (sanitized settings / hook suppression / other) is required BEFORE any
+  engine run touches a real repo.** No fix was attempted this session.
+- Scope caveat on 2.2: all fence results are "CLI 2.1.211 **plus this
+  machine's ambient user config**," not bare CLI. This does not weaken the
+  fence claims (denied patterns were denied regardless), but it is the
+  honest scope.
+- Retroactively explains the modified `knowledge/.sweep/sweep.log` in this
+  repo's own git status (ambient sweep activity, not runtime work).
+
+---
+
+## Steps 3–5 — NOT STARTED
+
+Gated live smoke (3) is **BLOCKED on the §2.3 ADR decision** in addition to
+its own preconditions. Supervised StockAgent runs (4) and wrap (5) follow.

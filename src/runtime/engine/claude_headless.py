@@ -9,7 +9,9 @@ in the diff. This wrapper therefore never touches git and never appends events
 recovery/bindings.py and the orchestrator) owns every git contact, and doc 03
 §5 owns every event.
 
-VERIFIED CLI contract (claude 2.1.207, Windows, 2026-07-11 — re-pin on upgrade):
+VERIFIED CLI contract (claude 2.1.207, Windows, 2026-07-11; re-verified at
+2.1.211 on 2026-07-16 — see the ADR-21 fence block below and doc 14 §2 —
+re-pin on upgrade):
   * argv: ``claude -p --output-format stream-json --verbose
     --no-session-persistence`` (+ ``--model`` when != "default", + permission
     scoping). ``--verbose`` is REQUIRED for stream-json in print mode. The
@@ -84,8 +86,16 @@ _SUBSCRIPTION_STRIP = (
 _DEFAULT_PERMISSION_MODE = "acceptEdits"
 
 # ─────────────────────── ADR-21: the engine fence ───────────────────────
-# PROBE-VERIFIED against claude 2.1.207 (Windows, subscription, 2026-07-12 —
-# re-pin on upgrade). The Session-4 forward-pointer assumed --allowedTools would
+# PROBE-VERIFIED against claude 2.1.207 (Windows, subscription, 2026-07-12).
+# RE-VERIFIED at 2.1.211 (2026-07-16, doc 14 §2): deny enforcement, selectivity,
+# chaining resistance, and --allowedTools non-restriction IDENTICAL (C1/C2/C4).
+# Whole-tool-removal enforcement MECHANISM CHANGED at 2.1.211 — a denied whole
+# tool is dropped from the session init `tools` manifest, so the model never
+# attempts it: no tool_use, no is_error, no permission_denials entry (was:
+# tool_result is_error with permission_denials EMPTY at 2.1.207; the
+# Detection-signal note below now describes 2.1.207 only). ADR-21 amendment
+# note pending. Re-pin on upgrade.
+# The Session-4 forward-pointer assumed --allowedTools would
 # fence the engine and that a disallowed tool records a `permission_denial`
 # rather than running. BOTH are FALSE and were falsified empirically:
 #   * --allowedTools does NOT restrict. In -p mode a tool matching neither an
@@ -96,10 +106,13 @@ _DEFAULT_PERMISSION_MODE = "acceptEdits"
 #     `deny`). It is enforced, SELECTIVE at the Bash(cmd:*) pattern level
 #     (`Bash(curl:*)` denies curl while `echo hello` still runs), and
 #     CHAINING-RESISTANT (`echo ok && curl ...` is denied by `Bash(curl:*)`).
-#   * Detection signal: a denied *pattern* populates result.permission_denials
-#     AND yields a tool_result is_error; a whole-tool removal
-#     (`--disallowedTools Bash`) yields only the tool_result is_error with
-#     permission_denials EMPTY. Transcript-based auditing must key on BOTH. The
+#   * Detection signal (2.1.207): a denied *pattern* populates
+#     result.permission_denials AND yields a tool_result is_error; a whole-tool
+#     removal (`--disallowedTools Bash`) yields only the tool_result is_error
+#     with permission_denials EMPTY. [2.1.207 ONLY — at 2.1.211 a denied whole
+#     tool is dropped from the session init manifest and is never attempted
+#     (C3, 2026-07-16); audit whole-tool denies by manifest ABSENCE. See header
+#     + doc 14 §2.] Transcript-based auditing must key on BOTH. The
 #     transcript is advisory only (ADR-07) — nothing here gates a transition.
 #
 # We pass the WHOLE fence EXPLICITLY so it is self-contained: it does not rely

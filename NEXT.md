@@ -1,9 +1,42 @@
 # NEXT
 
 ## Resume point
-Session 6 Steps 0, 1, and R1 complete AND verified on Windows. Next up: Step 2
-preflight (2a billing re-verification, 2b engine-version/fence re-probe) — see
-"Session 6 (per doc 07 — PHASE 2 GATE)" below. Full detail in doc 14.
+Session 6 Steps 0, 1, R1, AND Step 2 preflight (2a + 2b) complete and verified
+on Windows (2026-07-16). Full detail in doc 14 §2. Next up: **Step 3 (gated
+live smoke) is BLOCKED** — see the two queued items below before any engine
+run touches a real repo.
+
+**Step 2 outcome (doc 14 §2):**
+- **2a billing** — split still PAUSED (Help Center art. 15036540, re-fetched
+  2026-07-16); `apiKeySource:"none"` on all 4 live runs; `config.yaml →
+  billing.verified_on` bumped to `'2026-07-16'`. Billed-pool remains INFERRED.
+- **2b fence** — `claude` upgraded to **2.1.211** (off the 2.1.207 pin). Fence
+  re-derived live: deny enforced/selective/chaining-resistant (C1), production
+  path denies too (C4), `--allowedTools` still non-restricting (C2). Decision
+  matrix → row 2 (comment-only re-pin, landed in `claude_headless.py`;
+  103-unit gate + zero-non-comment-line diff review passed).
+
+**BLOCKERS / queued decisions for Adi (both require an ADR before Step 3):**
+1. **`knowledge/`-contamination — Step-3 blocker.** Ambient user config (the
+   engineering-historian hook/skill vault) writes an unrequested `knowledge/`
+   tree into the engine-child cwd on the PRODUCTION `run()` path (observed in
+   p1/p3/p4; p2 clean). Against a real repo this dirties the tree every run →
+   `is_dirty()`/reconciler check 3 trips → the smoke is a guaranteed false
+   failure and can mask real dirty-tree signals. Needs an ADR decision
+   (sanitized settings / hook suppression / other) BEFORE any engine run
+   touches a real repo. No fix attempted this session.
+2. **ADR-21 amendment note** — the whole-tool-removal DETECTION MECHANISM
+   changed at 2.1.211 (denied tool dropped from the init `tools` manifest; no
+   tool_use/is_error/denial — was: is_error + empty denials at 2.1.207).
+   Enforcement is unchanged (stronger, if anything), so this is a
+   documentation/auditing amendment, not a fence break; docstrings already
+   flag it "amendment note pending."
+   **Forward consequence (for Step 4 ADR-19 metric capture / any future audit
+   logic):** after 2.1.211 a whole-tool denial is NO LONGER observable from
+   the result stream — there is no attempt, no `is_error`, and no
+   `permission_denials` entry. The only evidence is the init `tools` manifest
+   captured at spawn. Any "was a tool denied this run" signal must key on
+   manifest ABSENCE, never on a result-stream signal that no longer exists.
 
 **Session 6 so far:**
 - **Step 0** (baseline re-verify) — COMPLETE. 103/103 unit, 55/55 harness
@@ -81,13 +114,15 @@ Drive the FIRST supervised issues against StockAgent, watched, not walked away
 from (doc 07 Session 6). Concretely:
 - ~~Harness follow-up: add the two deferred crash points~~ — DONE (Step 1).
 - ~~Prove check-3 reset (R1 / fixture f5)~~ — DONE.
-- **Next: Step 2 preflight**, opening with **2a billing re-verification**
-  (`billing.reverify_at: phase-2-gate`, last verified 2026-07-10) and **2b
-  engine-version/fence re-probe** (`claude --version`; ADR-21 pinned to
-  2.1.207) — per the plan's ordered contract (doc 14 §Steps 2-5).
-- Then the **gated live smoke**: one issue end-to-end on a scratch repo with
+- ~~Step 2 preflight (2a billing re-verify + 2b engine-version/fence re-probe)~~
+  — DONE (2026-07-16, doc 14 §2; `claude` now 2.1.211). See the Resume-point
+  BLOCKERS above.
+- **Next: gated live smoke — BLOCKED** on the `knowledge/`-contamination ADR
+  decision (Resume-point item 1). One issue end-to-end on a scratch repo with
   the real engine + real QwenOllamaReviewer (Session-4-style, zero cost on
-  failure), spot-checking one `_DENY_TOOLS` pattern live.
+  failure), spot-checking one `_DENY_TOOLS` pattern live — cannot run until the
+  ambient-hook workspace contamination is resolved, or the tree dirties every
+  run and the smoke false-fails.
 - Then 5 real StockAgent issues, supervised; record cost + outcomes; expect to
   revise the context pack (first contact with reality always does).
 - `--allowedTools`/settings hardening is a non-goal (ADR-21 settled the fence);
