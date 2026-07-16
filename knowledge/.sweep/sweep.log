@@ -19,3 +19,10 @@ Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/.ssh/**) i
 Permission deny rule (C:\Users\adity\.claude\settings.json): Write(.github/workflows/*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.github/workflows/*) instead (Edit rules cover all file-editing tools).
 2026-07-16 08:14:21 [SessionEnd] OK nothing capture-worthy (1 turns, 27488B, 594a1cef-ec06-4dd1-8668-bdcb397ebf59)
 2026-07-16 08:14:21 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-16.md (2 auto cases, 6 turns, 822142B, e8509ef6-852d-4c79-bce1-b06e83000675)
+2026-07-16 08:14:21 [SessionEnd] OK committed
+2026-07-16 15:22:15 [SessionEnd] GATE run: transcript 1392588B >= 50000B [turns=19 bytes=1392588] (54d463e8-b611-4d4b-b2c3-fc61f308baf5)
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/.env*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/secrets/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/secrets/**) instead (Edit rules cover all file-editing tools).
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/.ssh/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.ssh/**) instead (Edit rules cover all file-editing tools).
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(.github/workflows/*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.github/workflows/*) instead (Edit rules cover all file-editing tools).
+2026-07-16 15:23:53 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-16.md (3 auto cases, 19 turns, 1392588B, 54d463e8-b611-4d4b-b2c3-fc61f308baf5)
