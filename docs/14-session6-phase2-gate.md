@@ -57,6 +57,9 @@ fixtures + 1 control. **59/59 on seed 42 AND seed 1337**, plus filtered
 single-point runs of both new points green. `after_append:IssueEscalated:2`
 correctly "ran clean (point fired <2x)" — only one escalation ever fires.
 
+Post-R1 (§1.5): adding fixture f5 → **60** = 40 det + 15 rand + 4 fixtures
+(f1/f2/f4/f5) + 1 control. **60/60 on seed 42 AND seed 1337.**
+
 ### 1.3 Coverage boundary — the three checks (the load-bearing finding)
 
 The plan proposed proving the extended harness "still bites" by gutting check 3's
@@ -124,34 +127,74 @@ replay. Mutation fully reverted (`git diff src/` empty).
   "joint coverage" to celebrate; it is a real harness/production fidelity gap that
   predates Step 1 (it affects f1/f2 identically).
 
-### 1.5 The reset-proof gap — named deferral + proposed close
-Check 3's reset (the reconciler returning the worktree to the log's pinned
-expectation) is a **load-bearing recovery property production depends on**, yet is
-unproven by the harness. Recommendation (same standard as the original two crash
-points — an explicit, named deferral, not a silent drop):
+### 1.5 The reset-proof gap — CLOSED (VERIFIED 2026-07-15) via fixture `f5`
 
-> **Deferred item R1 — prove check-3 reset via a planted fixture `f5`.** Model it
-> on `f4`'s direct-`recover()` pattern (no worker loop, so no masking): plant a log
-> with one execution left in VALIDATING (`ExecutionFinished` with `end_commit`, no
-> Validation event) and an attempt ref at `end_commit`; check out the work branch at
-> `end_commit`; dirty the worktree with an untracked file; call `recover(...)` with
-> `bind_reconciler`; assert the worktree is **clean at `end_commit`** afterward and
-> the residue was archived to a reconciler ref. This directly exercises
-> `_expected_commit`'s VALIDATING branch + check 3's `reset_hard`, and a gutted
-> reset would then turn `f5` red. Small (~30 lines), faithful, stays within
-> `harness.py`. Proposed for the next harness pass; **not** bundled into the Step-1
-> commit, which is scoped to exactly the two deferred crash points.
+Before scheduling the fix, a cheap trace (no new fixture) answered the
+prerequisite question: when `checkout_branch(create_from=base)` refuses on a
+dirty tree in production, what happens end to end? **Traced result: it is a
+safe wedge, not a corruption risk.** `is_dirty()` (`git_adapter.py:108-110`,
+a pure `git status --porcelain` query) is checked before either mutating
+`checkout` call, and the raise fires strictly before any ref/index mutation
+(`git_adapter.py:165-174`). `RepoError` is never caught in `loop.py` or
+`main.py` — it propagates uncaught, the process crashes before any event is
+emitted, so the log never diverges from the world. Recovery always runs
+before the orchestrator loop starts (`main.py` step 7 vs step 10), so this
+raise cannot race the reconciler's own dirty-tree handling within one
+process lifetime. Worst case: a live-tree wedge needing a restart or manual
+`git status`/cleanup — never silent corruption, never a wrong-branch
+operation. This confirmed the gap was real but non-urgent from a corruption
+standpoint; it was closed anyway, on the same "before Step 2 preflight"
+sequencing logic that put Step 1 ahead of Step 2.
 
-Rationale for deferring rather than closing in this commit: (a) it is a
-**pre-existing** gap, not introduced by Step 1 — bundling its fix would misrepresent
-what Step 1 is; (b) the user's instruction scoped today's commit to the two
-crash-point files and explicitly sanctioned a named deferral with rationale; (c)
-the fix is fully specified above, so the deferral is concrete, not vague.
+**Fixture `f5-reset`** (`tests/crash/harness.py::run_reset_fixture`) closes
+R1 as specified: modeled on `f4`'s direct-`recover()` pattern (no worker
+loop, so structurally no masking reset can run — the worker process never
+exists in this fixture, not merely "doesn't fire this time"). It plants a
+log with one execution left in VALIDATING (`ExecutionFinished` with
+`end_commit`, no `Validation*` event) and an attempt ref at `end_commit`,
+checks out `work` at `end_commit`, dirties the tree with an untracked file,
+calls `recover(...)` via `bind_reconciler`, and asserts the worktree is
+clean **at `end_commit`** afterward with the residue archived to a distinct
+reconciler ref.
+
+**Isolated mutation spot-check (VERIFIED):** gutting `reset_hard` inside
+`check_dirty_workspace` (`bindings.py:102`) and running **f5 alone** (a
+temporary direct-call entry point, not the full harness) turned it red —
+specifically on the fixture's own `current_commit() == end_commit` assertion
+(`AssertionError: f5: worktree at 620586e4fd33, not pinned end_commit
+e6322d368b7f`). Notably, f5's `is_dirty()` assertion still passed under the
+mutation — check 3's own `snapshot_commit` archive step leaves the tree
+clean at the *residue* commit even with `reset_hard` gutted, exactly the
+masking mechanism §1.3 describes. f5 catches the gap specifically because it
+pins the *commit identity*, not just cleanliness. Mutation reverted; `git
+diff src/` confirmed empty before committing the fixture.
+
+**Scope of what f5 proves — read narrowly.** f5 proves reconciler-path
+healing of the VALIDATING dirty-tree state **in isolation from the worker
+loop**: given a log frozen at VALIDATING with a dirty tree, `recover()`
+restores the pinned commit and archives the residue. It does **not** prove
+anything about a live process mid-abort — the running loop plus OS signal
+handling is a different code path that f5 never exercises (f5 calls
+`recover()` directly; no loop, no subprocess, no signal ever involved). Do
+**not** read this as "the VALIDATING abort path is covered" or as "joint
+coverage" with `validate:post-artifact` — that language is exactly what §1.4
+already ruled out for the two original crash points, and the same discipline
+applies here.
+
+**Still open:** does a live Ctrl+C during VALIDATING only ever produce log/
+tree states within f5's coverage — i.e. does the loop, wherever an external
+kill actually lands mid-`_validate`, always leave behind a state
+`_expected_commit`'s VALIDATING branch can heal the same way f5's planted
+log does? Or can a live kill produce some intermediate state (e.g. mid-git-
+operation) that f5's synthetic log doesn't model? This is unresolved and is
+the natural follow-up when Step 4's abort-protocol claim ("worst-case kill
+is exactly what the harness proves") is next revisited — it should not be
+assumed answered by f5.
 
 ### 1.6 Verify commands (updated)
 - Unit: `python -m pytest tests\unit -q` — expect **103**.
-- Durability gate: `python tests\crash\harness.py %TEMP%\ch` — expect **59**
-  (seed 42; `... %TEMP%\ch 1337` also 59; `... %TEMP%\ch 42 <point>` filters).
+- Durability gate: `python tests\crash\harness.py %TEMP%\ch` — expect **60**
+  (seed 42; `... %TEMP%\ch 1337` also 60; `... %TEMP%\ch 42 <point>` filters).
 
 ---
 
