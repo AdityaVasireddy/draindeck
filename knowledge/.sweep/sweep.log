@@ -39,3 +39,10 @@ Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/secrets/**
 Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/.ssh/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.ssh/**) instead (Edit rules cover all file-editing tools).
 Permission deny rule (C:\Users\adity\.claude\settings.json): Write(.github/workflows/*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.github/workflows/*) instead (Edit rules cover all file-editing tools).
 2026-07-16 23:04:18 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-16.md (9 auto cases, 13 turns, 974262B, c02d29b7-982b-41b3-8c13-e8b559087412)
+2026-07-16 23:04:18 [SessionEnd] OK committed
+2026-07-17 09:42:29 [SessionEnd] GATE run: transcript 804812B >= 50000B [turns=12 bytes=804812] (ea508942-54ff-469a-bf0b-a3aefffa18e2)
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/.env*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.env*) instead (Edit rules cover all file-editing tools).
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/secrets/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/secrets/**) instead (Edit rules cover all file-editing tools).
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(**/.ssh/**) is not matched by file permission checks — only Edit(path) rules are. Use Edit(**/.ssh/**) instead (Edit rules cover all file-editing tools).
+Permission deny rule (C:\Users\adity\.claude\settings.json): Write(.github/workflows/*) is not matched by file permission checks — only Edit(path) rules are. Use Edit(.github/workflows/*) instead (Edit rules cover all file-editing tools).
+2026-07-17 09:43:24 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-17.md (6 auto cases, 12 turns, 804812B, ea508942-54ff-469a-bf0b-a3aefffa18e2)
