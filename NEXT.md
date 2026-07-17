@@ -1,5 +1,17 @@
 # NEXT
 
+## STANDING TICKLE — check on every `claude` CLI version bump
+**ADR-22 B-layer sunset (`engine.child_env.HISTORIAN_SWEEP_ACTIVE`,
+`config.yaml`).** B is removable once A-empty (`--setting-sources ""`) has
+survived one clean CLI-upgrade cycle with the doc 14 §2.4 probes re-run
+green (control still contaminates; `--setting-sources ""` still `rc=0`,
+still clean at 450 s, `apiKeySource` unchanged). **On the next `claude`
+version bump, before anything else: re-run those probes, and if they pass,
+remove `HISTORIAN_SWEEP_ACTIVE` from `config.yaml → engine.child_env` and
+strike the B layer from doc 08 §5c as sunset-fulfilled.** A sunset condition
+gated on a future event with nothing pointing at it tends to silently outlive
+its own rationale — this line exists so it doesn't. (Session 8, 2026-07-16/17.)
+
 ## Resume point
 Session 8 (2026-07-16/17): ADR-22 marked **Accepted** (doc 08 §5c) and its
 mechanism **landed and verified** — see below. NEXT.md item 1 (the
@@ -57,13 +69,21 @@ ADR-22 Accepted AND mechanism probe-verified. Both true as of this session.
 
 **Step 3's OWN separate preconditions — still UNCONFIRMED, must be checked
 before Step 3 runs (unrelated to ADR-22):**
-0. **Live end-to-end re-witness of the ADR-22 argv (new, from this session's
-   review):** a single live run of `ClaudeHeadlessEngine.run()` against the
-   real `claude` binary, with the child-side settings-scope behavior directly
-   observed, to close the residual gap between the Python-side live-spawn
-   witness (this session, dummy child) and the CLI-side probe (§2.4, hand-
-   built argv). This is cheap to fold into whatever Step-3-preflight
-   smoke run happens first — no separate session needed, just don't skip it.
+0. **GATE, not a checklist line — live end-to-end re-witness of the ADR-22
+   argv, through `ClaudeHeadlessEngine.run()` against the real `claude`
+   binary, is a hard precondition on Step 3's live smoke, not an optional
+   preflight nicety.** Reason: this session's evidence covers the Python-side
+   handoff (live spawn, dummy child) and the CLI-side interpretation (§2.4,
+   hand-built argv) as two *separate* legs — never composed into one real run
+   through the production `_command()` → `Popen` → real `claude` path. If
+   that composed path ever mangles the empty `--setting-sources` token in a
+   way neither isolated leg predicted, **the smoke is the place that would
+   catch it** — so this check must run and be observed to pass BEFORE the
+   smoke is judged to have validated anything else, not treated as background
+   noise it's fine to skip if the smoke otherwise looks clean. Concretely:
+   confirm no `knowledge/` contamination appears in the smoke's scratch/target
+   cwd, exactly as the §2.4 probes checked, but this time via the real
+   engine wrapper end to end.
 1. `project.validation.commands` in `config.yaml` still has the placeholder
    `'<StockAgent test command — REQUIRED before first run>'` — a real
    validation command has not been confirmed.
