@@ -212,6 +212,13 @@ class ClaudeHeadlessEngine:
         startup-check-then-drift window). Subscription mode strips the full
         billing/routing set; api_key mode fails fast if the key is absent."""
         env = dict(os.environ)
+        # ADR-22 (B layer, sunset per doc 08 §5c): config-driven child-env vars
+        # (engine.child_env — e.g. HISTORIAN_SWEEP_ACTIVE=1, the historian
+        # hook's own recursion guard) merged AFTER the base env build and
+        # BEFORE the ADR-18 strip, so the strip is applied LAST and always
+        # wins: a child_env key that collides with a strip-list entry ends up
+        # stripped, never present.
+        env.update(self.cfg.child_env)
         if self.cfg.auth_mode == "subscription":
             for var in _SUBSCRIPTION_STRIP:
                 env.pop(var, None)
@@ -234,12 +241,25 @@ class ClaudeHeadlessEngine:
         The prompt is delivered on stdin, so ``prompt_file`` is unused by the
         default command (a test dummy may consume it). Carries the ADR-21 fence
         (``--disallowedTools _DENY_TOOLS``) — the sole working restriction on the
-        engine, self-contained (no reliance on ambient settings)."""
+        engine, self-contained (no reliance on ambient settings) — and the
+        ADR-22 A-empty settings isolation (``--setting-sources ""``)."""
         argv = [
             self._claude_exe, "-p",
             "--output-format", "stream-json", "--verbose",
             "--no-session-persistence",
             "--permission-mode", _DEFAULT_PERMISSION_MODE,
+            # ADR-22 (A-empty): the EMPTY value loads NO settings scopes, so the
+            # operator's user-scope hooks (which write an unrequested knowledge/
+            # tree into the child cwd — the target repo — and would trip
+            # reconciler check 3 every run) never load in engine children.
+            # "project,local" was rejected: it still loads project/local scope
+            # from the child cwd, a cross-run injection vector. Probe-verified
+            # at 2.1.211 (doc 14 §2.4 Probes 2/3: rc=0, clean 450 s,
+            # apiKeySource unchanged, fence intact). The empty token MUST stay a
+            # distinct argv element (list-form spawn only — never shell-join).
+            # Joins the upgrade re-pin discipline: re-witness per ADR-22 on any
+            # CLI version bump.
+            "--setting-sources", "",
             # variadic flag: consumes tokens until the next "--flag", so it must
             # precede --model (which follows and re-anchors the parser).
             "--disallowedTools", *_DENY_TOOLS,

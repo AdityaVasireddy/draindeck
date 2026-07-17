@@ -47,6 +47,11 @@ class EngineCfg(_Frozen):
     model: str = "default"
     max_turns: int = Field(gt=0, default=30)
     timeout_seconds: int = Field(gt=0, default=1800)
+    # ADR-22 (B layer): extra vars merged into the engine child env by
+    # _hygienic_env(). Machine-specific names (e.g. HISTORIAN_SWEEP_ACTIVE)
+    # live HERE, in config — src/ stays generic. The ADR-18 strip is applied
+    # after the merge and always wins. Sunset condition in doc 08 §5c.
+    child_env: dict[str, str] = Field(default_factory=dict)
 
 
 class QwenCfg(_Frozen):

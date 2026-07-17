@@ -16,6 +16,10 @@ engine:
   model: default
   max_turns: 30
   timeout_seconds: 1800
+  child_env:                     # ADR-22 B layer (belt-and-braces beside the
+    HISTORIAN_SWEEP_ACTIVE: '1'  # argv --setting-sources ""); sunset after one
+                                 # clean CLI-upgrade cycle with the A-empty
+                                 # re-pin probes green (doc 08 §5c)
 reviewer:
   provider: qwen                 # ADR-05: qwen | claude
   qwen:

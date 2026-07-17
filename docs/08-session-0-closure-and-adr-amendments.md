@@ -122,7 +122,7 @@ Enforcement is unchanged; this is a documentation/auditing amendment, not a fenc
 
 ## 5c. ADR-22 — Engine-child ambient-hook isolation (contamination of the engine cwd)
 
-**Status: PROPOSED (Session 7, 2026-07-16).** No mechanism lands until Adi selects an option and this ADR is marked Accepted. Blocks Step 3 (gated live smoke).
+**Status: ACCEPTED (2026-07-16, Session 8).** Decision gated by external review; endorsed selection: **Option A-empty + Option B (config-driven), B under a sunset condition** — recorded precisely in "Accepted decision" below. Originally PROPOSED Session 7, 2026-07-16. Step 3 unblocks on this acceptance plus the landed mechanism.
 
 **Context — the finding.** Every `claude -p` child the engine spawns writes an unrequested `knowledge/` tree (`.gitignore` 8 B, `capture-rules.md` 684 B, `.sweep/`, an empty project dir) into its cwd. The cause is the operator's **user-scope** `~/.claude/settings.json`, which registers `SessionEnd`/`PreCompact` hooks running `~/.claude/historian/historian-sweep.sh` (the engineering-historian vault bootstrap). User-scope settings load in every `claude` process on this machine, including engine children — this is global config, not a skill auto-load and not parent-session inheritance (VERIFIED, doc 14 §2.3 + §2.4). The hook's `run_pipeline()` does the `mkdir`/seed writes **before** its own triviality gate, so the write happens even though the engine passes `--no-session-persistence` (no transcript ⇒ the sweep then stops at "SKIP no transcript"; the model call and its `history(auto):` auto-commit never fire *on the engine path today* — but would if `--no-session-persistence` were ever dropped, which is strictly worse: an unwitnessed commit into the target repo).
 
@@ -153,8 +153,23 @@ The sweep writes the vault bootstrap *before* checking a transcript exists; movi
 ### Recommendation
 **A-empty as the durable fix; B (config-driven) as an immediate belt-and-braces layer; D as optional operator hygiene; C rejected.** The two mechanisms compose (deny-in-depth). **B is removable once A has survived one CLI upgrade cycle with the §2.4 probes re-run green — recorded as a sunset condition, not a permanent layer.** If a future upgrade shows `--setting-sources` unreliable in `-p` mode, fall back to B alone and record A's falsification here (mirroring the ADR-21 allowlist precedent).
 
+### Accepted decision (2026-07-16, Session 8 — gated by external review)
+
+The endorsed selection is **Option A-empty + Option B (config-driven), B under a sunset condition**:
+
+- **A-empty — `--setting-sources ""` appended to the engine argv.** Preferred over A-projlocal because the empty value loads **NO settings scopes at all**, whereas `project,local` would still load project/local scope **from the child cwd — i.e. the target repo** — leaving a cross-run config-injection/persistence vector (a `.claude/settings.json` planted in a target repo would load on the next run). Witnessed in doc 14 §2.4 Probe 2: CLI accepts the empty value (rc=0), clean through the full 450 s poll, `apiKeySource` unchanged from the `"none"` baseline; fence intact under it (Probe 3).
+- **B — `HISTORIAN_SWEEP_ACTIVE=1` merged into the child env via config (`engine.child_env`).** The machine-specific variable name lives in **config only**; `src/` stays generic (a `child_env` dict merged in `_hygienic_env()`, with the ADR-18 strip list applied last and always winning). **Sunset condition:** B is removable after one clean CLI-upgrade cycle in which the A-empty re-pin probes (below) pass.
+- **C — rejected** (as drafted above: masks real signals, weakens the I1 clean-base guarantee).
+- **D — optional operator hygiene** (separate repo, handled independently; as drafted above — never a fence the runtime depends on).
+
+**Upgrade re-pin discipline (binding).** `--setting-sources ""` joins the existing upgrade re-pin discipline. On any `claude` CLI version bump, **before the engine runs against a real repo**, re-witness in scratch:
+1. a Probe-0-style **control** (no suppression) still shows contamination — the vacuity guard proving the probe can detect the failure mode;
+2. a Probe-2-style run with `--setting-sources ""` is still **accepted (rc=0)**, still **CLEAN at WAIT=450 s**, and `apiKeySource` still matches the baseline.
+
+The witnessed procedure is doc 14 §2.4; re-run it as written.
+
 ### Gate chain before any mechanism lands (none of this happens while Status = Proposed)
-Probes passed (done, §2.4) → **Adi selects an option** → ADR-22 marked Accepted → mechanism lands in `src/`/`config.yaml` (with new tests if `engine.child_env` is added) → Step 3 unblocks. `src/` changes are legitimate only as the implementation of an Accepted ADR.
+Probes passed (done, §2.4) → **Adi selects an option** → ADR-22 marked Accepted → mechanism lands in `src/`/`config.yaml` (with new tests if `engine.child_env` is added) → Step 3 unblocks. `src/` changes are legitimate only as the implementation of an Accepted ADR. *(Gate satisfied Session 8: acceptance recorded above; mechanism landing recorded in doc 14 §2.5.)*
 
 ---
 

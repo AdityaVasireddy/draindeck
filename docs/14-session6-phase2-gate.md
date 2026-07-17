@@ -393,7 +393,154 @@ the fence survives the empty A-form. No deviation, nothing adopted this session
 
 ---
 
+### 2.5 — ADR-22 mechanism landed (Session 8, 2026-07-16/17; see per-claim labels below — not a blanket VERIFIED)
+
+ADR-22 marked Accepted (doc 08 §5c): **A-empty + B, B under a sunset
+condition.** Mechanism landed in `src/` and `config.yaml`, no re-probe needed
+this session (the §2.4 probes above already cover both live candidates; this
+session is a straight code-landing of the already-verified mechanism).
+
+**Code changes.**
+- `src/runtime/engine/claude_headless.py::_command()` — appends
+  `"--setting-sources", ""` to the engine argv, before the variadic
+  `--disallowedTools` fence, with a comment citing ADR-22.
+- `src/runtime/config.py::EngineCfg` — new field `child_env: dict[str, str]`
+  (default `{}`) — machine-specific var names live in config, never in `src/`.
+- `src/runtime/engine/claude_headless.py::_hygienic_env()` — merges
+  `cfg.child_env` into the child env immediately after the base `os.environ`
+  copy and **before** the ADR-18 subscription strip, so the strip is applied
+  last and always wins (a `child_env` key colliding with a strip-list entry
+  ends up stripped, never present).
+- `config.yaml` — `engine.child_env: {HISTORIAN_SWEEP_ACTIVE: "1"}`, commented
+  as the ADR-22 B layer with its sunset condition.
+
+**Argv empty-token survival to spawn — CORRECTED, jointly labeled.**
+
+An earlier draft of this section claimed "no shell-join anywhere in the path
+to `subprocess.Popen`" as the basis for a VERIFIED label. **That mechanism
+claim was wrong and has been struck.** `shell=` is indeed never passed to
+`Popen` (defaults to `False`, so there is no *cmd.exe shell* interposed), but
+on Windows `subprocess.Popen` with a list argv is **not** a direct
+`argv[]`-to-`CreateProcess` handoff: Python builds a single command-line
+string via `subprocess.list2cmdline()` (MSVCRT quoting rules), and
+`CreateProcess` hands that single string to the child, whose own CRT/runtime
+re-splits it back into an argv array. There **is** a join in the path; the
+question is whether that join-then-resplit round-trips an empty element
+faithfully. It does — `list2cmdline` renders a bare empty string as `""`
+(two double-quotes, verified live below), which the standard MSVCRT
+command-line parser (and Node's, which `claude` runs under) re-splits back to
+an empty string. This is evidence *for* survival, but by a different and more
+specific mechanism than originally stated, so the label is corrected to match
+what was actually shown, split into its two independent legs:
+
+1. **Python-side handoff (production argv → spawned child's real `argv[]`,
+   same OS, same Windows `Popen` mechanism as `run()`) — VERIFIED, live,
+   this session.** `ClaudeHeadlessEngine._command()` was called for real (not
+   re-implemented or mocked) via a bare-init instance; its unmodified return
+   value (everything after `argv[0]`) was spawned through a real
+   `subprocess.run()` on this Windows machine, with a Python dummy child
+   printing its own received `sys.argv`. The child's stdout: the
+   `--setting-sources`/`''` pair arrived as two adjacent elements, the second
+   an empty string, at the same position `_command()` puts it, ahead of
+   `--disallowedTools`. `subprocess.list2cmdline()` was also inspected
+   directly on the real argv tail and confirmed to render the empty token as
+   `""` rather than dropping it. This closes the Python→OS→child-process leg
+   of the path end-to-end, not just `_command()`'s return value.
+2. **CLI-side interpretation (does `claude`'s own arg parser treat `""` as
+   "load no settings scopes," and does auth/fence stay intact) — VERIFIED,
+   doc 14 §2.4 Probe 2/3, live at `claude` 2.1.211, 2026-07-16.** That probe
+   spawned a real `claude -p` process with a hand-built argv mirroring
+   `_command()`'s shape (not `_command()` itself, since it predates this
+   session's code change) and observed `rc=0` (accepted, not rejected), clean
+   at 450 s, `apiKeySource` unchanged, and the fence intact (Probe 3).
+
+Composing 1 + 2 covers the full path (`_command()` → `Popen` → OS
+join/resplit → real `claude` process → observed behavior) but **not as a
+single end-to-end run this session** — leg 1 used a Python dummy child, leg 2
+used a hand-built argv rather than a live call through `_command()`. A single
+live spawn of `ClaudeHeadlessEngine.run()` against the real `claude` binary,
+with the child-side argv or settings-scope behavior directly observed, would
+close this to one unqualified VERIFIED; that live run is queued below as a
+Step-3-preflight item (mirroring the existing Session-6 preflight discipline)
+rather than done ad hoc in this session.
+
+**Tests added (3 new, `tests/unit/test_engine_adr22.py`):**
+1. `test_command_carries_setting_sources_empty` — asserts on `_command()`'s
+   **return value only** (`argv = eng._command(...)`, then
+   `argv[i+1] == ""`, `argv[i+1:i+2] == [""]`, position before
+   `--disallowedTools`). This is list-construction-level: **VERIFIED** that
+   `_command()` builds the pair correctly; it does not itself touch `Popen`
+   (the live spawn check above supplies that leg separately).
+2. `test_child_env_merged_into_child_environment` — a `engine.child_env` entry
+   appears in `_hygienic_env()`'s built environment.
+3. `test_child_env_cannot_override_strip_list` — asserts on the **final env
+   dict returned by `_hygienic_env()`**, not on call order: places
+   `ANTHROPIC_API_KEY` (a strip-list entry) into `child_env`, then asserts
+   `"ANTHROPIC_API_KEY" not in env` on the returned dict, alongside a
+   non-colliding sibling key (`HISTORIAN_SWEEP_ACTIVE`) asserted present. This
+   is a result-shape assertion, not a structural/order assertion — it would
+   catch a future reordering that broke supremacy, not just document today's
+   order. **VERIFIED.**
+
+**Unit suite — VERIFIED.** `./.venv/Scripts/python.exe -m pytest tests/unit -q`
+→ **106 passed**, 0 failed, `.venv` python, Windows, 2026-07-16/17.
+`--collect-only` on the full suite: 106 items. `--collect-only -v` on the new
+file alone lists exactly the 3 named tests above (`test_engine_adr22.py`,
+collected 3 items) — the count is corroborated by identity, not arithmetic
+alone (106 = 103 prior + these named 3, not some other combination).
+
+**Durability gate — VERIFIED, 60/60 BOTH SEEDS, environmental deviation
+recorded.**
+
+*Environmental note (belongs here per doc 12 pattern — deviations are
+recorded, not silently worked around).* The standard invocation target
+`%TEMP%\ch` (and a first alternate, `%TEMP%\ch2`) held stale
+Windows-read-only git-object files left over from an unrelated scratch run
+dated 2026-07-11/13 (predates this session). `shutil.rmtree` inside
+`fresh_scenario()`'s calibration-repo reset failed with `PermissionError:
+[WinError 5] Access is denied` on those files before either seed's run could
+start — this happened on the **first attempt** at `%TEMP%\ch` (seed 42) and
+again on a first attempt at a second path `%TEMP%\ch3` (seed 1337, which
+turned out to also hold pre-existing stale scratch from 2026-07-11). Neither
+failure was mid-harness — both were the harness's own pre-flight
+`_calibration` reset, before any scenario ran, so **no scenario run was
+partially completed or discarded**; nothing from a failed attempt was folded
+into the reported 60/60. Read-only attributes were cleared
+(`os.chmod(path, stat.S_IWRITE)` walked over the stale tree) on that
+pre-existing, outside-the-repo, disposable scratch data — not user work, not
+part of this session's product — after which each seed ran clean to
+completion on its first full attempt post-clear.
+
+Invocations (both post-clear, first full attempt, verbatim commands and
+result lines):
+```
+$ ./.venv/Scripts/python.exe tests/crash/harness.py "$TEMP/ch2" 42
+...
+ALL 60 SCENARIOS PASSED
+
+$ ./.venv/Scripts/python.exe tests/crash/harness.py "$TEMP/ch3" 1337
+...
+ALL 60 SCENARIOS PASSED
+```
+- seed 42, `%TEMP%\ch2` → **ALL 60 SCENARIOS PASSED** (40 det + 15 rand + 4
+  fixtures f1/f2/f4/f5 + 1 control — same 60-scenario shape as Session-6 R1).
+- seed 1337, `%TEMP%\ch3` → **ALL 60 SCENARIOS PASSED**, same shape.
+
+This gate applies because `src/` logic changed this session (unlike Session
+7's comment-only diff, which explicitly did not require it).
+
+**Step 3 unblock status.** ADR-22 Accepted + mechanism landed + probe-verified
+(via §2.4, re-used) + this session's pytest/harness gates green ⇒ the
+Step-3-blocking condition from NEXT.md item 1 is satisfied. Step 3 itself is
+**UNBLOCKED but NOT started this session** — its own separate preconditions
+(real validation command, Ollama + qwen2.5-coder, authored Issues.md, green
+baseline, `.gitignore` hygiene) are unrelated to ADR-22 and remain unconfirmed;
+see NEXT.md.
+
+---
+
 ## Steps 3–5 — NOT STARTED
 
-Gated live smoke (3) is **BLOCKED on the §2.3 ADR decision** in addition to
-its own preconditions. Supervised StockAgent runs (4) and wrap (5) follow.
+Gated live smoke (3) is now **UNBLOCKED on the ADR-22 contamination question**
+(§2.5) but still gated on its own separate preconditions (see NEXT.md) — not
+started this session. Supervised StockAgent runs (4) and wrap (5) follow.

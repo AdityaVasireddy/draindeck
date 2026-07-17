@@ -1,10 +1,82 @@
 # NEXT
 
 ## Resume point
-Session 6 Steps 0, 1, R1, AND Step 2 preflight (2a + 2b) complete and verified
-on Windows (2026-07-16). Full detail in doc 14 §2. Next up: **Step 3 (gated
-live smoke) is BLOCKED** — see the two queued items below before any engine
-run touches a real repo.
+Session 8 (2026-07-16/17): ADR-22 marked **Accepted** (doc 08 §5c) and its
+mechanism **landed and verified** — see below. NEXT.md item 1 (the
+`knowledge/`-contamination Step-3 blocker) is now **CLOSED**. Item 2 (ADR-21
+Amendment) was already closed Session 7. **Step 3 (gated live smoke) is now
+UNBLOCKED on the contamination question — but NOT started, and has its own
+separate preconditions still unconfirmed** — see "Step 3 unblock criteria"
+below. Do not read "unblocked" as "ready to run."
+
+**Item 1 — CLOSED (Session 8, 2026-07-16/17).** ADR-22 Accepted: **A-empty
+(`--setting-sources ""` in the engine argv) + B
+(`HISTORIAN_SWEEP_ACTIVE=1` via `config.yaml → engine.child_env`, merged in
+`_hygienic_env()` with ADR-18 strip-list supremacy preserved), B sunsetting
+after one clean CLI-upgrade cycle.** Mechanism landed in `src/` + `config.yaml`
+(doc 14 §2.5 has the full as-built record). VERIFIED this session:
+- `pytest tests/unit -q` → **106 passed**, identity-confirmed (not just
+  arithmetic): `--collect-only` shows 106 total, and the new file collects
+  exactly the 3 named tests (`test_command_carries_setting_sources_empty`,
+  `test_child_env_merged_into_child_environment`,
+  `test_child_env_cannot_override_strip_list`).
+- `tests\crash\harness.py` → **60/60 BOTH seeds** (42 in `%TEMP%\ch2`, 1337 in
+  `%TEMP%\ch3`) — gating because `src/` logic changed. Both runs hit stale
+  Windows-read-only git-object files (unrelated 2026-07-11/13 scratch,
+  pre-existing) that blocked the harness's own pre-flight calibration reset
+  before any scenario ran; cleared (outside the repo, disposable state), then
+  each seed ran clean on its first full attempt — no partial run folded into
+  the reported 60/60. Full invocation lines + environmental note: doc 14 §2.5.
+- **Argv empty-token survival — corrected label, split into two legs (doc 14
+  §2.5 has the full writeup; an earlier draft of this note wrongly claimed
+  "no shell-join" as the reason for VERIFIED — struck, Windows `Popen` with a
+  list DOES join via `list2cmdline` before `CreateProcess`).**
+  1. **Python-side handoff — VERIFIED, live.** The real, unmodified
+     `_command()` return value was spawned through a real `subprocess.run()`
+     on this Windows machine (dummy Python child, not `claude`); the child's
+     own received `sys.argv` showed the `--setting-sources`/`''` pair as two
+     adjacent elements, empty string intact, in the right position. This is
+     not just the `_command()`-only unit test (which is list-construction
+     level only) — it's a live spawn through the actual OS mechanism.
+  2. **CLI-side interpretation — VERIFIED, doc 14 §2.4 Probe 2/3** (live
+     `claude` 2.1.211, hand-built argv predating this session's code, not a
+     call through `_command()` itself): `rc=0`, clean at 450 s, fence intact.
+  Composing 1+2 is not one single end-to-end run through
+  `ClaudeHeadlessEngine.run()` against the real `claude` binary; that closes
+  the residual gap and is queued as a Step-3-preflight item below (Session-6
+  preflight discipline), not done ad hoc this session.
+- Strip-list supremacy — VERIFIED by a result-shape assertion (asserts on the
+  final env dict `_hygienic_env()` returns, not on call order): a
+  `child_env` key colliding with an ADR-18 strip-list entry does not survive
+  into the built env; a non-colliding sibling key does.
+- HEAD unchanged this session — no commit made (standing rule); nothing
+  staged.
+
+**Step 3 unblock criteria (from NEXT.md's earlier wording) — SATISFIED:**
+ADR-22 Accepted AND mechanism probe-verified. Both true as of this session.
+
+**Step 3's OWN separate preconditions — still UNCONFIRMED, must be checked
+before Step 3 runs (unrelated to ADR-22):**
+0. **Live end-to-end re-witness of the ADR-22 argv (new, from this session's
+   review):** a single live run of `ClaudeHeadlessEngine.run()` against the
+   real `claude` binary, with the child-side settings-scope behavior directly
+   observed, to close the residual gap between the Python-side live-spawn
+   witness (this session, dummy child) and the CLI-side probe (§2.4, hand-
+   built argv). This is cheap to fold into whatever Step-3-preflight
+   smoke run happens first — no separate session needed, just don't skip it.
+1. `project.validation.commands` in `config.yaml` still has the placeholder
+   `'<StockAgent test command — REQUIRED before first run>'` — a real
+   validation command has not been confirmed.
+2. Ollama running with `qwen2.5-coder` pulled — not verified this session.
+3. `Issues.md` authored in StockAgent in the `## <id>: <title>` format — not
+   done.
+4. Baseline green on StockAgent's `agent-work` branch — not re-verified this
+   session.
+5. StockAgent `.gitignore` hygiene (covers build/test byproducts) — not
+   re-verified this session.
+
+**Do NOT mark Step 3 planned or begin planning it — out of scope for Session
+8, explicitly.**
 
 **Step 2 outcome (doc 14 §2):**
 - **2a billing** — split still PAUSED (Help Center art. 15036540, re-fetched
@@ -16,30 +88,16 @@ run touches a real repo.
   matrix → row 2 (comment-only re-pin, landed in `claude_headless.py`;
   103-unit gate + zero-non-comment-line diff review passed).
 
-**BLOCKERS / queued decisions for Adi (both require an ADR before Step 3):**
-1. **`knowledge/`-contamination — Step-3 blocker. Mechanism finding COMPLETE;
-   ADR-22 drafted as PROPOSED (doc 08 §5c); awaiting Adi's option selection.**
-   Mechanism (VERIFIED, Session 7): the operator's **user-scope**
+**BLOCKERS / queued decisions (history — both now closed):**
+1. **`knowledge/`-contamination — CLOSED (Session 8, 2026-07-16/17).** ADR-22
+   Accepted and its mechanism landed + verified — see the Resume-point section
+   above and doc 14 §2.5 for the full as-built record. (Prior Session-7 finding
+   retained here for history: the operator's **user-scope**
    `~/.claude/settings.json` registers `SessionEnd`/`PreCompact` hooks
    (`~/.claude/historian/historian-sweep.sh`) that load in every `claude`
    process on this machine — engine children included — and write the
    `knowledge/` vault bootstrap into the child cwd *before* the hook's own gate.
-   Not a skill auto-load, not parent inheritance. Contamination is **4/4**
-   across the Step-2 probes (doc 14 §2.3 correction note; the earlier "p2 clean"
-   was an async-hook race). Against a real repo it dirties the tree every run →
-   `is_dirty()`/check 3 trips → guaranteed false failure, can mask real signals;
-   the hook is async and can land AFTER `run()`/`reset_hard`, so only
-   prevention-at-source is deterministic.
-   **Probe matrix run this session (doc 14 §2.4, ceiling 5, 0 re-runs, 0
-   deviations):** control contaminates at 4 s; `--setting-sources ""` (A-empty,
-   PREFERRED), `--setting-sources project,local` (A-projlocal), and
-   `HISTORIAN_SWEEP_ACTIVE=1` (B) all clean for 450 s with `apiKeySource=none`
-   unchanged; fence intact under A-empty.
-   **DECISION FOR ADI:** pick the ADR-22 option (recommendation: A-empty durable
-   + B belt-and-braces, B sunset after one clean CLI-upgrade cycle; C rejected;
-   D optional operator hygiene). No mechanism landed — Status = Proposed.
-   **Step 3 unblock criteria: ADR-22 marked Accepted AND the adopted mechanism
-   probe-verified (the §2.4 probes already cover A-empty/A-projlocal/B).**
+   Contamination was 4/4 across the Step-2 probes, doc 14 §2.3.)
 2. **ADR-21 amendment note — CLOSED (Session 7, 2026-07-16).** Landed as
    **ADR-21 Amendment 1** in doc 08 §5b; `claude_headless.py` comment pointers
    updated (comment-only diff, 103-unit suite green); doc 14 §2.2 + new §2.4
@@ -114,7 +172,7 @@ Verified THIS session (Windows, `claude` 2.1.207, `.venv` python):
   `ClaudeHeadlessEngine.run()` tree-kill run (A3 confirmed).
 
 ## Verify commands (updated)
-- Unit: `python -m pytest tests\unit -q`  (expect 103)
+- Unit: `python -m pytest tests\unit -q`  (expect 106)
 - Durability gate: `python tests\crash\harness.py %TEMP%\ch`  (expect 60;
   minutes. `... %TEMP%\ch 1337` also 60. `... %TEMP%\ch 42 <point>` filters to
   one crash point.) Use the `.venv` python — the system Python on this
