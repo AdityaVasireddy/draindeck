@@ -17,26 +17,51 @@ run touches a real repo.
   103-unit gate + zero-non-comment-line diff review passed).
 
 **BLOCKERS / queued decisions for Adi (both require an ADR before Step 3):**
-1. **`knowledge/`-contamination — Step-3 blocker.** Ambient user config (the
-   engineering-historian hook/skill vault) writes an unrequested `knowledge/`
-   tree into the engine-child cwd on the PRODUCTION `run()` path (observed in
-   p1/p3/p4; p2 clean). Against a real repo this dirties the tree every run →
-   `is_dirty()`/reconciler check 3 trips → the smoke is a guaranteed false
-   failure and can mask real dirty-tree signals. Needs an ADR decision
-   (sanitized settings / hook suppression / other) BEFORE any engine run
-   touches a real repo. No fix attempted this session.
-2. **ADR-21 amendment note** — the whole-tool-removal DETECTION MECHANISM
-   changed at 2.1.211 (denied tool dropped from the init `tools` manifest; no
-   tool_use/is_error/denial — was: is_error + empty denials at 2.1.207).
-   Enforcement is unchanged (stronger, if anything), so this is a
-   documentation/auditing amendment, not a fence break; docstrings already
-   flag it "amendment note pending."
+1. **`knowledge/`-contamination — Step-3 blocker. Mechanism finding COMPLETE;
+   ADR-22 drafted as PROPOSED (doc 08 §5c); awaiting Adi's option selection.**
+   Mechanism (VERIFIED, Session 7): the operator's **user-scope**
+   `~/.claude/settings.json` registers `SessionEnd`/`PreCompact` hooks
+   (`~/.claude/historian/historian-sweep.sh`) that load in every `claude`
+   process on this machine — engine children included — and write the
+   `knowledge/` vault bootstrap into the child cwd *before* the hook's own gate.
+   Not a skill auto-load, not parent inheritance. Contamination is **4/4**
+   across the Step-2 probes (doc 14 §2.3 correction note; the earlier "p2 clean"
+   was an async-hook race). Against a real repo it dirties the tree every run →
+   `is_dirty()`/check 3 trips → guaranteed false failure, can mask real signals;
+   the hook is async and can land AFTER `run()`/`reset_hard`, so only
+   prevention-at-source is deterministic.
+   **Probe matrix run this session (doc 14 §2.4, ceiling 5, 0 re-runs, 0
+   deviations):** control contaminates at 4 s; `--setting-sources ""` (A-empty,
+   PREFERRED), `--setting-sources project,local` (A-projlocal), and
+   `HISTORIAN_SWEEP_ACTIVE=1` (B) all clean for 450 s with `apiKeySource=none`
+   unchanged; fence intact under A-empty.
+   **DECISION FOR ADI:** pick the ADR-22 option (recommendation: A-empty durable
+   + B belt-and-braces, B sunset after one clean CLI-upgrade cycle; C rejected;
+   D optional operator hygiene). No mechanism landed — Status = Proposed.
+   **Step 3 unblock criteria: ADR-22 marked Accepted AND the adopted mechanism
+   probe-verified (the §2.4 probes already cover A-empty/A-projlocal/B).**
+2. **ADR-21 amendment note — CLOSED (Session 7, 2026-07-16).** Landed as
+   **ADR-21 Amendment 1** in doc 08 §5b; `claude_headless.py` comment pointers
+   updated (comment-only diff, 103-unit suite green); doc 14 §2.2 + new §2.4
+   record it (§2.4 Probe 3 re-confirmed pattern-deny still emits BOTH signals).
+   The whole-tool-removal DETECTION MECHANISM changed at 2.1.211 (denied tool
+   dropped from the init `tools` manifest; no tool_use/is_error/denial — was:
+   is_error + empty denials at 2.1.207). Enforcement is unchanged (stronger, if
+   anything) — documentation/auditing amendment, not a fence break.
    **Forward consequence (for Step 4 ADR-19 metric capture / any future audit
    logic):** after 2.1.211 a whole-tool denial is NO LONGER observable from
    the result stream — there is no attempt, no `is_error`, and no
    `permission_denials` entry. The only evidence is the init `tools` manifest
    captured at spawn. Any "was a tool denied this run" signal must key on
    manifest ABSENCE, never on a result-stream signal that no longer exists.
+   **QUEUED PREREQUISITE (new, from Amendment 1):** that init `tools` manifest
+   is NOT yet persisted structurally — `_parse_result`
+   (`src/runtime/engine/claude_headless.py:461-462`) reads only `apiKeySource`;
+   the manifest survives only as raw lines in the archived transcript
+   (`EngineResult.transcript_path`). Before any Step-4 ADR-19 "was a tool
+   denied" metric, add a structured init-manifest capture. Mechanism TBD
+   (engine artifact on `EngineResult`, advisory per ADR-07, vs. an event-schema
+   addition) — **doc 03 governs**; no event-schema change made this session.
 
 **Session 6 so far:**
 - **Step 0** (baseline re-verify) — COMPLETE. 103/103 unit, 55/55 harness

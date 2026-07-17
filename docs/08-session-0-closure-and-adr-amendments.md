@@ -105,6 +105,57 @@ The baseline-green requirement (doc 06) applies to StockAgent: its test suite mu
 
 **Rejected alternatives.** *Allowlist fence* — falsified above. *Remove Bash entirely* — closes egress but limits the engine to file edits, making attempt-1 success reflect the fence rather than the workflow. *Settings-file deny* — Session 4 proved `--settings` keys are silently dropped in print mode, so nothing settings-based is trusted; explicit flags were probe-verified instead.
 
+### ADR-21 — Amendment 1 (2026-07-16, Session 7): whole-tool-removal detection signal changed at `claude` 2.1.211
+
+**Status:** Accepted. Amends the "Detection nuance" bullet of ADR-21 above.
+Enforcement is unchanged; this is a documentation/auditing amendment, not a fence change.
+
+**What changed.** At `claude` 2.1.207, a whole-tool removal (`--disallowedTools WebFetch`) produced a tool-result `is_error` with `permission_denials` empty. At 2.1.211 (re-probed live, doc 14 §2.2 C3) the denied tool is instead **dropped from the session's init `tools` manifest entirely** — the model never attempts it: no `tool_use`, no `is_error`, no `permission_denials` entry. Controlled cross-check: C1's manifest (denying Task/WebFetch/WebSearch) lacked exactly those three; C3's (denying WebFetch only) retained the other two. Pattern-level denies (`Bash(cmd:*)`) are UNCHANGED and still produce **both** signals — a `permission_denials` entry AND a tool-result `is_error` (re-confirmed 2026-07-16, doc 14 §2.4 Probe 3: a denied `git init` populated `permission_denials` and yielded `is_error:true`, `.git` absent).
+
+**Consequence for all future audit/metric logic (binding).** After 2.1.211 a whole-tool denial is NOT observable from the result stream — there is no attempt, no error, no denial record. The only evidence is the init `tools` manifest captured at spawn. Any "was a tool denied this run" logic — including Step 4's ADR-19 metric capture and any transcript audit — MUST key on **manifest ABSENCE in the init line**, never on a result-stream signal that no longer exists. Pattern denies keep both result-stream signals; audits must therefore branch on deny *kind* (whole-tool vs. pattern).
+
+**QUEUED PREREQUISITE (init-manifest capture is not yet persisted structurally).** As of this session the init `tools` manifest is parsed only for `apiKeySource` (`src/runtime/engine/claude_headless.py:461-462`); the manifest itself is never extracted into `EngineResult` or the event log, surviving only as raw lines inside the archived transcript (`EngineResult.transcript_path`, written in `run()`). Therefore, **before any Step-4 ADR-19 "was a tool denied" metric can be built, a structured init-manifest capture must be added.** Mechanism is TBD — an engine-side artifact (parse the init `tools` list in `_parse_result` and expose it on `EngineResult`, advisory-only per ADR-07) versus an event-schema addition — and **doc 03 governs any event/state change**. Not built this session; no event-schema change made. Carried into `NEXT.md`.
+
+**Assessment.** Enforcement is structurally stronger (the tool is invisible, not merely refused); the fence design (explicit `--disallowedTools` denylist) is unaffected and remains as accepted in ADR-21. Version-scoping discipline: the 2.1.207 behavior stays recorded in `claude_headless.py` as an explicitly version-tagged historical note (`[2.1.207 ONLY — …]`); re-pin on upgrade continues.
+
+---
+
+## 5c. ADR-22 — Engine-child ambient-hook isolation (contamination of the engine cwd)
+
+**Status: PROPOSED (Session 7, 2026-07-16).** No mechanism lands until Adi selects an option and this ADR is marked Accepted. Blocks Step 3 (gated live smoke).
+
+**Context — the finding.** Every `claude -p` child the engine spawns writes an unrequested `knowledge/` tree (`.gitignore` 8 B, `capture-rules.md` 684 B, `.sweep/`, an empty project dir) into its cwd. The cause is the operator's **user-scope** `~/.claude/settings.json`, which registers `SessionEnd`/`PreCompact` hooks running `~/.claude/historian/historian-sweep.sh` (the engineering-historian vault bootstrap). User-scope settings load in every `claude` process on this machine, including engine children — this is global config, not a skill auto-load and not parent-session inheritance (VERIFIED, doc 14 §2.3 + §2.4). The hook's `run_pipeline()` does the `mkdir`/seed writes **before** its own triviality gate, so the write happens even though the engine passes `--no-session-persistence` (no transcript ⇒ the sweep then stops at "SKIP no transcript"; the model call and its `history(auto):` auto-commit never fire *on the engine path today* — but would if `--no-session-persistence` were ever dropped, which is strictly worse: an unwitnessed commit into the target repo).
+
+**Why it blocks Step 3.** `GitAdapter.is_dirty()` is `git status --porcelain` non-empty (`src/runtime/repo/git_adapter.py:108`); the two un-ignored files under `knowledge/` show as `?? knowledge/` ⇒ dirty on every run ⇒ reconciler check 3 trips ⇒ the smoke is a guaranteed false failure, and at worst masks a *real* dirty-tree signal. The hook is **async and can land after `run()` returns** — even after a `reset_hard`/`clean -fd` — so any observe-around or clean-up-after approach races; only prevention-at-source is deterministic (doc 14 §2.3 correction note). Contamination is **4/4** across the Step-2 probes, not 3/4.
+
+**Probe evidence (doc 14 §2.4, VERIFIED live at 2.1.211, 2026-07-16).** Positive control (no suppression) contaminated at t=4 s; `apiKeySource=none`. All suppression forms below stayed clean for a full 450 s poll with `apiKeySource` unchanged from the `"none"` baseline.
+
+### Options
+
+**Option A — settings-source isolation: add `--setting-sources` to the engine argv.**
+User-scope settings (and their hooks) never load in the child. Two forms probed, both clean, both auth-unaffected:
+- **A-empty (`--setting-sources ""`) — PREFERRED.** Loads no settings scope at all. VERIFIED clean (§2.4 Probe 2), CLI accepts the empty value (`rc=0`). Fence intact under it (§2.4 Probe 3: denied `git init` still produced `permission_denials` + `is_error`, `.git` absent).
+- **A-projlocal (`--setting-sources project,local`).** VERIFIED clean (§2.4 Probe 1) — but still loads *project/local* scope **from the child cwd, which on the production path is the target repo**; a `.claude/settings.json` planted in a target repo would then be a cross-run config-injection/persistence vector. Adopt only with that residual project-scope surface recorded as an explicit open limitation.
+- *For:* general — suppresses *any* operator's ambient hooks on any machine, not just this historian; aligns with ADR-21's self-containment principle ("the fence does not rely on ambient settings"); a concrete first slice of the pre-Phase-4 sanitized-env hardening already on the roadmap; no coupling to a third-party tool's internals.
+- *Against:* a settings-machinery mechanism under a load-bearing invariant (the exact class ADR-21 warns about, and `--settings` keys once surprised us by being silently dropped in `-p` mode) — mitigated here by the direct probes above, which must be re-run on CLI upgrade.
+
+**Option B — targeted hook suppression: set `HISTORIAN_SWEEP_ACTIVE=1` in the child env.**
+The hook still fires but hits its own recursion guard (`historian-sweep.sh:51`) and exits before any write. VERIFIED clean (§2.4 Probe 4). To honor "config only, never hardcode machine specifics in src/", implement generically as `config.yaml → engine.child_env: {…}` merged in `_hygienic_env()` (the ADR-18 strip still wins); the machine-specific var name lives in config, src/ stays generic.
+- *For:* surgical, near-zero risk to CLI semantics (no new flags, no settings machinery); cheapest to verify; uses the tool's own documented guard.
+- *Against:* couples config to one ambient tool's private variable name (a historian rename/upgrade silently reintroduces contamination with no runtime signal); protects against exactly this hook, not ambient hooks as a class.
+
+**Option C — workspace-level exclusion: tolerate contamination, blind check 3 to `knowledge/`. REJECTED.**
+A config-driven ignore glob in `is_dirty()`, or `knowledge/` in the target repo's `.gitignore`/`.git/info/exclude`. *Rejected because* it **masks real signals** — any future engine write under `knowledge/` becomes invisible to check 3, weakening the I1 clean-base guarantee the whole durability layer leans on; it ships operator artifacts permanently into a real target repo; it does nothing about the auto-commit hazard if `--no-session-persistence` is dropped; and a `.gitignore`-based exclusion makes the residue *survive* `reset_hard`'s `clean -fd` (`-x` omitted), accumulating in the target. Largest conceptual change for the least integrity.
+
+**Option D — fix the historian's own bug (complementary, outside this repo).**
+The sweep writes the vault bootstrap *before* checking a transcript exists; moving that check above the `mkdir`/seed writes would stop it writing vaults into `-p` children's cwds while leaving real sessions intact. Fixes the root cause for every consumer on this machine — but it is ambient operator tooling the runtime **cannot depend on** (any machine/upgrade may differ), so D alone is not an acceptable fence. Recommend only as hygiene alongside A or B.
+
+### Recommendation
+**A-empty as the durable fix; B (config-driven) as an immediate belt-and-braces layer; D as optional operator hygiene; C rejected.** The two mechanisms compose (deny-in-depth). **B is removable once A has survived one CLI upgrade cycle with the §2.4 probes re-run green — recorded as a sunset condition, not a permanent layer.** If a future upgrade shows `--setting-sources` unreliable in `-p` mode, fall back to B alone and record A's falsification here (mirroring the ADR-21 allowlist precedent).
+
+### Gate chain before any mechanism lands (none of this happens while Status = Proposed)
+Probes passed (done, §2.4) → **Adi selects an option** → ADR-22 marked Accepted → mechanism lands in `src/`/`config.yaml` (with new tests if `engine.child_env` is added) → Step 3 unblocks. `src/` changes are legitimate only as the implementation of an Accepted ADR.
+
 ---
 
 ## 6. Final v1 `config.yaml` (reference example)

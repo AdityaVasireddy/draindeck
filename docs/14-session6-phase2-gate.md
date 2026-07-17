@@ -280,6 +280,11 @@ re-derived by observation at 2.1.211; nothing carried forward.
   for Adi)**, not resolved this session. Gate for the comment-only re-pin per
   the pre-committed src/ rule: 103-unit suite + diff review confirming zero
   non-comment lines changed.
+  **UPDATE (2026-07-16, Session 7): amendment LANDED as ADR-21 Amendment 1 in
+  doc 08 §5b (whole-tool-deny detects by init-manifest absence; carries a queued
+  prerequisite that structured init-manifest capture must exist before Step-4
+  ADR-19 metric work). Re-confirmed live via §2.4 Probe 3. `claude_headless.py`
+  comment pointers updated (comment-only diff, 103-unit suite green).**
 
 ### 2.3 — NEW FINDING: ambient user config writes into engine-child cwd (Step-3 BLOCKER)
 
@@ -304,6 +309,87 @@ Consequences, recorded verbatim:
   honest scope.
 - Retroactively explains the modified `knowledge/.sweep/sweep.log` in this
   repo's own git status (ambient sweep activity, not runtime work).
+
+**CORRECTION NOTE (2026-07-16, Session 7 — doc 12 pattern, not a silent edit).**
+The "**p2 no (C2)**" observation above is FALSIFIED as a state-of-the-world
+claim. Re-inspection this session found `p2/knowledge/` DOES exist on disk
+(`.gitignore` 8 B, `capture-rules.md` 684 B, `.sweep/sweep.log` with a single
+`[SessionEnd]` line, session `afc8223a-8762-43f2-881d-78bfd0e20d65`, written
+2026-07-16 09:43:40). **Contamination is therefore 4/4, not 3/4** —
+`--allowedTools`-only (C2) does not avoid it. INFERRED: the Step-2 check raced
+the `"async": true` SessionEnd hook — the write landed after the check ran, so
+the probe saw a momentarily-clean cwd. NOT-OBSERVABLE: the exact
+check-vs-write interleaving (no timestamp was captured for the Step-2 check
+itself).
+
+**Discriminating check (2026-07-16, Session 7 close-out — VERIFIED).** p2's own
+engine-child session ID was recovered from its archived transcript
+(`step2/c2-transcript.jsonl`, the C2 `--allowedTools` probe, `cwd` confirmed as
+p2) via the init line: `session_id: afc8223a-8762-43f2-881d-78bfd0e20d65`. This
+**MATCHES** the SessionEnd hook's recorded ID in
+`p2/knowledge/.sweep/sweep.log` exactly. The contamination in p2 was produced
+by p2's OWN probe run, not a later/unrelated session — the async-race
+explanation is **confirmed as consistent**, not merely inferred by exclusion.
+
+LOAD-BEARING CONSEQUENCE (INFERRED): because the hook is asynchronous
+and can outlive the `claude` child, contamination can land AFTER `run()`
+returns — after the orchestrator diffs, after check 3, even after a
+`reset_hard`/`clean -fd`. Any observe-around or clean-up-after approach
+therefore races; only prevention-at-source is deterministic. The mechanism
+finding and options are ADR-22 (docs/08); the probe evidence is §2.4 below.
+
+### 2.4 — ADR-22 suppression probe matrix (VERIFIED live, claude 2.1.211, 2026-07-16, Session 7)
+
+All probes: fresh scratchpad dirs (never a real repo), trivial "reply OK, no
+tools" prompt on stdin, subscription auth (`ANTHROPIC_API_KEY` unset), engine
+argv mirror of `_command()` (model=default ⇒ no `--model`), full 23-entry
+`_DENY_TOOLS`. Baseline for comparison: `apiKeySource:"none"` (doc 14 §2.1, all
+four Step-2 runs). Ceiling 5 probes + 1 re-run; **5 run, 0 re-runs, 0 deviations.**
+
+**Probe 0 — positive control (NO suppression), vacuity guard.** `rc=0`,
+`apiKeySource=none`, `num_turns=1`, `total_cost_usd≈0.148`. Polled cwd from
+spawn: **`knowledge/` appeared at t=4 s** (`.gitignore` 8 B, `capture-rules.md`
+684 B, `.sweep/sweep.log` with one `SKIP no transcript` line, empty project
+dir) — identical shape to the Step-2 probe cwds. Contamination is reproducible
+and near-instant (the `"async"` hook writes at/around process exit). **VACUITY
+GUARD PASSED** (the matrix can detect the failure mode). **WAIT derived =
+max(450, 3×4) = 450 s** — every negative probe below polled the full 450 s.
+
+**Probe 1 — `--setting-sources project,local`.** `rc=0`, **`apiKeySource=none`
+(MATCHES baseline)**, `num_turns=1`, success. **CLEAN — no `knowledge/` after
+450 s.** VERIFIED: omitting `user` from the sources suppresses the user-scope
+SessionEnd hook without disturbing subscription auth.
+
+**Probe 2 — `--setting-sources ""` (empty).** `rc=0` (**ACCEPTED**, not
+rejected), **`apiKeySource=none` (MATCHES baseline)**, `num_turns=1`, success.
+**CLEAN — no `knowledge/` after 450 s.** VERIFIED. **PREFERENCE ORDERING (for
+ADR-22):** empty is PREFERRED over `project,local` — `project,local` still loads
+project/local settings *from the child cwd, which on the production path is the
+target repo*, so a `.claude/settings.json` written into a target repo would be a
+cross-run persistence/config-injection vector; empty loads none. If
+`project,local` is ever adopted instead, that residual project-scope surface is
+the explicit open limitation.
+
+**Probe 3 — fence sanity under the surviving A-form (`--setting-sources "").**
+Prompt instructed a Bash `git init` (denied by `Bash(git:*)`). `rc=0`,
+`apiKeySource=none`. The `git init` `tool_use` WAS attempted (not
+self-censored); it was denied with **BOTH 2.1.211 pattern-deny signals**: a
+`permission_denials` entry (`tool_name:"Bash"`, `command:"git init"`) AND a
+`tool_result is_error:true` ("Permission to use Bash with command git init has
+been denied."). **`.git` ABSENT.** VERIFIED: the explicit-argv denylist fence
+(ADR-21) is unaffected by `--setting-sources ""` — expected, since the fence is
+passed as explicit flags, not via settings.
+
+**Probe 4 — `HISTORIAN_SWEEP_ACTIVE=1` in child env (Option B).** `rc=0`,
+`apiKeySource=none`, `num_turns=1`, success. **CLEAN — no `knowledge/` after
+450 s.** VERIFIED: the sweep script's own recursion guard (`historian-sweep.sh`
+line 51) exits before any write when the var is set, and the var reaches the
+hook process through the child env.
+
+**Matrix outcome.** Control contaminates (4 s); all three suppression forms
+(A/`project,local`, A/empty, B/env-var) are clean at 450 s with auth unchanged;
+the fence survives the empty A-form. No deviation, nothing adopted this session
+(mechanism selection is ADR-22, still Proposed).
 
 ---
 

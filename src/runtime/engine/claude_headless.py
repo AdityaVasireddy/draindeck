@@ -93,8 +93,9 @@ _DEFAULT_PERMISSION_MODE = "acceptEdits"
 # tool is dropped from the session init `tools` manifest, so the model never
 # attempts it: no tool_use, no is_error, no permission_denials entry (was:
 # tool_result is_error with permission_denials EMPTY at 2.1.207; the
-# Detection-signal note below now describes 2.1.207 only). ADR-21 amendment
-# note pending. Re-pin on upgrade.
+# Detection-signal note below now describes 2.1.207 only). Recorded as ADR-21
+# Amendment 1 (doc 08, 2026-07-16 — manifest-absence is the only whole-tool-deny
+# signal at 2.1.211). Re-pin on upgrade.
 # The Session-4 forward-pointer assumed --allowedTools would
 # fence the engine and that a disallowed tool records a `permission_denial`
 # rather than running. BOTH are FALSE and were falsified empirically:
@@ -111,8 +112,9 @@ _DEFAULT_PERMISSION_MODE = "acceptEdits"
 #     removal (`--disallowedTools Bash`) yields only the tool_result is_error
 #     with permission_denials EMPTY. [2.1.207 ONLY — at 2.1.211 a denied whole
 #     tool is dropped from the session init manifest and is never attempted
-#     (C3, 2026-07-16); audit whole-tool denies by manifest ABSENCE. See header
-#     + doc 14 §2.] Transcript-based auditing must key on BOTH. The
+#     (C3, 2026-07-16); audit whole-tool denies by manifest ABSENCE. See header,
+#     doc 14 §2, and ADR-21 Amendment 1 (doc 08).] Transcript-based auditing
+#     must key on BOTH. The
 #     transcript is advisory only (ADR-07) — nothing here gates a transition.
 #
 # We pass the WHOLE fence EXPLICITLY so it is self-contained: it does not rely
