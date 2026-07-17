@@ -12,7 +12,90 @@ strike the B layer from doc 08 §5c as sunset-fulfilled.** A sunset condition
 gated on a future event with nothing pointing at it tends to silently outlive
 its own rationale — this line exists so it doesn't. (Session 8, 2026-07-16/17.)
 
+**Session 9 update (2026-07-17, CLI now 2.1.212): re-run attempted, PARTIAL —
+see doc 14 §2.6.** The `--setting-sources ""` leg re-verified clean at
+450s/rc=0/apiKeySource unchanged (Probe B), AND independently corroborated by
+a NEW signal (no `~/.claude/historian/skips.log` entry at all for that probe's
+cwd — the hook never even loaded). But the "control still contaminates"
+vacuity-guard leg (Probe A) **could not be reproduced.** **Root cause is
+INFERRED, not VERIFIED** (label corrected this session after review): the
+best-supported explanation is that the historian hook's own write-before-check
+bug was independently patched upstream (current `historian-sweep.sh:293-304`
+now gates before any vault write, and Probe A's `skips.log` entry shows the
+hook ran to completion without writing) — but **no before/after code
+comparison exists** (the tool has no git history; doc 08/doc 14's prior
+records describe the old bug's *effects*, not its *source lines*) to confirm
+this is a genuine upstream change rather than something else. Local-confound
+alternatives (missing `jq`, a leaked `HISTORIAN_SWEEP_ACTIVE`, a disable
+flag) were actively checked and ruled out — see doc 14 §2.6. **Do NOT treat
+this as "B is now provably safe to sunset"** — the sunset condition is
+specifically about A-empty surviving a CLI bump with BOTH probe legs green,
+and leg 1 is currently unfalsifiable-by-this-guard, not passed. B stays.
+Re-attempt the full two-leg re-run on the NEXT version bump — but see the
+"vacuity-guard gap" item below first, since the control leg may need a
+different construction before it can discriminate again.
+
+## VACUITY-GUARD GAP (Session 9, 2026-07-17) — distinct from the B-sunset tickle above
+The Probe-0/Probe-A style control (no suppression, expect contamination) is
+what makes a clean `--setting-sources ""` probe *mean* "A-empty is doing
+work" rather than "nothing was ever going to contaminate this run anyway." As
+of this session that control **no longer discriminates**: it comes back
+clean regardless of suppression, because (per the finding above) the ambient
+historian hook itself no longer exhibits the write-before-check bug the
+guard was built to detect. A clean Probe B is therefore currently consistent
+with BOTH "A-empty still necessary and working" and "A-empty is now a
+no-op, masked by an unrelated upstream fix" — **the two are no longer
+distinguishable with this control.**
+
+**Decision needed before the next CLI-bump re-pin cycle relies on the
+vacuity guard again — not resolved this session (out of scope; recorded so
+it isn't silently dropped):**
+- **Option (a) — re-establish a discriminating control**, e.g. a small
+  synthetic hook script (deliberately reproducing the "write before check"
+  shape doc 08 §5c originally described: unconditionally touch a marker file
+  under the child cwd, THEN check for a condition and exit) registered via a
+  scratch **project-scope** `.claude/settings.json` in an isolated probe cwd
+  — never the real `~/.claude/historian` hook, never touching machine
+  config. Compare a run with `--setting-sources project` (loads the synthetic
+  hook, should see the marker) against `--setting-sources ""` (should not).
+  This tests A-empty's suppression mechanism directly and stops depending on
+  whatever state the *real* ambient historian hook happens to be in —
+  arguably a strictly better control than the original, since it no longer
+  drifts out from under this repo when the operator's own tooling changes.
+  Not built or run this session (probe-design work, same class as item 0 —
+  deliberately left for a dedicated follow-up, not squeezed into this
+  tight-scope session).
+- **Option (b) — accept the control is retired**, record explicitly that
+  vacuity is no longer independently checkable via the historian hook, and
+  name a replacement guarantee (e.g. rely solely on the structural evidence —
+  `_command()`'s unit-tested argv shape plus the CLI's own documented
+  `--setting-sources` semantics — rather than a live behavioral control).
+
+**This session takes no position between (a) and (b)** — flagged as an open
+decision for the next session that touches ADR-22 re-pinning, so it is
+chosen deliberately rather than by default when nobody remembers the guard
+used to exist.
+
 ## Resume point
+**Session 9 (2026-07-17): `claude` CLI version witnessed = 2.1.212 (bumped
+from 2.1.211). Step-3 preflight sweep done — see doc 14 §2.6 for full
+evidence.** ADR-18 strip-vars + ADR-22 A-empty mechanism re-verified live at
+2.1.212 (Probe B: rc=0, clean at 450s, apiKeySource unchanged, fence intact,
+plus a new skips.log-absence corroboration); the vacuity-guard control leg
+(Probe A) could not be reproduced — INFERRED (not VERIFIED) that this is
+because the historian hook's own bug was independently patched upstream,
+with local confounds actively ruled out but no before/after code comparison
+available — see STANDING TICKLE and VACUITY-GUARD GAP above; not treated as
+a regression in this repo's mechanism, but also not fully closed. Item 0
+(argv survival through `ClaudeHeadlessEngine.run()`
+against real `claude`) is DESIGNED (doc 14 §2.6) but explicitly NOT RUN this
+session. Step 3's other four preconditions re-checked live: #2 (Ollama
+qwen2.5-coder) and #3 (Issues.md location+format) are UNMET; #1 (validation
+command) remains genuinely unanswerable without user input; #4 (baseline
+green) is blocked on #1; #5 (.gitignore hygiene) is MET. **Step 3 is still
+not ready to start.** No `src/` change this session; no commit (standing
+rule).
+
 Session 8 (2026-07-16/17): ADR-22 marked **Accepted** (doc 08 §5c) and its
 mechanism **landed and verified** — see below. NEXT.md item 1 (the
 `knowledge/`-contamination Step-3 blocker) is now **CLOSED**. Item 2 (ADR-21
@@ -67,36 +150,65 @@ after one clean CLI-upgrade cycle.** Mechanism landed in `src/` + `config.yaml`
 **Step 3 unblock criteria (from NEXT.md's earlier wording) — SATISFIED:**
 ADR-22 Accepted AND mechanism probe-verified. Both true as of this session.
 
-**Step 3's OWN separate preconditions — still UNCONFIRMED, must be checked
-before Step 3 runs (unrelated to ADR-22):**
+**Step 3's OWN separate preconditions — checked LIVE Session 9 (2026-07-17,
+`claude` 2.1.212) — see doc 14 §2.6 for full evidence. NONE satisfied yet;
+none carried forward from Session 7/8 assumption:**
 0. **GATE, not a checklist line — live end-to-end re-witness of the ADR-22
    argv, through `ClaudeHeadlessEngine.run()` against the real `claude`
    binary, is a hard precondition on Step 3's live smoke, not an optional
-   preflight nicety.** Reason: this session's evidence covers the Python-side
-   handoff (live spawn, dummy child) and the CLI-side interpretation (§2.4,
-   hand-built argv) as two *separate* legs — never composed into one real run
-   through the production `_command()` → `Popen` → real `claude` path. If
-   that composed path ever mangles the empty `--setting-sources` token in a
-   way neither isolated leg predicted, **the smoke is the place that would
-   catch it** — so this check must run and be observed to pass BEFORE the
-   smoke is judged to have validated anything else, not treated as background
-   noise it's fine to skip if the smoke otherwise looks clean. Concretely:
-   confirm no `knowledge/` contamination appears in the smoke's scratch/target
-   cwd, exactly as the §2.4 probes checked, but this time via the real
-   engine wrapper end to end.
+   preflight nicety.** **DESIGNED this session (doc 14 §2.6), NOT RUN**
+   (explicit scope boundary). Reason unchanged: the Python-side handoff (live
+   spawn, dummy child) and the CLI-side interpretation (hand-built argv,
+   including this session's Probes A/B) remain two *separate* legs — never
+   composed into one real run through the production `_command()` → `Popen`
+   → real `claude` path via the actual `ClaudeHeadlessEngine.run()` method.
+   The design: real `EngineCfg`/engine instance, scratch workspace (never a
+   real repo), call the real `_command()` for a structural pre-spawn assert,
+   then the real `run()` for the behavioral witness (fence-trip prompt +
+   450s contamination poll + `skips.log` cross-check). Full spec in doc 14
+   §2.6. **This must run and pass before Step 3's smoke, per the original
+   gate wording — unchanged.**
 1. `project.validation.commands` in `config.yaml` still has the placeholder
-   `'<StockAgent test command — REQUIRED before first run>'` — a real
-   validation command has not been confirmed.
-2. Ollama running with `qwen2.5-coder` pulled — not verified this session.
-3. `Issues.md` authored in StockAgent in the `## <id>: <title>` format — not
-   done.
-4. Baseline green on StockAgent's `agent-work` branch — not re-verified this
-   session.
-5. StockAgent `.gitignore` hygiene (covers build/test byproducts) — not
-   re-verified this session.
+   `'<StockAgent test command — REQUIRED before first run>'`. **RE-CHECKED
+   LIVE, STILL UNCONFIRMED — genuinely no answer available without user
+   input.** No `pytest.ini`/`pyproject.toml`/`setup.cfg`/`conftest.py`/
+   `Makefile`/CI workflow exists anywhere in `C:\Projects\StockPhotoAgent`;
+   `CLAUDE.md` documents many `python -m src....` operational commands but no
+   test runner. This is not a probing gap — there is nothing left to probe;
+   someone must author or supply the command.
+2. Ollama running with `qwen2.5-coder` pulled. **RE-CHECKED LIVE — UNMET.**
+   `ollama list` shows only `qwen2.5vl:7b`; `qwen2.5-coder` (the model
+   `config.yaml → reviewer.qwen.model` names) is not pulled. `ollama ps`
+   shows the service reachable but idle.
+3. `Issues.md` authored in StockAgent in the `## <id>: <title>` format.
+   **RE-CHECKED LIVE — UNMET, two independent problems.** (a) Wrong
+   location: an untracked `docs/Issues.md` exists, but `main.py` resolves the
+   issues file at repo-ROOT (`Path(project.repository) / project.issues_file`
+   = `C:\Projects\StockPhotoAgent\Issues.md`), which does not exist. (b)
+   Wrong format: `docs/Issues.md` is a numbered list with inline
+   `**STATUS:**` markers, not `## <id>: <title>` headings — parsing it as-is
+   would raise `IssuesParseError` (no `## ` heading matches the grammar at
+   all).
+4. Baseline green on StockAgent's `agent-work` branch. **BLOCKED on #1, not
+   independently re-verifiable this session** — no known test command to
+   run; guessing one (e.g. bare `pytest`) was judged unsafe given the
+   `tests/` dir contains files that look auth/network-probe-shaped
+   (`test_401_response_body.py`, `test_csrf_cookie_match.py`,
+   `test_login_only.py`, ...), not obviously StockAgent's own suite. `git
+   status` on `agent-work` itself is otherwise clean (only the untracked
+   `docs/Issues.md` from #3).
+5. StockAgent `.gitignore` hygiene (covers build/test byproducts).
+   **RE-CHECKED LIVE — MET.** Covers `input/output/done/failed/review/`,
+   `database/`, `logs/`/`*.log`/`debug_logs/`, `__pycache__/`, venv
+   variants, IDE/OS cruft, and `config.ini` (credentials).
 
-**Do NOT mark Step 3 planned or begin planning it — out of scope for Session
-8, explicitly.**
+Directory-name caveat from doc 08 §6 (`⚠ confirm directory name on disk`):
+**RESOLVED** — `C:\Projects\StockPhotoAgent` matches `config.yaml →
+project.repository` exactly; `StockAgent` is cosmetic naming only
+(`project.name`).
+
+**Do NOT mark Step 3 planned or begin planning it — still out of scope; 0/1
+of the 6 preflight items (0–5) is fully closed (5 only).**
 
 **Step 2 outcome (doc 14 §2):**
 - **2a billing** — split still PAUSED (Help Center art. 15036540, re-fetched

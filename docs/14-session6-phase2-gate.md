@@ -539,6 +539,270 @@ see NEXT.md.
 
 ---
 
+### 2.6 — Session 9 (2026-07-17): Step-3 preflight — CLI re-pin re-probe (2.1.212) + full precondition sweep
+
+**Scope discipline for this session:** live re-probe of ADR-18/21/22 against
+the now-installed CLI version, re-check of Step 3's five own preconditions,
+and a DESIGN (not run) of the item-0 argv-survival gate. No `src/` change.
+No commit (standing rule). No live smoke.
+
+**CLI version witnessed: `claude 2.1.212`** (`claude --version`) — off the
+2.1.211 pin used in §2.2/§2.4/§2.5. This IS a version bump, so the doc 08 §5c
+binding upgrade re-pin discipline applies before any engine run against a
+real repo.
+
+#### ADR-18 re-verify (billing/provider)
+All six `_SUBSCRIPTION_STRIP` vars (`ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`) — **VERIFIED unset** in
+this shell (`printenv` on each, checked immediately before probing). Both
+live probes below returned `apiKeySource:"none"`, matching the subscription
+baseline. **VERIFIED**, unchanged from §2.1.
+
+#### ADR-22 binding re-pin discipline — two live probes, fresh scratchpad dirs (never a real repo)
+
+Methodology mirrors §2.4 (trivial prompt or a targeted fence-trip prompt,
+subscription auth, engine argv mirroring `_command()`), executed via
+hand-built Python `subprocess.Popen` scripts (same class of evidence as §2.4
+— NOT yet a call through the real `ClaudeHeadlessEngine.run()`; that
+composition is item 0, designed but not run this session — see below).
+
+**Probe A — control (no `--setting-sources`, i.e. the pre-ADR-22 argv
+shape), vacuity-guard intent.** `rc=0`, `apiKeySource:"none"`, 5.2 s.
+Workspace polled at t≈30s and again at t≈90s post-completion: **no
+`knowledge/` directory appeared** — contrary to §2.4 Probe 0, which showed
+contamination at t=4s under the same "no suppression" condition at 2.1.211.
+
+**Finding — the vacuity guard no longer fires.** `~/.claude/historian/skips.log`
+recorded a `SKIP no transcript` line for Probe A's cwd, timestamped at the
+probe's spawn, with a correctly-populated project path and session id — so
+the SessionEnd hook DID fire (ambient user-scope settings loaded normally, as
+expected with no suppression), DID successfully parse its hook-JSON input via
+`jq`, and DID run `run_pipeline()` through to its `return 2` at line 303. But
+no `knowledge/` write preceded that skip, at t≈30s, t≈90s, and re-checked
+again ~3 hours later (all clean). Reading
+`~/.claude/historian/historian-sweep.sh:293-304` (the operator's own tool,
+outside this repo) as it exists NOW shows the transcript-existence gate
+returning *before* any `$VAULT`-directory write; the code comment at line 296
+reads "a headless `-p` child SKIPs in a cwd it doesn't own; **the vault used
+to get created anyway**" (past tense, in the *current* source).
+
+**Label correction (this session, in response to review): downgraded from
+VERIFIED to INFERRED.** The original phrasing ("independently patched
+upstream, applied between Session 8 and this session") asserted a *causal,
+temporal* claim — that the code at 293-304 differs from what ran during
+Session 7/8's probes. That claim was not backed by a before/after comparison:
+doc 08 §5c's and doc 14 §2.3/§2.4's records of the *original* vulnerable
+behavior are prose descriptions of observed effects ("the mkdir/seed writes
+happen before its own triviality gate," contamination witnessed live at t=4s
+across p1-p4/Probe-0) — **no line-anchored quote, diff, or snapshot of
+`historian-sweep.sh`'s Session-7/8-era source exists anywhere in this repo's
+records to set against the current read of 293-304.** `~/.claude/historian`
+is not itself a git repository (`git status` there: "fatal: not a git
+repository") — no independent version history is available either. The
+line-296 comment is suggestive (self-referential textual evidence, from the
+tool's own author, that its behavior changed at some point) but is not an
+independently corroborated record of *when* relative to Session 7/8, so it
+cannot carry a VERIFIED label on its own.
+
+**What IS verified, kept separate from the causal inference:**
+1. Contamination occurred under matching "no suppression" conditions in
+   Session 7/8 (doc 14 §2.3/§2.4, established then, not re-litigated here).
+2. Contamination does **not** occur now, under this session's Probe A, run
+   under the same class of live-spawn conditions (fresh scratch cwd, no
+   real repo, no `--setting-sources`, no `child_env`, ambient settings
+   loading normally) — re-checked clean at three separate poll times.
+3. The hook executed to completion this session (behavioral, via the
+   well-formed `skips.log` entry — not just "current source reading"), and
+   the current source text structurally places the transcript check ahead of
+   any write.
+
+**What is INFERRED, not VERIFIED:** that (1)+(2) is explained by an upstream
+code change to `historian-sweep.sh` made *between* Session 8 and this
+session, rather than some other cause. Recorded as INFERRED in both this doc
+and NEXT.md.
+
+**Cause 3 (local confound in THIS repo's probe env, not upstream) — actively
+ruled out, not just assumed away:**
+- `HISTORIAN_SWEEP_ACTIVE` (the ADR-22 B-layer var) — confirmed **unset** in
+  the shell that launched Probe A, and Probe A's env-construction only
+  stripped the six `_SUBSCRIPTION_STRIP` vars, so it could not have been
+  silently inherited and suppressed the hook via the B mechanism.
+- `jq` availability — the sweep script fails closed silently
+  (`command -v jq >/dev/null 2>&1 || exit 0`, line 699) if `jq` is missing,
+  which would produce a clean-but-uninformative result for a reason having
+  nothing to do with any upstream fix. **Ruled out**: `jq 1.8.2` is on PATH
+  (`jq --version` succeeds), and — more directly — Probe A's `skips.log`
+  entry has a real project path and a real session id, which are only
+  populate-able if `jq` successfully parsed the hook JSON. A silent
+  jq-missing exit would happen at line 699, before `CWD`/`SESSION_ID` are
+  even parsed, and would produce no `skips.log` line at all (the `glog`
+  helper isn't defined that early) — so the well-formed log line is itself
+  evidence against this cause.
+- No disable/pause flag files found under `~/.claude/historian/` (checked by
+  listing for `*.disable*`/`*.pause*`).
+- No other early-exit gate exists between hook entry and line 302 besides
+  the `jq`-missing check above (read lines 691-706 directly).
+- Hook registration in `~/.claude/settings.json` is unchanged from what this
+  session already confirmed earlier (SessionEnd/PreCompact →
+  `historian-sweep.sh`, `async: true`) — the hook is still wired up, it just
+  doesn't write before its gate anymore.
+
+Residual, un-ruled-out possibility (cause 2: some other divergence between
+this session's probe conditions and Session 7/8's — e.g. an undocumented
+difference in how the original `floating-napping-pelican.md` probe harness
+invoked `claude` versus this session's hand-built `subprocess.Popen` script).
+Not demonstrated, not ruled out either — flagged as residual uncertainty
+rather than silently assumed clean.
+
+**Consequence for the re-pin discipline:** leg 1 ("a Probe-0-style control
+still shows contamination — the vacuity guard proving the probe can detect
+the failure mode") **could not be reproduced**, and — per the label
+correction above — it is INFERRED rather than VERIFIED that this is because
+the failure mode was independently patched at its source rather than some
+other cause. This is recorded as an honest gap, not papered over: **the
+control-contaminates leg of the binding discipline is NOT currently
+re-affirmable, and the reason it isn't is not fully closed either.** ADR-22's
+A-empty + B mechanism stays landed regardless of which explanation is true —
+Option D was always described as "ambient operator tooling the runtime
+cannot depend on" (doc 08 §5c) and could regress on a historian
+reinstall/rollback with no signal to this repo. See the new vacuity-guard
+NEXT.md item for what happens next.
+
+**Probe B — production argv (`--setting-sources ""` + full 23-entry
+`_DENY_TOOLS`, exact mirror of the current `_command()`), fence-trip prompt
+("run `git init`").** `rc=0`, `apiKeySource:"none"`, 6.5 s spawn.
+`git init` WAS attempted (not self-censored) and denied with **both** 2.1.211+
+signals: a `permission_denials` entry (`tool_name:"Bash"`,
+`command:"git init"`) and `tool_result is_error:true`
+("Permission to use Bash with command git init has been denied."). `.git`
+**absent** from the workspace. Workspace polled at the full **WAIT=450s**
+per the binding discipline: **clean, no `knowledge/`.** Corroborating
+signal: **no entry at all appears in `~/.claude/historian/skips.log`** for
+Probe B's cwd (contrast Probe A, which DID log a skip) — with
+`--setting-sources ""`, the user-scope hook settings never load in the
+child, so the SessionEnd hook never fires, not even to reach its own
+transcript gate. This is a stronger, independent confirmation of A-empty's
+mechanism than Probe A can now provide.
+
+**Re-pin verdict:** leg 2 (empty `--setting-sources` still accepted `rc=0`,
+still clean at 450s, `apiKeySource` unchanged, fence intact) —
+**RE-VERIFIED live at 2.1.212.** Leg 1 (control-contaminates vacuity guard) —
+**NOT reproducible; root cause INFERRED, not VERIFIED** (see the label
+correction above — an external/upstream fix is the best-supported
+explanation and the local-confound alternatives were actively ruled out, but
+no before/after code comparison exists to confirm the *temporal* claim, so
+this stays INFERRED). Net assessment: the mechanism this repo landed
+(A-empty) is unaffected by the CLI bump and independently corroborated by
+the skips.log absence on Probe B; whether the ambient contamination risk it
+was built to fence is *currently* also closed by an unrelated cause is
+open — but B (the config-driven belt-and-braces layer) and the sunset-gate
+discipline in NEXT.md's standing tickle stay exactly as written regardless,
+since Option D was never the thing being sunset-tracked, and the sunset
+condition explicitly requires BOTH probe legs green, not one.
+
+#### ADR-21 fence re-verify
+Covered by Probe B above: deny enforcement (`permission_denials` +
+`tool_result is_error`), selectivity is unchanged from §2.2 (not re-run
+standalone this session — the fence-trip prompt targeted one denied pattern,
+matching §2.4 Probe 3's scope, not the full C1–C4 matrix). **No regression
+observed at 2.1.212.** A full C1–C4 re-run was judged unnecessary: §2.2
+already re-derived the full matrix at the 2.1.207→2.1.211 bump, and nothing
+in the 2.1.211→2.1.212 diff (a patch-level bump) suggests permission-model
+change; the one live fence-trip here is a spot-check, not a claim of full
+re-coverage.
+
+#### Item 0 — argv-survival-through-`run()` witness: DESIGNED, NOT RUN
+
+Per explicit session scope, this is a design only.
+
+**Gap being closed.** §2.5 composed two *separate* legs: (1) Python-side —
+`_command()`'s real return value spawned through a bare `subprocess.run()`
+against a **dummy Python child** (not `claude`); (2) CLI-side — a
+**hand-built argv** (not `_command()` itself) spawned against real `claude`.
+This session's Probes A/B are the same class of evidence as leg 2 (hand-built
+mirror, not a call through the actual `_command()`/`run()` code). No session
+yet has called the real, unmodified `ClaudeHeadlessEngine.run()` — which
+invokes the real `_command()` AND the real `Popen`/`communicate` path — against
+the real `claude` binary in one composed run.
+
+**Witness design:**
+1. **Setup.** Real `EngineCfg` (subscription mode, `model: default`,
+   `child_env: {HISTORIAN_SWEEP_ACTIVE: "1"}` — i.e. the actual
+   `config.yaml` shape, both ADR-22 layers active together as production
+   would run them). Real `ClaudeHeadlessEngine(cfg, artifacts_dir=<scratch,
+   never the repo>)`. Workspace: a fresh scratch dir, never a real repo
+   (matches every probe so far — the live smoke, not this gate, is the first
+   time a real target repo is touched).
+2. **Argv-construction witness (pre-spawn, structural).** Call
+   `engine._command(prompt_file)` directly — the real method, unmodified —
+   and assert `"--setting-sources"` is immediately followed by `""` as two
+   distinct list elements, at the position before `--disallowedTools`. This
+   is the same assertion `test_command_carries_setting_sources_empty`
+   already makes (unit-level); repeating it here just pins that the SAME
+   engine instance about to be spawned carries the pair, closing any doubt
+   that construction and spawn could diverge.
+3. **Behavioral witness (the actual gap-closer).** Call `engine.run(execution_id,
+   prompt_file, workspace)` — the real method, unmodified, real `claude`
+   binary — with a Probe-B-shaped prompt (attempt a denied `Bash` pattern,
+   e.g. `git init`).
+4. **Post-run assertions**, all against the real `EngineResult` and the real
+   workspace, no hand-built parallel path:
+   - `EngineResult.exit_status == 0`, no `EngineEnvError` raised (the in-band
+     ADR-18 `apiKeySource` check inside `run()` itself passing IS a witness —
+     a raise would mean a credential leaked or apiKeySource unexpectedly
+     changed).
+   - Parse `EngineResult.transcript_path` (the real archived transcript, via
+     the real `_parse_result` path if convenient, or the same manual
+     line-by-line read used in the probes) for `apiKeySource == "none"`.
+   - `permission_denials` entry + `tool_result is_error:true` for the
+     attempted denied command; `.git` absent from `workspace`.
+   - Poll `workspace` for `knowledge/` absence at WAIT=450s (contamination
+     leg) — this is the load-bearing new evidence: composing settings-scope
+     suppression WITH the real spawn/wait/kill/pidfile machinery in `run()`
+     (pidfile write/unlink, `_hygienic_env()` merge-then-strip order,
+     `communicate()` timeout wiring) rather than a bare `Popen` mirror.
+   - Optionally cross-check `~/.claude/historian/skips.log` for absence of
+     any entry keyed to this run's cwd, as Probe B did — a second, independent
+     signal that settings-scope suppression (not just the hook's own gate)
+     is what prevented the write.
+5. **Gate condition, stated per NEXT.md item 0's original wording:** if this
+   composed run mangles the empty token in a way neither isolated leg
+   predicted (e.g. `communicate()`'s stdin-pipe timing interacts with
+   `list2cmdline` differently than the bare `subprocess.run()` leg-1 check
+   did, or the pidfile/`_xdir` bookkeeping around the Popen call somehow
+   perturbs argv construction), this is where it would show up as a `git`
+   directory or `knowledge/` tree appearing despite the mechanism's prior
+   two-leg VERIFIED status. Passing collapses the two-leg composition into
+   one unqualified live VERIFIED; failing is a hard block on Step 3 and
+   reopens ADR-22.
+
+Not executed this session (explicit scope boundary). Queued as the literal
+first action before Step 3's live smoke.
+
+#### Step 3's own five preconditions — re-checked LIVE this session (StockPhotoAgent, `C:\Projects\StockPhotoAgent`, branch `agent-work`)
+
+| # | Precondition | Status | Evidence |
+|---|---|---|---|
+| 1 | `project.validation.commands` real test command | **STILL UNCONFIRMED — genuinely open, needs user input** | `config.yaml` still has the `<REQUIRED>` placeholder. No `pytest.ini`/`pyproject.toml`/`setup.cfg`/`conftest.py`/`Makefile`/`.github/workflows/` found anywhere in the repo (checked directly). `CLAUDE.md` documents many `python -m src....` invocation commands but none are a test runner. This is not a probe gap — there is no discoverable command to confirm; it must come from the user or from authoring one. |
+| 2 | Ollama + `qwen2.5-coder` pulled | **UNMET** | `ollama list` shows only `qwen2.5vl:7b` (6.0 GB, pulled ~4 weeks ago). `qwen2.5-coder` (the model `config.yaml → reviewer.qwen.model` names) is **not present**. `ollama ps` shows no loaded models (service idle but reachable). |
+| 3 | `Issues.md` in `## <id>: <title>` format | **UNMET, two independent problems** | (a) **Wrong location**: `main.py:131` resolves the issues file as `Path(cfg.project.repository) / cfg.project.issues_file` = repo-root `Issues.md`; the repo has no root-level `Issues.md`, only an untracked `docs/Issues.md`. (b) **Wrong format**: `docs/Issues.md` is a numbered list (`1. **Title:** ...`) with inline `**STATUS: OPEN**` markers — none of it matches `src/runtime/queue/issues_md.py`'s required `## <id>: <title>` heading grammar (`_HEADING`/`_ID_TITLE` regexes). Parsing it as-is would raise `IssuesParseError` at startup (no `## ` headings present at all). |
+| 4 | Baseline green on `agent-work` | **BLOCKED on #1, not independently re-verified** | Cannot run a test suite without a known command; running `pytest` bare was not attempted (no config found means an unqualified `pytest` run risks picking up unrelated/broken suites — e.g. the `tests/` dir contains files like `test_401_response_body.py`, `test_csrf_cookie_match.py`, `test_login_only.py` that look auth/network-probe-shaped, not obviously StockAgent unit tests; guessing a command here was judged worse than reporting the gap honestly). `git status` on `agent-work`: clean except the untracked `docs/Issues.md` from #3 — the branch itself is not dirty. |
+| 5 | `.gitignore` hygiene | **MET — CONFIRMED** | `.gitignore` covers `input/`, `output/`, `done/`, `failed/`, `review/`, `database/`, `logs/`, `debug_logs/`, `*.log`, `__pycache__/`, `.venv/`/`venv/`/`env/`, plus IDE/OS cruft and a `config.ini` credentials exclusion. Adequate for build/test-byproduct hygiene as the precondition asks. |
+
+Additional directory-name note (doc 08 §6's `⚠ confirm directory name on
+disk` caveat): **RESOLVED** — the repo lives at `C:\Projects\StockPhotoAgent`
+(matches `config.yaml → project.repository` exactly); the `StockAgent`
+naming is cosmetic (`project.name`) only.
+
+**Net: Step 3 remains NOT ready.** Preconditions 1, 2, 3 are hard blockers
+(2 and 3 concretely UNMET; 1 has no available answer without user input); 4
+cannot be checked until 1 is resolved; 5 is clear. None of these are ADR-22
+questions — they are unrelated StockAgent-side setup gaps, consistent with
+NEXT.md's existing framing.
+
+---
+
 ## Steps 3–5 — NOT STARTED
 
 Gated live smoke (3) is now **UNBLOCKED on the ADR-22 contamination question**
