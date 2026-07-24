@@ -27,10 +27,15 @@ reviewer:
   provider: qwen                 # ADR-05: qwen | claude
   qwen:
     endpoint: 'http://localhost:11434'
-    model: qwen2.5-coder         # NOT pulled locally yet (ollama list: only
-                                 # qwen2.5vl:7b) — Step-3 precondition #2 still
-                                 # UNMET; reverted from an uncommitted
-                                 # ':14b' edit that also didn't match inventory
+    model: qwen2.5-coder:14b     # VERIFIED present at this endpoint
+                                 # (localhost:11434/api/tags: 14.8B, Q4_K_M,
+                                 # pulled 2026-04-17) — Step-3 precondition #2
+                                 # CLOSED. See docs/12 correction note: the
+                                 # earlier revert checked the wrong Ollama
+                                 # instance (native CLI `ollama list`, not the
+                                 # Docker instance actually serving this
+                                 # endpoint); knowingly reinstated, not a
+                                 # silent re-revert.
 budget:                          # ADR-09
   max_attempts_per_issue: 3
   max_executions_per_run: 10

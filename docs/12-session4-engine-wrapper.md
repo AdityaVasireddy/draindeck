@@ -217,3 +217,50 @@ docstring, wired into `run_fixtures`). No change to the frozen contract
 docstring — the orchestrator loop that would call `reap_orphans`/`run` in
 production doesn't exist yet; that startup-order wiring is proven here via the
 harness fixture instead, and lands for real when the loop does).
+
+> **CORRECTION (Session 12, 2026-07-24).** `config.yaml`'s
+> `engine.child_env.HISTORIAN_SWEEP_ACTIVE` comment (the ADR-22 B-layer
+> sunset condition) was rewritten at some point between Session 8
+> (`4115b4e`, 2026-07-17, original short wording: "sunset after one clean
+> CLI-upgrade cycle with the A-empty re-pin probes green") and Session 12
+> (`c376eea`, 2026-07-24, current wording: "sunset only when BOTH Probe A
+> (control, reproduces contamination w/o A-empty) AND Probe B (A-empty,
+> clean) are discriminating green on the same CLI version"). This rewrite
+> was found to be **pre-existing unattributed working-tree drift** — it
+> existed uncommitted in the working tree before Session 12 began, was not
+> written by Session 12, and has no commit or handoff record identifying
+> who wrote it or when, of the same unrecorded-drift class as a
+> concurrently-found `reviewer.qwen.model` edit in the same file (see
+> `docs/14-session6-phase2-gate.md` §2.7). Session 12 reviewed the rewritten
+> wording on its own merits, judged it **correct and strictly stronger**
+> than the original (the original's "one clean cycle" criterion doesn't
+> actually distinguish a working control from a non-discriminating one,
+> which is exactly the vacuity-guard gap Sessions 9–11 spent three sessions
+> on; the rewritten two-probe-discriminating-green criterion does), and
+> **deliberately adopted it by committing it in `c376eea`** rather than
+> reverting to the original wording. This note is the record of that
+> deliberate adoption — the wording is intentional project state as of
+> `c376eea`, not an unexplained artifact, even though its original authorship
+> is unrecoverable. Lives here (doc 12) per the same convention as the
+> ADR-21 correction above; see also `docs/14-session6-phase2-gate.md` §2.7
+> for the full audit trail (config.yaml drift discovery, git-log-p
+> provenance check) and `NEXT.md`'s STANDING TICKLE section for the
+> sunset-condition wording as currently governing.
+
+> **CORRECTION (Session 13, 2026-07-24).** The prior correction's own fix —
+> reverting `config.yaml`'s `reviewer.qwen.model` from an unattributed
+> `qwen2.5-coder:14b` edit back to the bare `qwen2.5-coder`, on the stated
+> grounds that `:14b` was "NOT pulled locally yet" — was **itself wrong**,
+> because that check ran `ollama list` against the machine's native CLI
+> Ollama instance, not against the Docker instance actually serving
+> `reviewer.qwen.endpoint: 'http://localhost:11434'`, the endpoint
+> `config.yaml` actually calls. Queried `localhost:11434/api/tags` directly
+> this session: `qwen2.5-coder:14b` **is present** there (14.8B, Q4_K_M,
+> pulled 2026-04-17); the bare `qwen2.5-coder` the revert landed on **does
+> not exist** at that endpoint at all, meaning the reverted state would have
+> failed at review time. `config.yaml` has been **knowingly reinstated** to
+> `qwen2.5-coder:14b`, verified against the correct endpoint this time — not
+> a silent re-revert, and not the same mistake repeated: the earlier revert
+> checked the wrong artifact (native CLI inventory) for a claim about a
+> different artifact (the Docker-served endpoint). This closes Step 3
+> precondition #2. See `NEXT.md` for the precondition-tracking update.
