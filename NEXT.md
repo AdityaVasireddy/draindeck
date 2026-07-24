@@ -12,6 +12,22 @@ strike the B layer from doc 08 §5c as sunset-fulfilled.** A sunset condition
 gated on a future event with nothing pointing at it tends to silently outlive
 its own rationale — this line exists so it doesn't. (Session 8, 2026-07-16/17.)
 
+**Session 12 update (2026-07-24, CLI now 2.1.215): re-run COMPLETE, GREEN —
+see doc 14 §2.7.** The STANDING TICKLE was overdue (CLI had drifted
+2.1.212 → 2.1.214 → 2.1.215 with no re-probe done at 2.1.214, contrary to
+Session 11's stated next action). All three legs re-run at 2.1.215 using
+Session 11's surviving synthetic-control scripts (fresh scratchpad, fresh
+probe cwds) plus a Leg-B-style production check: production argv via real
+`ClaudeHeadlessEngine.run()` (PASS — `knowledge/` absent 450s, no `skips.log`
+entry, `git init` denied both signals), synthetic Step B (PASS on a
+corrected re-run — see doc 14 §2.7 for the cwd-comparison bug found and
+fixed, not a real mechanism issue), synthetic Step C (PASS — marker absent
+450s). **`claude_code_version` is now witnessed inside every transcript**
+(the version-witness gap flagged as a risk in the prior handoff is closed).
+**Decision: re-probe and hold B — do NOT sunset this cycle** (explicit user
+instruction). `HISTORIAN_SWEEP_ACTIVE` stays in `config.yaml`. Tickle
+re-armed for the next CLI bump.
+
 **Session 9 update (2026-07-17, CLI now 2.1.212): re-run attempted, PARTIAL —
 see doc 14 §2.6.** The `--setting-sources ""` leg re-verified clean at
 450s/rc=0/apiKeySource unchanged (Probe B), AND independently corroborated by
@@ -151,6 +167,23 @@ original bug) was weighed and accepted as a known, permanent limitation,
 not a reason to skip building a forward-looking control.
 
 ## Resume point
+**Session 12 (2026-07-24): ADR-22 STANDING TICKLE re-probe RUN and GREEN at
+CLI 2.1.215** — see the STANDING TICKLE section above and doc 14 §2.7 for
+full evidence (Leg B, Synth Step B, Synth Step C all PASS, raw-verified,
+`claude_code_version` witnessed in every transcript). Decision: re-probe and
+hold B (explicit instruction) — no sunset action taken, `config.yaml`
+unchanged on the B layer. Also committed (`c376eea`) the Sessions 9–11
+pending `config.yaml`/`NEXT.md`/doc-14 changes plus three untracked handoff
+files, after finding and fixing an undocumented `config.yaml` drift
+(`reviewer.qwen.model` had been changed to an unpulled `qwen2.5-coder:14b`;
+reverted to the bare tag with an honest UNMET note — Step-3 precondition #2
+status unchanged). `validation.commands` fix (StockAgent test command) was
+kept — Step-3 precondition #1 may now be resolvable, NOT independently
+re-verified this session (out of scope; Unit A only). Unit tests re-run as a
+post-commit sanity check: 106/106 pass. No `src/` change. Step 3's other
+preconditions untouched, still whatever Session 9 last recorded (#2 Ollama
+model, #3 Issues.md location/format, #4 blocked on #1).
+
 **Session 11 (2026-07-18): synthetic positive control for ADR-22 BUILT and
 RUN — see VACUITY-GUARD GAP above for full evidence (Step B/Step C, both
 VERIFIED PASS).** Also fixed a working-tree `config.yaml` corruption

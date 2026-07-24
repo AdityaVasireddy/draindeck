@@ -977,6 +977,90 @@ before and after the fix (`ConfigError` before, clean load after).
 
 ---
 
+### 2.7 — Session 12 (2026-07-24): CLI re-pin re-probe at 2.1.215 (STANDING TICKLE)
+
+CLI drifted 2.1.212 → 2.1.214 (Session 11, incidental discovery) → **2.1.215**
+(this session, live check). NEXT.md's STANDING TICKLE requires re-running the
+ADR-22 probes on every version bump, before anything else. That re-probe was
+never actually done at 2.1.214 — this session closes the gap directly at
+2.1.215, using Session 11's surviving synthetic-control scripts (copied into a
+fresh scratchpad, fresh probe cwds) plus a re-run of the Leg-B-style production
+check (`item0_witness.py`'s `pass1_real()` pattern). All three legs run
+sequentially with escalate-don't-retry: any RED halts before the next leg.
+
+**Improvement folded in (per Session 11's own "Knowledge Captured" note):**
+every spawn's transcript is now parsed for `claude_code_version` off the
+`system`/`init` line, so the CLI version is witnessed *inside* the same
+artifact as `apiKeySource` — neither prior script (`item0_witness.py`,
+`witness_synth_control.py`) did this.
+
+**Leg B — production argv via real `ClaudeHeadlessEngine.run()`.** Real,
+unmutated engine, fresh scratch workspace (never StockPhotoAgent), prompt
+instructs `git init`. **PASS**: `exit_status=0`, `apiKeySource="none"`,
+`claude_code_version="2.1.215"` (witnessed in-transcript), `git init` denied
+with both signals (`permission_denials` entry + `tool_result is_error:true`),
+`.git` absent, `knowledge/` absent across all 16 polls / full 450s, zero new
+`skips.log` lines for this run's cwd (re-verified via direct `grep -c` on the
+real `~/.claude/historian/skips.log`, not just the script's own delta check).
+
+**Synth Step B — prove the assay still goes red.** Mutated copy
+(`--setting-sources project`) against a fresh `probe_cwd_trigger`. First
+attempt **falsely reported FAIL** — root-caused, not a real mechanism issue:
+the witness script's cwd-equality check compared the marker's raw
+`$(pwd)`-sourced string (`/tmp/claude/...`, Git Bash's own mount view of the
+Windows temp path) against Python's `str(cwd)` (`C:\Users\...`) with strict
+string equality; these name the same directory but never match as strings.
+Session 11's original script never enforced this comparison automatically (it
+was eyeballed manually), so the gap was latent, not new. Fixed to a
+path-suffix comparison and **re-ran Synth Step B fresh** (new probe cwd,
+teardown of the stale marker via the script's existing `rmtree_force`).
+**PASS on re-run**: marker present at t=0s (immediate, `async:false`),
+`event=SessionEnd`, `pid=2180` mechanically distinct from the witness script's
+own pid (`27192`), `cwd` suffix matches `probe_cwd_trigger` exactly,
+`claude_code_version="2.1.215"`. Re-verified raw via direct `cat` of the
+marker file on disk, not the script's JSON summary.
+
+**Synth Step C — the real A-empty comparison.** Unmutated production argv
+against a fresh `probe_cwd_empty`. **PASS**: marker absent at all 16 polls
+across the full 450s window; `exit_status=0`, `apiKeySource` unchanged,
+`claude_code_version="2.1.215"`. Re-verified raw: `ls` on the expected path
+(nonexistent), plus a scratch-root-wide `find -iname fired.txt` under this
+session's scratchpad confirming the only marker anywhere is Synth Step B's own
+(in `probe_cwd_trigger`) — `probe_cwd_empty` genuinely never produced one.
+
+**Net finding:** the ADR-22 mechanism (A-empty suppressing both the real
+production path and the self-owned synthetic control) is re-verified green at
+CLI 2.1.215, with the CLI version now witnessed inside every transcript
+directly (closing the version-witness gap Session 11 flagged as a risk). Per
+NEXT.md's explicit framing, this does **not** touch the original
+"A-empty stopped the ORIGINAL historian contamination" claim, which remains
+permanently INFERRED (no pre-patch artifact survives). **Decision: re-probe
+and hold B** — `HISTORIAN_SWEEP_ACTIVE` stays in `config.yaml →
+engine.child_env`; the B-layer sunset was NOT evaluated or acted on this
+session (explicit user instruction — see NEXT.md). The STANDING TICKLE is
+re-armed for the next CLI bump.
+
+Scope discipline preserved: no `src/`, `schema.py`, `transitions.py` change.
+Witness script (`witness_repin_2_1_215.py`, adapted from Session 11's
+`witness_synth_control.py` + Session 10's `item0_witness.py`) and the copied
+`synth-hook-marker.sh` are ad hoc, uncommitted, scratchpad-only — matching
+every prior ADR-22 probe in this family. `ANTHROPIC_API_KEY` confirmed unset
+before and asserted-unset at script entry.
+
+Also this session (prerequisite, not part of the probe work): committed the
+Sessions 9–11 pending `config.yaml`/`NEXT.md`/doc-14 changes plus three
+untracked handoff files (`c376eea`). Found and corrected an additional,
+undocumented `config.yaml` drift beyond the known duplicate-key fix: the
+`reviewer.qwen.model` line had been changed to `qwen2.5-coder:14b`, a model
+not present in `ollama list` (only `qwen2.5vl:7b` is pulled) — reverted to the
+bare `qwen2.5-coder` value with an honest comment, since neither value
+actually matches the local inventory and Step-3 precondition #2 remains
+UNMET. The `validation.commands` fix (now pointing at
+`tests\qc\test_qc_rules.py`, confirmed to exist in StockPhotoAgent) was kept
+as-is.
+
+---
+
 ## Steps 3–5 — NOT STARTED
 
 Gated live smoke (3) is now **UNBLOCKED on the ADR-22 contamination question**
