@@ -31,11 +31,17 @@ flag) were actively checked and ruled out — see doc 14 §2.6. **Do NOT treat
 this as "B is now provably safe to sunset"** — the sunset condition is
 specifically about A-empty surviving a CLI bump with BOTH probe legs green,
 and leg 1 is currently unfalsifiable-by-this-guard, not passed. B stays.
-Re-attempt the full two-leg re-run on the NEXT version bump — but see the
-"vacuity-guard gap" item below first, since the control leg may need a
-different construction before it can discriminate again.
+Re-attempt the full two-leg re-run on the NEXT version bump. **Session 11
+update (2026-07-18): the control leg now has a working replacement** — the
+synthetic-hook positive control (see VACUITY-GUARD GAP below) — use THAT
+control on the next re-pin instead of expecting the real ambient historian
+hook to discriminate; it hasn't in three independent attempts and there's no
+reason to expect a fourth to differ. The synthetic control only proves
+`--setting-sources` suppression works going forward, not that it would have
+caught the original historian bug specifically (permanently INFERRED) — see
+below for the full framing.
 
-## VACUITY-GUARD GAP (Session 9, 2026-07-17) — distinct from the B-sunset tickle above
+## VACUITY-GUARD GAP (Session 9, 2026-07-17; RESOLVED going-forward Session 11, 2026-07-18 — see below) — distinct from the B-sunset tickle above
 The Probe-0/Probe-A style control (no suppression, expect contamination) is
 what makes a clean `--setting-sources ""` probe *mean* "A-empty is doing
 work" rather than "nothing was ever going to contaminate this run anyway." As
@@ -47,9 +53,23 @@ with BOTH "A-empty still necessary and working" and "A-empty is now a
 no-op, masked by an unrelated upstream fix" — **the two are no longer
 distinguishable with this control.**
 
-**Decision needed before the next CLI-bump re-pin cycle relies on the
-vacuity guard again — not resolved this session (out of scope; recorded so
-it isn't silently dropped):**
+**Session 10 update (2026-07-17, same day): third independent data point,
+still not resolved.** Item 0's live run (doc 14 §2.6 "RUN this session")
+included a positive control — a second, differently-constructed control from
+Probe A (direct mutated-argv spawn with the empty-token pair stripped,
+rather than a separate ambient-settings run) — designed specifically to
+answer this gap for that one run. It also did not reproduce contamination
+(`knowledge/` absent across the full 450s poll with the isolation mechanism
+deliberately removed). This does not newly break anything — Item 0's main
+(unmutated) pass was clean and closes the argv-composition gap it was built
+for — but it means the vacuity concern is now reproduced under two
+independently-built controls, not one. **Still no position taken between (a)
+and (b) below; still parked.** Treat "clean under `--setting-sources ""`" as
+weaker evidence than it would be if either control had ever gone red.
+
+**Decision that was needed before the next CLI-bump re-pin cycle relies on
+the vacuity guard again — RESOLVED Session 11 (2026-07-18), see the Session
+11 update further below for the built-and-run evidence:**
 - **Option (a) — re-establish a discriminating control**, e.g. a small
   synthetic hook script (deliberately reproducing the "write before check"
   shape doc 08 §5c originally described: unconditionally touch a marker file
@@ -71,12 +91,101 @@ it isn't silently dropped):**
   `_command()`'s unit-tested argv shape plus the CLI's own documented
   `--setting-sources` semantics — rather than a live behavioral control).
 
-**This session takes no position between (a) and (b)** — flagged as an open
-decision for the next session that touches ADR-22 re-pinning, so it is
-chosen deliberately rather than by default when nobody remembers the guard
-used to exist.
+**Session 11 update (2026-07-18): Option (a) BUILT and RUN — control
+restored, going forward. Decision made, not left parked.**
+
+A synthetic, zero-gate assay hook (`synth-hook-marker.sh` — unconditional
+`mkdir -p .synth-marker && write fired.txt`, no checks of any kind, exit 0)
+was registered via a scratch **project-scope** `.claude/settings.json`
+(`SessionEnd` + `PreCompact`, `type: command`, absolute path,
+`async: false`, `timeout: 30`) in a throwaway probe cwd — never the real
+`~/.claude/historian` hook, never touching machine config. Two separate
+probe cwds were used (`probe_cwd_trigger`, `probe_cwd_empty`) so a leftover
+marker from one step could never be misread as the other's result.
+
+- **Step B (REQUIRED FIRST — prove the assay can go red).** Spawned via a
+  scratch witness script (`witness_synth_control.py`, uncommitted,
+  scratchpad-only) with a **mutated copy** of the real `_command()` argv
+  (`--setting-sources ""` → `--setting-sources project`) against
+  `probe_cwd_trigger`. **VERIFIED PASS**: marker present at t=0s (first
+  poll tick — essentially immediate, `async: false` as designed),
+  `event=SessionEnd`, `pid=229655` mechanically confirmed distinct from the
+  witness script's own pid (`22956`), `cwd` field in the marker exactly
+  matches `probe_cwd_trigger` (not a wrong-cwd write). `exit_status=0`,
+  `apiKeySource="none"`. The assay's own trigger mechanism is proven to
+  fire — this control has now been watched go red before being trusted.
+- **Step C (only run after Step B passed — the real A-empty comparison).**
+  Spawned with the **real, unmutated** `_command()` output
+  (`--setting-sources ""`, production shape) against a fresh, separate
+  `probe_cwd_empty`. **VERIFIED PASS**: marker absent at every one of 16
+  polls across the full 450s window; `exit_status=0`, `apiKeySource`
+  unchanged. The wrong-cwd scan (checked for `.synth-marker/fired.txt`
+  anywhere under the scratch root, not just the expected path) found only
+  Step B's own leftover marker in `probe_cwd_trigger` — confirming
+  `probe_cwd_empty` genuinely never got one, not that the scan missed it
+  elsewhere.
+
+**What this establishes, and what it does not (both halves, deliberately,
+per the plan that authorized this run):** A-empty suppresses this
+synthetic, zero-gate, project-scope hook — a discriminating positive
+control now exists, is owned by this project, and does not depend on
+whatever state the real ambient historian hook happens to be in on any
+given machine. Every future CLI re-pin can be re-run against this control
+and get an interpretable answer. **This does NOT, and cannot, retroactively
+upgrade "A-empty stopped the ORIGINAL historian contamination" from
+INFERRED to VERIFIED** — the synthetic hook is not the original historian
+code, and no artifact of the original bugged `historian-sweep.sh` survives
+to diff against (confirmed again this session: `~/.claude/historian` is not
+a git repo, no backup/transcript of the pre-patch script exists anywhere).
+That specific historical claim stays **permanently INFERRED**. Do not read
+this entry as "the vacuity gap is closed" — read it as "a working control
+exists going forward; the original root-cause question is closed off from
+ever being answered, and both facts are recorded, not one implying the
+other."
+
+**Decision recorded: Option (a) chosen over Option (b).** This resolves the
+"no position taken" line below — struck as of Session 11. The counter-case
+for (b) (a synthetic hook only proves `--setting-sources` behaves as
+CLI-documented in general, not that it would have stopped the specific
+original bug) was weighed and accepted as a known, permanent limitation,
+not a reason to skip building a forward-looking control.
 
 ## Resume point
+**Session 11 (2026-07-18): synthetic positive control for ADR-22 BUILT and
+RUN — see VACUITY-GUARD GAP above for full evidence (Step B/Step C, both
+VERIFIED PASS).** Also fixed a working-tree `config.yaml` corruption
+(duplicate `child_env:` key, diagnosed as an earlier Edit-tool replacement
+that anchored below the header instead of at it — not committed). Net
+effect: ADR-22's vacuity-guard gap now has a forward-looking, owned,
+discriminating control (Option (a), chosen and recorded) — future re-pins
+should use it instead of expecting the real ambient historian hook to
+discriminate. The original root-cause claim ("A-empty stopped the ORIGINAL
+contamination") remains and will always remain permanently INFERRED — no
+artifact of the pre-patch hook survives to ever verify it. Step 3 is still
+NOT started — this session did not touch Step 3's own five preconditions
+(Ollama/Issues.md/validation command/baseline-green/.gitignore), all still
+in whatever state Session 9 last recorded them. No `src/` change. No commit
+(standing rule). Witness scripts uncommitted, scratchpad-only.
+
+**Session 10 (2026-07-17, same day as Session 9): Item 0 RUN (not just
+designed) — see doc 14 §2.6 "RUN this session".** `claude` CLI version
+witnessed live again this run: 2.1.212, no drift. Real, unmodified
+`ClaudeHeadlessEngine.run()` composed against real `claude` for the first
+time (scratch workspace, never the StockPhotoAgent repo): clean —
+`exit_status=0`, `apiKeySource="none"`, `git init` denied with both
+`permission_denials` + `tool_result is_error:true` signals, `.git` absent,
+`knowledge/` absent across the full 450s poll, zero new `skips.log` lines
+for this run's cwd (required signal, not skipped). This closes the specific
+"never composed in one call" gap Item 0 targeted. **However**, the
+session's positive control (mutated argv, isolation mechanism stripped) also
+came back clean — see the VACUITY-GUARD GAP update above — so this is NOT
+read as an unqualified "ADR-22 mechanism proven working end-to-end"; it is
+"no regression observed in the composed path, and the vacuity-guard gap is
+now independently reproduced a third time." Step 3's precondition item 0 is
+therefore marked RUN/CLEAN-WITH-CAVEAT below, not silently CLOSED. No `src/`
+change this session; no commit (standing rule). Witness script uncommitted,
+scratchpad-only.
+
 **Session 9 (2026-07-17): `claude` CLI version witnessed = 2.1.212 (bumped
 from 2.1.211). Step-3 preflight sweep done — see doc 14 §2.6 for full
 evidence.** ADR-18 strip-vars + ADR-22 A-empty mechanism re-verified live at
@@ -156,18 +265,19 @@ none carried forward from Session 7/8 assumption:**
 0. **GATE, not a checklist line — live end-to-end re-witness of the ADR-22
    argv, through `ClaudeHeadlessEngine.run()` against the real `claude`
    binary, is a hard precondition on Step 3's live smoke, not an optional
-   preflight nicety.** **DESIGNED this session (doc 14 §2.6), NOT RUN**
-   (explicit scope boundary). Reason unchanged: the Python-side handoff (live
-   spawn, dummy child) and the CLI-side interpretation (hand-built argv,
-   including this session's Probes A/B) remain two *separate* legs — never
-   composed into one real run through the production `_command()` → `Popen`
-   → real `claude` path via the actual `ClaudeHeadlessEngine.run()` method.
-   The design: real `EngineCfg`/engine instance, scratch workspace (never a
-   real repo), call the real `_command()` for a structural pre-spawn assert,
-   then the real `run()` for the behavioral witness (fence-trip prompt +
-   450s contamination poll + `skips.log` cross-check). Full spec in doc 14
-   §2.6. **This must run and pass before Step 3's smoke, per the original
-   gate wording — unchanged.**
+   preflight nicety.** **RUN Session 10 (2026-07-17, doc 14 §2.6 "RUN this
+   session") — CLEAN, WITH A CAVEAT, not an unqualified pass.** The composed
+   real-`_command()`→`Popen`→real-`claude` path (never exercised together
+   before) came back clean: `exit_status=0`, `apiKeySource="none"`, `git
+   init` denied with both detection signals, `.git` absent, `knowledge/`
+   absent across the full 450s poll, zero new `skips.log` lines for this
+   run's cwd. That specific "never composed" gap IS closed. The caveat: this
+   session's positive control (mutated argv, isolation stripped) also came
+   back clean, so the run does NOT independently prove the mechanism is
+   doing detectable work — see VACUITY-GUARD GAP above (now a third
+   non-reproduction). Do not treat this line as "ADR-22 proven"; treat it as
+   "the specific composition gap is closed, the vacuity question is
+   separately still open."
 1. `project.validation.commands` in `config.yaml` still has the placeholder
    `'<StockAgent test command — REQUIRED before first run>'`. **RE-CHECKED
    LIVE, STILL UNCONFIRMED — genuinely no answer available without user
@@ -207,8 +317,11 @@ Directory-name caveat from doc 08 §6 (`⚠ confirm directory name on disk`):
 project.repository` exactly; `StockAgent` is cosmetic naming only
 (`project.name`).
 
-**Do NOT mark Step 3 planned or begin planning it — still out of scope; 0/1
-of the 6 preflight items (0–5) is fully closed (5 only).**
+**Do NOT mark Step 3 planned or begin planning it — still out of scope. Of
+the 6 preflight items (0–5): item 5 is fully CLOSED; item 0 is now
+RUN/CLEAN-WITH-CAVEAT (not a plain close — see item 0 above, its own gate
+condition wasn't unqualifiedly met); items 1–4 remain
+UNMET/blocked/unconfirmed. Step 3 is still not ready to start.**
 
 **Step 2 outcome (doc 14 §2):**
 - **2a billing** — split still PAUSED (Help Center art. 15036540, re-fetched

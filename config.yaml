@@ -8,7 +8,7 @@ project:
   issues_file: Issues.md
   validation:
     commands:
-      - '<StockAgent test command — REQUIRED before first run>'
+      - "python -m pytest tests\\qc\\test_qc_rules.py"
     timeout_seconds: 600
 engine:
   provider: claude-headless
@@ -17,14 +17,20 @@ engine:
   max_turns: 30
   timeout_seconds: 1800
   child_env:                     # ADR-22 B layer (belt-and-braces beside the
-    HISTORIAN_SWEEP_ACTIVE: '1'  # argv --setting-sources ""); sunset after one
-                                 # clean CLI-upgrade cycle with the A-empty
-                                 # re-pin probes green (doc 08 §5c)
+    HISTORIAN_SWEEP_ACTIVE: '1'  # argv --setting-sources ""); sunset only when
+                                 # BOTH Probe A (control, reproduces contamination
+                                 # w/o A-empty) and Probe B (A-empty, clean) are
+                                 # discriminating green on the same CLI version —
+                                 # a green B against a broken/non-reproducing A
+                                 # does not satisfy this (doc 08 §5c)
 reviewer:
   provider: qwen                 # ADR-05: qwen | claude
   qwen:
     endpoint: 'http://localhost:11434'
-    model: qwen2.5-coder
+    model: qwen2.5-coder         # NOT pulled locally yet (ollama list: only
+                                 # qwen2.5vl:7b) — Step-3 precondition #2 still
+                                 # UNMET; reverted from an uncommitted
+                                 # ':14b' edit that also didn't match inventory
 budget:                          # ADR-09
   max_attempts_per_issue: 3
   max_executions_per_run: 10

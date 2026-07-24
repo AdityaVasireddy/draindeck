@@ -777,6 +777,94 @@ the real `claude` binary in one composed run.
    one unqualified live VERIFIED; failing is a hard block on Step 3 and
    reopens ADR-22.
 
+#### Item 0 — RUN this session (2026-07-17, later same day). Behaviorally
+VERIFIED clean; positive control did NOT confirm detectability.
+
+**CLI version witnessed this run:** `2.1.212 (Claude Code)` — captured live
+via `shutil.which("claude")` + `--version` at the top of the witness script,
+matching the version already re-pinned earlier this session. No drift.
+
+**Pre-flight (design step 0):** `ClaudeHeadlessEngine._parse_result()` does
+NOT expose `permission_denials` or `tool_result` — confirmed by reading the
+function body (it extracts only `apiKeySource`, `usage`, `num_turns`). The
+witness script parses the transcript independently, keying on the `result`
+line's `permission_denials` array and `is_error:true` inside `tool_result`
+blocks nested in `user`-role messages — the same field names used by every
+prior probe (doc 08 §2.4, doc 13, §2.4/§2.5 above). Confirmed present and
+correctly shaped in the real transcript; this check is load-bearing (a
+missing field would have failed loudly, not silently passed).
+
+**Pass 1 (real, unmodified `engine.run()`, real `claude`, scratch workspace,
+`child_env={"HISTORIAN_SWEEP_ACTIVE": "1"}`):**
+- Argv-construction witness: `["--setting-sources", ""]` present as two
+  distinct elements, before `--disallowedTools`. OK.
+- `exit_status=0`, no `EngineEnvError`, `apiKeySource="none"`.
+- `git init` attempted (not self-censored), denied with BOTH signals:
+  `permission_denials` entry (`tool_name:"Bash"`, `command:"git init"`) and
+  `tool_result is_error:true`. `.git` absent from workspace.
+- `knowledge/` absent across all 16 polls over the full WAIT=450s window
+  (t=0,30,...,450), final check clean.
+- **Required independent signal**: zero new lines appended to
+  `~/.claude/historian/skips.log`, and no line (new or otherwise) keyed to
+  this run's workspace path.
+- Spawn-to-result: ~11s.
+
+This closes the specific composition gap §2.5/Item-0-design identified: the
+real `_command()` output, the real `Popen`/`communicate`/pidfile/
+`_hygienic_env()` path, and real `claude` were exercised together in one
+call for the first time, and it came back clean.
+
+**Pass 2 (positive control — mutated argv, `["--setting-sources", ""]` pair
+stripped from a copy of the real `_command()` output, spawned directly with
+the same `_hygienic_env()`, bypassing only `engine.run()`'s wrapper so the
+point — proving the assay can go red — isn't re-testing the real path):**
+- `exit_status=0`, `apiKeySource="none"`, `git init` still denied via the
+  explicit `--disallowedTools` flags (unaffected by the settings-source
+  mutation — the fence and the settings-isolation are independent argv
+  elements). `.git` absent.
+- `knowledge/` **absent across all 16 polls, full WAIT=450s window** — the
+  positive control did NOT reproduce contamination even with the isolation
+  mechanism deliberately removed and ambient settings scopes loading.
+
+**This is the load-bearing finding of this session's run.** The positive
+control was designed to prove the assay can discriminate "mechanism working"
+from "nothing was ever going to contaminate" (Session 6's R1 finding: "probe
+matrix lacked a positive control"). It did not confirm that. This is the
+SAME non-reproduction pattern as session 9's Probe A, now independently
+reproduced under a second, differently-constructed control (direct mutated
+spawn vs. Probe A's separate ambient-settings run) — a third data point, not
+a coincidence dismissible as one-off noise. Per NEXT.md's already-open
+VACUITY-GUARD GAP: a clean result under `--setting-sources ""` remains
+ambiguous evidence for whether A-empty is doing anything, versus the ambient
+historian hook simply no longer contaminating for reasons still INFERRED,
+not VERIFIED (no before/after diff of the hook's source exists).
+
+**Label precision:** every assertion above is BEHAVIORAL (permission denial,
+contamination absence, unchanged `apiKeySource`, skips.log absence) — real
+`claude` cannot echo its own `sys.argv` the way session 8's dummy Python
+child could. "VERIFIED" here means "behaviorally verified via a composed
+live run," not a literal argv echo.
+
+**Net status:** the specific gap Item 0 was designed to close — no session
+had ever composed the real `_command()`/`run()`/`Popen` path against real
+`claude` in one call — IS closed, and the composed run is clean. Item 0's
+own stated gate condition, however, also required the positive control to
+confirm detectability before collapsing to "one unqualified live VERIFIED";
+it did not. **Do not read this session as proof ADR-22 A-empty is working
+end-to-end** — read it as "no regression observed, AND the vacuity-guard gap
+is now independently reproduced a third time, deepening rather than
+resolving the open (a)/(b) decision already parked in NEXT.md." That
+decision is intentionally NOT resolved here, per this session's explicit
+scope boundary (parked for whoever next touches ADR-22 re-pinning) — this
+entry only adds the new evidence.
+
+Witness script: ad hoc, uncommitted, scratchpad-only (matches prior probe
+convention) — not checked into `tests/` or `src/`. Full JSON result and
+transcripts retained under the scratch `artifacts`/`artifacts_pc` dirs for
+this session; workspace dirs (`ws_real`, `ws_positive_control`) were torn
+down after the run (teardown step; no unexpected `.git` was created, so the
+defensive read-only-clear path was not exercised).
+
 Not executed this session (explicit scope boundary). Queued as the literal
 first action before Step 3's live smoke.
 
@@ -800,6 +888,92 @@ naming is cosmetic (`project.name`) only.
 cannot be checked until 1 is resolved; 5 is clear. None of these are ADR-22
 questions — they are unrelated StockAgent-side setup gaps, consistent with
 NEXT.md's existing framing.
+
+---
+
+## Session 11 (2026-07-18) — ADR-22 vacuity-guard: synthetic positive control BUILT and RUN
+
+Session 10 left the ADR-22 family with three independent non-reproductions
+of the original contamination control (session 9's Probe A, session 10's
+Item-0 Pass 2). No pre-patch artifact of `~/.claude/historian/
+historian-sweep.sh` exists anywhere to diff against — confirmed again this
+session (`~/.claude/historian` is not a git repo; no backup, no archived
+transcript of the pre-patch behavior survives). NEXT.md's parked "Option
+(a)" blueprint (a synthetic, self-owned hook, never the real historian) was
+built and run this session, resolving the "no position taken" state.
+
+**Design, deliberately distinct from the real historian:** `synth-hook-
+marker.sh` — zero internal gates (`mkdir -p .synth-marker && write
+fired.txt`, unconditional, exit 0) — vs. the real hook's four early-return
+checks (no-transcript, triviality, dedup, lock). Registered via a scratch
+**project-scope** `.claude/settings.json` (`SessionEnd` + `PreCompact`,
+`type: command`, absolute path to the script, `async: false` — deliberately
+NOT matching the real hook's `async: true`, to remove async-scheduling
+uncertainty while validating the assay itself — `timeout: 30`). Two
+separate, freshly-built probe cwds (`probe_cwd_trigger`, `probe_cwd_empty`)
+so a leftover marker from one step could never be misread as the other's.
+
+**Step B — prove the assay can go red (required first, own pass/fail).**
+Real `EngineCfg`/`ClaudeHeadlessEngine`, `engine._command(prompt_file)`
+called for its real production argv, then a **copy** mutated
+(`--setting-sources ""` → `--setting-sources project`), spawned against
+`probe_cwd_trigger` with a trivial "Reply OK. Do not use any tools." stdin
+prompt (subscription auth, model default). **PASS**: marker present at the
+very first poll tick (t=0s — essentially immediate under `async: false`);
+`marker_contents = {event: "SessionEnd", pid: "229655", cwd: ".../
+probe_cwd_trigger"}`; `pid` mechanically confirmed distinct from the
+witness script's own pid (`22956`, via `os.getpid()` at record time); `cwd`
+field in the marker matches the expected probe dir exactly (rules out a
+wrong-cwd write). `exit_status=0`, `apiKeySource="none"`.
+
+**Step C — the real A-empty comparison (only run after Step B passed).**
+`engine._command(prompt_file)` called **unmutated** — real production argv,
+`--setting-sources ""` — spawned against a fresh `probe_cwd_empty`. **PASS**:
+marker absent at all 16 poll ticks across the full `WAIT=450s` window
+(t=0,30,...,450); `exit_status=0`, `apiKeySource` unchanged. A scan for
+`.synth-marker/fired.txt` anywhere under the scratch root (not just the
+expected path — guards against a wrong-cwd false negative) found only Step
+B's own leftover marker in `probe_cwd_trigger`, confirming `probe_cwd_empty`
+genuinely never produced one.
+
+**Net finding, both halves stated (do not read as one collapsing into the
+other):**
+1. A-empty suppresses this synthetic, zero-gate, project-scope hook —
+   VERIFIED, mechanically, via file-existence checks and a pid-distinctness
+   check, not engine/reviewer self-report. This control is now owned by
+   this project and can be re-armed on demand for any future CLI re-pin,
+   independent of whatever state the real ambient historian hook happens to
+   be in on a given machine.
+2. This does **not**, and structurally cannot, retroactively upgrade "A-
+   empty stopped the ORIGINAL historian contamination" from INFERRED to
+   VERIFIED. The synthetic hook is not the original historian code and
+   never was; no artifact of the pre-patch script survives to compare
+   against. That specific historical claim remains **permanently INFERRED**
+   — this session closes off the possibility of ever resolving it further,
+   rather than resolving it.
+
+Decision recorded (NEXT.md updated in parallel): Option (a) chosen over
+Option (b). The counter-case for (b) — a synthetic hook only proves
+`--setting-sources` semantics work in general, not that they'd have caught
+the specific original bug — was weighed and accepted as a permanent,
+named limitation, not treated as a reason to skip building a forward-facing
+control.
+
+Scope discipline preserved: no `src/` change (Step C uses `_command()`
+unmutated; Step B's mutation is a copy, made in the scratch script only,
+same technique as session 10's Item-0 Pass 2); no `schema.py`/
+`transitions.py`; no Step 3 live smoke; no commit. Witness script
+(`witness_synth_control.py`) and hook (`synth-hook-marker.sh`) are ad hoc,
+uncommitted, scratchpad-only — matching every prior ADR-22 probe in this
+family.
+
+Also this session (prerequisite, not part of the control work): a
+working-tree `config.yaml` corruption (duplicate `child_env:` key) was
+diagnosed and fixed — not committed. Diagnosis: an earlier restore-style
+edit's replacement was anchored below the `child_env:` header rather than
+at it, so it appended a duplicate header instead of replacing in place —
+confirmed via `git diff` against HEAD plus a live `load_config()` call
+before and after the fix (`ConfigError` before, clean load after).
 
 ---
 
