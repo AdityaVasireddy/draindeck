@@ -173,6 +173,58 @@ Probes passed (done, §2.4) → **Adi selects an option** → ADR-22 marked Acce
 
 ---
 
+## 5d. ADR-23 — Validation-command toolchain resolution and child-env hygiene
+
+**Status:** ACCEPTED · **Date:** 2026-07-25 (Session 14). Options selected by Adi this session (both forks below signed off explicitly). Rule 1 + rule 2 land immediately; rule 3's mechanism (Phase 2) is decided but NOT yet built — it lands under its own gate chain, recorded at the end of this section.
+
+**Problem.** `Validator._run_once` (`src/runtime/validation/runner.py:90-94`) spawns `project.validation.commands` via `subprocess.run(cmd, cwd=workspace, shell=True, …)` with **no `env=`** — the child inherits the orchestrator's entire environment. The engine path does the opposite (`claude_headless.py:294` passes `env=self._hygienic_env()`, ADR-18 strip applied last). **ADR-18 governs the engine child only; nothing governs the validator child.** Consequence: a validation verdict is currently a function of `(tree, operator shell state)`, not of `(tree)` alone — which is inconsistent with doc 03 / ADR-11 `validated_commit` pinning (the gate is meant to be a fact about a tree hash) and with ADR-15's consequent claim that verdicts approve a tree and are therefore cacheable.
+
+**Evidence (VERIFIED live 2026-07-25; full probe set in the Session-14 record).**
+- The configured command, run through the Validator's exact spawn shape, failed `ModuleNotFoundError: No module named 'PIL'` (exit 2). Bare `python` resolved to `C:\Projects\issue-runtime\.venv\Scripts\python.exe` — this repo's own venv, not the target's.
+- With `VIRTUAL_ENV` unset and `.venv` off PATH, the *same* command on the *same* commit resolved to `C:\Python314\python.exe` and behaved differently. **The verdict flips on operator shell state alone.**
+- An **absolute** interpreter path does NOT protect the child: with `PYTHONPATH` inherited, an injected `sitecustomize.py` **executed automatically** inside the validation subprocess before the target code. Absolute paths pin *which interpreter runs*, not *what it inherits*.
+- `VIRTUAL_ENV=""` is still `in os.environ` (True) whereas unset is False — **empty ≠ absent**, mechanically. Any overlay that can only *set* cannot neutralize a variable that tools test by membership.
+- A near-empty env (`env -i`) did **not** break Windows stdlib (`import ssl, socket, tempfile` → ok, exit 0) — recorded because it disproves the assumed blocker against option F below.
+
+**Decision — two normative rules plus one mechanism.**
+1. **Commands are self-contained.** `project.validation.commands` MUST name an absolute interpreter/toolchain path. The runtime resolves nothing: it does not detect venvs, inspect target-repo layout, or infer a language. Preserves the CONFIG-ONLY rule; requires no `src/` change.
+2. **Commands name explicit targets.** Commands MUST name specific test targets — never a bare runner, directory, or glob relying on discovery. *Evidence:* StockPhotoAgent's only two pytest-collectible files (`test_button_selector_only.py`, `test_login_only.py`) are live credentialed browser automation (keyring credentials, non-headless Chromium, hardcoded batch UUIDs against a third-party site). A discovery-based command would execute them as part of a gate.
+3. **Mechanism — `project.validation.env` (Phase 2).** A config-supplied dict merged into the validation child env where **a null value means unset**. `src/` stays language-agnostic: merge non-null keys, pop null keys; it never learns what `VIRTUAL_ENV` means. Mirrors ADR-22's `engine.child_env` precedent — machine-specific names live in config, `src/` stays generic.
+
+**What this claims, and what it does not.** Phase 2 **closes the enumerated ambient vectors** (`PATH`, `VIRTUAL_ENV`, `PYTHONPATH`, `PYTHONHOME`), including the absent-vs-empty distinction additive-only merging cannot express. It does **NOT** eliminate the unenumerated tail: any inherited variable not named in config still reaches the child. The supportable claim is *"known vectors closed; unenumerated tail documented, not closed"* — **not** "the verdict is restored to a pure function of the tree." An earlier draft of this decision asserted that stronger claim and it was **withdrawn under review as unsupportable**; it is recorded here as withdrawn rather than quietly dropped.
+
+**Options considered.**
+- **A — self-contained commands.** ADOPTED as rule 1. *For:* zero `src/` change; honors CONFIG-ONLY; works today; the config author already owns the command string. *Against:* necessary but NOT sufficient — pins the interpreter, not the inherited env.
+- **B — target-repo venv auto-detection in `src/`. REJECTED.** Hardcodes language and layout convention into `src/`, which the project's hard rules forbid; and would not have worked anyway — StockPhotoAgent has no venv directory.
+- **C — target repo declares its interpreter by convention. REJECTED.** Invents a cross-repo contract every future target must adopt, and makes the runtime depend on target-repo cooperation — the class ADR-22 Option D already rejected as "ambient tooling the runtime cannot depend on."
+- **D — additive-only `validation.env`, exactly mirroring `engine.child_env`. REJECTED.** Tightest precedent match and smallest delta, but it cannot unset; `VIRTUAL_ENV` — the vector behind this session's bug — would remain leaked *by construction*, for no meaningful saving over E.
+- **E — additive + null-unset. ADOPTED as rule 3.** Closes the identified live vectors at near-minimal `src/` cost, keeps `src/` language-agnostic, and states a claim defensible under audit.
+- **F — allowlist base (env built from empty + only listed vars). DEFERRED — explicitly not rejected on feasibility.** The only shape that closes the unenumerated tail, and the assumed blocker was disproved (see evidence). Deferred because its failure mode — a missing enumerated var surfacing as a false-red baseline — refuses startup under ADR-20 and would spend ADR-19 budget on environment debugging rather than the experiment it is meant to fund. Adopt on the trigger below, not on a date.
+
+**Escalation trigger (Phase 2 → option F).** Escalate if **any one** is observed. Each is detectable from signal that already exists — this is a condition, not a "revisit someday":
+- **T1.** Two validation runs at the same `validated_commit`, same config, same overlay produce different verdicts. *Detector:* the existing `ValidationResult.flake_retries` counter — a pass-on-retry is already recorded as flaky, so a nonzero flake rate on a suite with no known nondeterminism is the signal; no new instrument required.
+- **T2.** A post-Phase-2 failure log shows a module-resolution/toolchain error not attributable to the target repo's own code — i.e. this session's failure shape recurring after the enumerated vectors are closed.
+- **T3.** The env witness (below) shows a variable *outside* the enumerated set differing between two runs whose verdicts differed.
+
+**Sequencing (binding).**
+- Rules 1 + 2 and the `config.yaml` fix land immediately (Phase 1) and unblock precondition #1's *interpreter* defect.
+- The **watched, single-issue diagnostic smoke MAY proceed** on the rule-only fix, provided the env witness below is captured for that run. A contaminated result in a supervised probe is informative, not corrupting.
+- The **ADR-19 20-issue measured sample MUST NOT start until Phase 2 has landed and been verified.** Those verdicts are consumed once as kill-criteria evidence under a hard budget; contamination there is permanent and undetectable after the fact.
+
+**Env witness (required mechanism for any pre-Phase-2 live run).** Scratchpad-only witness script, same pattern as the ADR-22 witnesses (`witness_synth_control.py`, `witness_repin_2_1_215.py` — uncommitted, never in `src/`), run in the *same shell that launches `main.py run`*, writing a JSON record alongside that run's validation artifacts under `state/artifacts/<execution_id>/validation/`. It must capture **from inside a child spawned with the Validator's exact `subprocess.run(shell=True, cwd=repo)` shape** — parent-side capture alone is not a witness of what the child saw:
+- `PATH`, `VIRTUAL_ENV`, `PYTHONPATH`, `PYTHONHOME` — each as present/absent **plus** value, so absent-vs-empty stays distinguishable;
+- `sys.executable`, `sys.prefix`, `sys.version`;
+- the `validated_commit` and a UTC timestamp.
+
+Without this, "the smoke is watched, not silently recorded" is a promise with no mechanism — a shape this project does not accept elsewhere.
+
+**Non-vacuity requirement for baseline green (Step-3 precondition #4).** A zero exit code alone does not establish a baseline. Before precondition #4 may be marked MET, the configured gate must be witnessed **non-vacuous once**: collected count > 0, AND a deliberate mutation to the code under test turns it red. Same discipline already applied to the crash harness (mutation-tested; R1 / fixture `f5`), and the direct analogue of ADR-22's vacuity guard — a green gate that collects nothing is the same class of error as a probe that cannot detect its own failure mode. Concrete instance: with the correct interpreter, the currently-configured target returns pytest exit 5 (`collected 0 items`), so the command as configured can never produce a meaningful pass.
+
+### Gate chain before Phase 2's mechanism lands (rule 3)
+ADR-23 Accepted (done, above) → Phase 1 (docs + `config.yaml` command line + NEXT.md) committed → **separate session** for `src/`: `ValidationCfg.env` added to the schema (note `extra="forbid"`, `src/runtime/config.py:28` — the key does not exist until then, so `validation.env:` MUST NOT appear in `config.yaml` before it) + `runner.py` env construction + new unit tests asserting on the built env dict (result-shape, not call-order) → unit suite green → **durability harness 60/60 on BOTH seeds 42 and 1337** (gating because `src/` logic changes) → Phase 2 complete. `src/` changes are legitimate only as the implementation of an Accepted ADR.
+
+---
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml

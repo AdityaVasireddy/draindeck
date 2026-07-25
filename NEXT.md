@@ -168,9 +168,71 @@ not a reason to skip building a forward-looking control.
 
 ## Resume point
 
-**Session 14 (2026-07-25): Step-3 precondition #3 CLOSED, plus a NEW
-separate tracked item opened (not folded into #3) — see both dated entries
-below.**
+**Session 14, continued (2026-07-25): ADR-23 ACCEPTED (docs/08 §5d) —
+validation-command toolchain resolution and child-env hygiene. Phase 1
+(docs + config.yaml command line) landed this session; Phase 2 (`src/`
+mechanism) explicitly NOT started — separate session, gated on the full
+suite + harness.**
+
+**Why this exists:** re-checking Step-3 preconditions #1 (real validation
+command) and #4 (baseline green) surfaced that `Validator._run_once`
+(`src/runtime/validation/runner.py:90-94`) spawns `validation.commands` with
+no `env=` — the child inherits the orchestrator's whole environment.
+ADR-18's hygiene covers only the engine child (`claude -p`), never the
+validator child. VERIFIED live: the exact same command, repo, and commit
+produced `ModuleNotFoundError: No module named 'PIL'` under an activated
+`.venv` shell and a *different* outcome under a clean shell — the
+validation verdict was a function of operator shell state, not of the tree
+alone, in tension with doc 03 / ADR-11's `validated_commit` pinning. Full
+evidence (8 probes), decision rationale, rejected options, and the
+escalation trigger are in `docs/08-session-0-closure-and-adr-amendments.md`
+§5d — not duplicated here.
+
+**Phase 1 (this session, landed):**
+- `docs/08-session-0-closure-and-adr-amendments.md` — new §5d, ADR-23
+  ACCEPTED, full text (problem, evidence, decision, options A–F, escalation
+  trigger, sequencing, env-witness spec, non-vacuity requirement, gate
+  chain for Phase 2).
+- `config.yaml` — `validation.commands` changed from bare `python` to
+  absolute `C:\Python314\python.exe` (ADR-23 rule 1). **This fixes the
+  interpreter defect ONLY.** `tests\qc\test_qc_rules.py` has ZERO
+  pytest-collectible `test_*` functions (VERIFIED: even with the correct
+  interpreter, `collected 0 items`, exit 5) — so ADR-23's non-vacuity
+  requirement is still unmet by this command. **Step-3 precondition #1
+  remains UNMET** — the interpreter half of the bug is fixed, the "points
+  at a non-test script" half is not, and that second half is a
+  StockPhotoAgent-side fix, out of scope for this repo.
+- This entry (`NEXT.md`).
+
+**Phase 2 (NOT started — separate session, Opus per this session's own
+gating instruction):** `ValidationCfg.env: dict[str, str | None]` (null =
+unset) in `src/runtime/config.py` (note: `extra="forbid"` there today, so
+`validation.env:` must NOT be added to `config.yaml` before this schema
+change lands — it would raise at config load) + child-env construction in
+`runner.py` + new unit tests. Hard merge preconditions per the ADR: unit
+suite green (106) AND durability harness 60/60 on **both** seeds 42 and
+1337 (gating because `src/` logic changes).
+
+**Binding sequencing constraint (ADR-23, applies to Step 3 planning
+whenever it resumes):** a watched, single-issue diagnostic smoke MAY run on
+the Phase-1-only fix, provided the env witness described in docs/08 §5d is
+captured for that run. The **ADR-19 20-issue measured sample MUST NOT start
+until Phase 2 has landed and been verified** — those 20 verdicts are
+consumed once as kill-criteria evidence under a hard budget; a
+shell-state-contaminated verdict there would be permanent and
+undetectable, unlike in a supervised smoke.
+
+**Precondition #4 (baseline green) — non-vacuity requirement added (ADR-23):**
+a zero exit code alone no longer establishes baseline green. The gate must
+be witnessed non-vacuous once (collected count > 0, and a deliberate
+mutation to the code under test turns it red) before #4 can be marked MET
+— same discipline as the crash harness's own mutation-testing (fixture
+`f5`). Today's command fails this even before reaching that question
+(collects 0 items outright).
+
+**Session 14 (2026-07-25, earlier this day): Step-3 precondition #3 CLOSED,
+plus a NEW separate tracked item opened (not folded into #3) — see both
+dated entries below.**
 
 **Entry 1 — PRECONDITION #3 CLOSED (2026-07-25).** `Issues.md` authored in
 StockAgent at the correct location and format. Evidence trail, all VERIFIED
@@ -425,7 +487,18 @@ none carried forward from Session 7/8 assumption:**
    `Makefile`/CI workflow exists anywhere in `C:\Projects\StockPhotoAgent`;
    `CLAUDE.md` documents many `python -m src....` operational commands but no
    test runner. This is not a probing gap — there is nothing left to probe;
-   someone must author or supply the command.
+   someone must author or supply the command. **RE-CHECKED LIVE Session 14
+   (2026-07-25) — STILL UNMET, two independent problems found and only ONE
+   fixed.** (a) Bare `python` in the configured command resolved
+   ambiguously — VERIFIED to different interpreters depending on operator
+   shell state (this repo's own `.venv`, lacking StockPhotoAgent's Pillow
+   dependency, vs. `C:\Python314\python.exe`, which has it) — **FIXED this
+   session**: `config.yaml` now pins the absolute path (ADR-23 rule 1, see
+   dated entry at the top of Resume point and `docs/08` §5d). (b) Even with
+   the correct interpreter, `tests\qc\test_qc_rules.py` has ZERO
+   pytest-collectible `test_*` functions — VERIFIED exit 5, `collected 0
+   items` — **NOT FIXED**, out of scope (StockPhotoAgent-side authoring).
+   Precondition #1 stays UNMET on (b) alone.
 2. Ollama running with the configured reviewer model pulled. **RE-CHECKED
    LIVE Session 9 — UNMET at the time** (`ollama list` showed only
    `qwen2.5vl:7b`; `config.yaml → reviewer.qwen.model` named the un-pulled
@@ -455,7 +528,21 @@ none carried forward from Session 7/8 assumption:**
    (`test_401_response_body.py`, `test_csrf_cookie_match.py`,
    `test_login_only.py`, ...), not obviously StockAgent's own suite. `git
    status` on `agent-work` itself is otherwise clean (only the untracked
-   `docs/Issues.md` from #3).
+   `docs/Issues.md` from #3). **RE-CHECKED LIVE Session 14 (2026-07-25) —
+   STILL BLOCKED on #1, plus a NEW requirement added (ADR-23): a zero exit
+   code alone no longer counts as baseline green.** The gate must be
+   witnessed non-vacuous (collected count > 0, and a deliberate mutation to
+   the code under test turns it red) before #4 can be marked MET — same
+   discipline as the crash harness's own mutation-testing. VERIFIED this
+   session: the auth/network-probe suspicion above is confirmed, not just
+   suspected — grepped the full `tests/` tree for `^def test_|^class Test`;
+   only `test_button_selector_only.py` and `test_login_only.py` match, and
+   both are live credentialed Playwright browser automation against a real
+   third-party site (`keyring` credentials, non-headless Chromium,
+   hardcoded batch UUIDs) — confirmed by reading them, not run. No safe,
+   appropriate, currently-passing baseline exists anywhere in this repo's
+   `tests/` tree today; see `docs/08` §5d for the full non-vacuity
+   requirement text.
 5. StockAgent `.gitignore` hygiene (covers build/test byproducts).
    **RE-CHECKED LIVE — MET.** Covers `input/output/done/failed/review/`,
    `database/`, `logs/`/`*.log`/`debug_logs/`, `__pycache__/`, venv
@@ -486,6 +573,24 @@ UNMET/blocked/unconfirmed. Step 3 is still not ready to start.**
 > or enforce the checked-out branch before reading `Issues.md` — see the
 > dated entry at the top of the Resume point section for full evidence and
 > the two options recorded for decision.
+
+> **UPDATE 2 (Session 14, continued, 2026-07-25).** Item 1's "has not been
+> run to confirm it passes" (previous update) has now been run — result:
+> UNMET, on two independent grounds. Interpreter ambiguity (bare `python`,
+> VERIFIED resolving to different interpreters depending on operator shell
+> state) is FIXED (`config.yaml` now pins an absolute path, ADR-23 rule 1).
+> The target file itself is not fixed: `tests\qc\test_qc_rules.py` has zero
+> pytest-collectible tests (VERIFIED, exit 5, `collected 0 items`) — a
+> StockPhotoAgent-side gap, out of scope here. Item 4 stays blocked on item
+> 1, plus ADR-23 adds a non-vacuity requirement to item 4 itself (zero exit
+> code alone no longer counts as green). New ADR: **ADR-23** (`docs/08` §5d,
+> ACCEPTED) — ADR-18 covered the engine child's environment only; the
+> validator child had none. Phase 1 (docs + config line) landed this
+> session; Phase 2 (`src/` mechanism, `project.validation.env` with
+> null-unset semantics) is a separate session, gated on unit-suite-green +
+> harness-60/60-both-seeds. Binding constraint: the ADR-19 20-issue measured
+> sample must not start until Phase 2 lands — see the dated entry at the
+> top of the Resume point section for full evidence and rationale.
 
 **Step 2 outcome (doc 14 §2):**
 - **2a billing** — split still PAUSED (Help Center art. 15036540, re-fetched
