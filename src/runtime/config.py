@@ -31,6 +31,16 @@ class _Frozen(BaseModel):
 class ValidationCfg(_Frozen):
     commands: list[str] = Field(min_length=1)
     timeout_seconds: int = Field(gt=0, default=600)
+    # ADR-23 rule 3 (doc 08 §5d): extra vars merged into the VALIDATION child
+    # env by Validator._run_once. ADR-18/ADR-22 hygiene governs the engine
+    # child only — this is the validator child's equivalent, and it is not the
+    # same mechanism. A value of None means UNSET the key in the child, not
+    # "leave it inherited" and not "set it empty": empty != absent (a tool
+    # testing `"VIRTUAL_ENV" in os.environ` sees "" as present), so an
+    # additive-only overlay could not neutralize the vector behind the bug
+    # this ADR addresses. Machine-specific names live HERE, in config —
+    # src/ stays language-agnostic and never learns what these mean.
+    env: dict[str, str | None] = Field(default_factory=dict)
 
 
 class ProjectCfg(_Frozen):

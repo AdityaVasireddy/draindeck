@@ -203,7 +203,8 @@ def cmd_run(args) -> int:
     if report.replayed_events == 0 and not args.skip_baseline:
         validator = Validator(cfg.project.validation.commands,
                               timeout_seconds=cfg.project.validation.timeout_seconds,
-                              artifacts_dir=artifacts_dir)
+                              artifacts_dir=artifacts_dir,
+                              env=cfg.project.validation.env)  # ADR-23: same hygiene as the loop's validator
         head = adapter.head_of(cfg.project.branch) or adapter.current_commit()
         res = validator.validate(cfg.project.repository, head, "baseline")
         if not res.passed:
@@ -226,7 +227,8 @@ def cmd_run(args) -> int:
         cfg=cfg, log=log, proj=proj, adapter=adapter, engine=engine,
         validator=Validator(cfg.project.validation.commands,
                             timeout_seconds=cfg.project.validation.timeout_seconds,
-                            artifacts_dir=artifacts_dir),
+                            artifacts_dir=artifacts_dir,
+                            env=cfg.project.validation.env),  # ADR-23: same hygiene as the baseline check
         reviewer=_make_reviewer(cfg),
         budget=BudgetManager(cfg.budget.max_executions_per_run,
                             cfg.budget.hard_stop_proxy_cost_per_run_usd),

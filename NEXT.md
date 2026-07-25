@@ -168,6 +168,80 @@ not a reason to skip building a forward-looking control.
 
 ## Resume point
 
+**Session 15 (2026-07-25): ADR-23 Phase 2 (`src/` mechanism) LANDED and
+VERIFIED at the unit + live-child level. The ADR-spec end-to-end
+differential against StockPhotoAgent is DEFERRED (not performed) — see the
+three-part blocker below.**
+
+**What landed (all VERIFIED this session — each ran, none assumed):**
+- `ValidationCfg.env: dict[str, str | None]` in `src/runtime/config.py` —
+  a `None` VALUE means UNSET the key in the child (not "" and not
+  "inherited"). Declared field (not `extra="forbid"` passthrough — verified
+  in the failing direction: a typo'd sibling key and the same dict one level
+  up are both still rejected).
+- `Validator._child_env()` in `src/runtime/validation/runner.py` — builds a
+  fresh `dict(os.environ)` per call, then a SINGLE pass over the overlay:
+  `built.pop(key, None)` on a `None` value (pop from the BASE — not the
+  overlay, which is the whole point of the `str | None` design; popping the
+  overlay would leave the inherited copy in place and neutralize nothing),
+  else `built[key] = value`. Passed as `env=` to the validation
+  `subprocess.run` (which previously passed NO `env=` at all — the actual
+  ADR-23 defect). Closes the four enumerated vectors (PATH, VIRTUAL_ENV,
+  PYTHONPATH, PYTHONHOME); does NOT close the unenumerated tail (option F,
+  deferred).
+- `src/runtime/main.py` — BOTH `Validator(...)` call sites (baseline check
+  ~204, orchestrator ~227) now pass `env=cfg.project.validation.env`,
+  identically. Baseline must not run under different hygiene than real
+  validation or it reintroduces the exact divergence Phase 2 exists to close.
+- `tests/unit/test_validation_env_adr23.py` — 6 result-shape tests (assert on
+  the built dict, never on `subprocess.run` call args). The load-bearing one
+  (`test_inherited_key_nulled_is_absent_from_child`) asserts membership-
+  ABSENCE, the ONLY assertion that discriminates: verified RED under a
+  pop-from-overlay mutant, the other 5 staying green, then restored.
+
+**Gate chain (all green, ran this session):** full unit suite **112/112**
+(identity-confirmed: new file collects exactly 6, suite-minus-new-file
+collects exactly 106 = prior baseline unmoved). Durability harness **60/60 on
+seed 42 AND 60/60 on seed 1337**, reported separately (gating because `src/`
+logic changed). Live-child witness (scratchpad-only, uncommitted): with
+`VIRTUAL_ENV` seeded into the parent env and `None` in the overlay, a real
+child spawned through the Validator's exact `subprocess.run(shell=True)` shape
+saw `VIRTUAL_ENV` genuinely ABSENT (`present=false, value=null`), while an
+unenumerated parent-only var still inherited — the absent-vs-empty
+distinction (ADR-23 probe 7) confirmed at the OS boundary, and the open tail
+confirmed still open.
+
+**DEFERRED — the ADR-spec end-to-end differential (step 6) was NOT run.**
+Deferral is blocked by a THREE-PART AND, each independently sufficient, and
+fixing any one alone does NOT unblock it — all three must hold before the
+differential can run as a genuine verification:
+- **(a)** The env-witness script (docs/08 §5d) is not built — correctly out
+  of scope this session (do-not-touch list).
+- **(b)** Precondition #4 non-vacuity: the configured target
+  (`tests\qc\test_qc_rules.py`) collects **0 items** (pytest exit 5)
+  regardless of interpreter — a StockPhotoAgent-side gap. A differential
+  against a target that collects nothing compares two vacuous runs; the delta
+  is vacuous (the project's own vacuity discipline — a green that proves
+  nothing is worse than none, because it later gets cited as real).
+- **(c)** The "before" half is unwitnessable for THIS change: Phase 2 code
+  now exists, and ADR-23 requires the check go red-before / green-after to be
+  a verification rather than a tautology. A prior session's probes are not
+  this session's live observation.
+
+**CARRY-FORWARD (do not let the deferred session inherit a fake "before"):**
+that session's differential CANNOT use a `git stash` reconstruction as its
+before-half — a stashed pre-mechanism state is SIMULATED, not witnessed, and
+that is a semantic defect, not a sequencing inconvenience to engineer around.
+It must either (i) observe "before" live AHEAD of the NEXT mechanism change,
+or (ii) record the honest claim as "mechanism verified at unit + live-child
+level; end-to-end differential not performed" and label it EXACTLY that. A
+stashed before must never be quietly upgraded to a witnessed one.
+
+**Still UNMET after Phase 2 (unchanged — Phase 2 does not touch these):**
+Step-3 preconditions #1(b) (target collects 0 tests) and #4 (baseline
+non-vacuity) remain StockPhotoAgent-side gaps. Phase 2 fixed the env-hygiene
+MECHANISM, never the non-vacuity of the configured target.
+
 **Session 14, continued (2026-07-25): ADR-23 ACCEPTED (docs/08 §5d) —
 validation-command toolchain resolution and child-env hygiene. Phase 1
 (docs + config.yaml command line) landed this session; Phase 2 (`src/`

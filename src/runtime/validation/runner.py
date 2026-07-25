@@ -12,6 +12,7 @@ gate ran against) so the I3 pin gate can compare end == validated == reviewed.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -47,12 +48,20 @@ class Validator:
         *,
         timeout_seconds: int,
         artifacts_dir: Path | str,
+        env: dict[str, str | None] | None = None,
     ) -> None:
         if not commands:
             raise ValueError("Validator requires at least one command")
         self.commands = list(commands)
         self.timeout = timeout_seconds
         self.artifacts_dir = Path(artifacts_dir)
+        # ADR-23 rule 3 (doc 08 §5d): the config-supplied env overlay for the
+        # validation child. Copied so a later mutation of the caller's dict
+        # can't drift what this Validator applies. A None VALUE unsets its key
+        # (see _child_env); an empty/omitted overlay means "inherit the parent
+        # env unchanged" — the pre-ADR-23 behaviour, so existing callers are
+        # unaffected.
+        self.env: dict[str, str | None] = dict(env) if env else {}
 
     def validate(self, workspace: Path | str, validated_commit: str,
                  execution_id: str) -> ValidationResult:
@@ -79,6 +88,35 @@ class Validator:
                 break  # cheapest-first short-circuit
         return result
 
+    def _child_env(self) -> dict[str, str]:
+        """Build the validation child's environment (ADR-23 rule 3, doc 08 §5d).
+
+        Start from a FRESH snapshot of the parent env (built per call, like the
+        engine's ``_hygienic_env()`` — no startup-check-then-drift window), then
+        apply the config overlay in a SINGLE pass over its items, mutating the
+        base: a ``None`` value POPS the key FROM THE BASE (so an *inherited*
+        variable named with ``None`` is genuinely absent from the child, not
+        merely empty — ``VIRTUAL_ENV=""`` still tests True under ``in os.environ``
+        while an unset one tests False); any other value sets/overrides it.
+
+        Popping from the *base* — not from the overlay — is the whole point of
+        the ``str | None`` design: the parent env already carries the variable,
+        so removing it from the overlay would leave the inherited copy in place
+        and neutralize nothing.
+
+        This closes the enumerated ambient vectors (PATH, VIRTUAL_ENV,
+        PYTHONPATH, PYTHONHOME) named in config. It does NOT close the
+        unenumerated tail: any inherited variable not mentioned in the overlay
+        still reaches the child (ADR-23 option F, deferred).
+        """
+        built = dict(os.environ)
+        for key, value in self.env.items():
+            if value is None:
+                built.pop(key, None)
+            else:
+                built[key] = value
+        return built
+
     def _run_once(self, cmd: str, workspace: Path, log_path: Path,
                   *, append: bool = False) -> tuple[bool, float]:
         mode = "ab" if append else "wb"
@@ -90,6 +128,7 @@ class Validator:
                 proc = subprocess.run(
                     cmd, cwd=str(workspace), shell=True,
                     stdout=log, stderr=subprocess.STDOUT,
+                    env=self._child_env(),  # ADR-23: explicit child env, not inherited
                     timeout=self.timeout,
                 )
                 ok = proc.returncode == 0
