@@ -167,6 +167,113 @@ original bug) was weighed and accepted as a known, permanent limitation,
 not a reason to skip building a forward-looking control.
 
 ## Resume point
+
+**Session 14 (2026-07-25): Step-3 precondition #3 CLOSED, plus a NEW
+separate tracked item opened (not folded into #3) — see both dated entries
+below.**
+
+**Entry 1 — PRECONDITION #3 CLOSED (2026-07-25).** `Issues.md` authored in
+StockAgent at the correct location and format. Evidence trail, all VERIFIED
+this session (or the two prior sessions of this same investigation):
+- File exists at `C:\Projects\StockPhotoAgent\Issues.md`, committed
+  `58bc162`, `CommitDate: Sun Jul 19 13:53:45 2026 -0400` (`git show 58bc162
+  --format=fuller --no-patch`, raw output verified).
+- **Correction note:** an earlier turn in this same investigation
+  misreported this commit as dated 2026-07-17, by reading the file's
+  filesystem mtime (`stat` → `Modify: 2026-07-17 15:54:01`) and reporting
+  that as the commit date, without ever running `git log`/`git show` on the
+  hash itself. Filesystem mtime and commit date are distinct facts — this is
+  flagged as the specific error, not silently fixed, so the pattern (mtime
+  mistaken for commit date) is visible to future sessions. Same
+  dated-correction convention as doc 12's two prior correction notes.
+- Committed and currently present on `agent-work` — `git branch --all
+  --contains 58bc162` → `agent-work` only (no `main`/`master`, no remotes).
+- Parses cleanly via the real `issues_md.py` parser: 5 valid `IssueSpec`s,
+  no errors.
+- Checked against the only pinned grammar
+  (`src/runtime/queue/issues_md.py:1-19` docstring, cross-checked against
+  `tests/unit/test_seams.py:23-41`): all 5 issues PASS — valid `## id: title`
+  heading form, valid ids (`[A-Za-z0-9][A-Za-z0-9_-]*`), no duplicates,
+  `Depends-On`/`### Acceptance` correctly absent (both optional per spec, so
+  absence is not a defect).
+- **Content-readiness flag, not a format defect:** all 5 real issues have
+  zero acceptance criteria. If the reviewer gate leans on acceptance
+  criteria to judge issue resolution, these five currently give it nothing
+  concrete to check against. Separate concern from format compliance —
+  worth attention before/during Step 3, not a blocker to precondition #3
+  itself.
+
+**Entry 2 — NEW TRACKED ITEM (2026-07-25): "Ingest does not verify/enforce
+checked-out branch before reading `Issues.md`."** Status: **OPEN, decision
+needed.** Do NOT fold into precondition #3; do NOT close; no `src/` change
+made or proposed as part of this entry. Evidence, VERIFIED this session:
+- Currently checked out in StockPhotoAgent: `agent-work` (`git -C
+  C:\Projects\StockPhotoAgent branch --show-current`).
+- `main.py` startup order: adapter init → `recover()` → health checks →
+  `_ingest_issues` (`main.py:218`) → loop starts. No `checkout_branch` call
+  anywhere before ingest.
+- The only `checkout_branch` call in `src/` is `loop.py:204`, which fires
+  downstream of ingest and creates a per-issue work branch
+  (`issue/{issue}`) — not a checkout of `cfg.project.branch`, and not a
+  precondition for ingest.
+- Grep across all of `src/` confirms exactly two `checkout_branch`
+  definitions (`repo/adapter.py:100`, `repo/git_adapter.py:165`) and one
+  call site (`loop.py:204`) — no others.
+- **Conclusion:** `Issues.md` is currently read correctly only because
+  ambient `HEAD` happens to match `cfg.project.branch`. Nothing in the
+  runtime enforces or verifies this match. This is a gap between what
+  `config.yaml` declares (`project.branch: agent-work`) and what the
+  runtime actually checks at ingest time.
+- **Two options recorded for Adi's decision — neither chosen:**
+  - **Option A** — add an explicit `checkout_branch(cfg.project.branch)`
+    call before `_ingest_issues` in `main.py`. This is a `src/` change —
+    needs explicit sign-off (and likely an ADR, per the ADR-18→22 pattern of
+    documenting which environment facts the runtime assumes vs. enforces)
+    before implementation.
+  - **Option B** — accept as scoped risk for now; rely on Step 3 preflight
+    Item 0 (the end-to-end composed real-spawn run through
+    `ClaudeHeadlessEngine.run()`) to catch a branch mismatch before live
+    smoke, rather than fixing root cause pre-emptively.
+  - **Coverage check on Option B, done this session, VERIFIED (not
+    assumed):** Item 0 as currently scoped does **NOT** cover this. Per doc
+    14 §2.6/§2.7 (Leg B, and every prior Item 0 run), Item 0 spawns
+    `ClaudeHeadlessEngine.run()` against a **scratch workspace — explicitly
+    "never StockPhotoAgent"** (doc 14's own wording, repeated at every
+    Item-0 run to date) — it verifies ADR-22's argv/contamination fence, not
+    `main.py`'s startup sequence, and never calls `_ingest_issues` or
+    touches StockPhotoAgent's repo or its checked-out branch at all. If
+    Option B is pursued, Item 0 in its current form would silently NOT
+    surface a branch mismatch — that would require either widening Item 0's
+    scope to run against the real StockPhotoAgent repo, or a separate check.
+    This is stated explicitly rather than assumed, per instruction.
+
+## Resume point (prior sessions)
+**Session 13 (2026-07-24): Step-3 precondition #2 CLOSED — `settings.json`
+Write→Edit permission-rule fix applied and verified; `reviewer.qwen.model`
+reinstated to `qwen2.5-coder:14b`.** Session 12 (below) had reverted
+`reviewer.qwen.model` from an unattributed `qwen2.5-coder:14b` edit back to
+the bare `qwen2.5-coder`, on the stated grounds that `:14b` was "NOT pulled
+locally yet" per `ollama list`. **That check was wrong**: it ran against the
+machine's native CLI Ollama instance, not the separate Docker instance
+actually serving `config.yaml → reviewer.qwen.endpoint`
+(`http://localhost:11434`). Queried `localhost:11434/api/tags` directly this
+session: `qwen2.5-coder:14b` **is present** there (14.8B, Q4_K_M, pulled
+2026-04-17); the bare `qwen2.5-coder` the Session-12 revert landed on does
+not exist at that endpoint at all. `config.yaml` reinstated to
+`qwen2.5-coder:14b`, committed `cb23943`. See the two doc-12 correction
+notes (`docs/12-session4-engine-wrapper.md`, end of file) for the full
+provenance of both the original drift and this reinstatement. **This closes
+Step-3 precondition #2** — see the itemized precondition list below, item 2,
+now marked CLOSED. Also this session: applied the `settings.json`
+`Write(path)` → `Edit(path)` permission-rule fix at `~/.claude/settings.json`
+(user-scope, outside this repo, not git-tracked) after mechanical
+verification (8/8 Edit+Write attempts against 4 sensitive-path patterns
+denied in-transcript, all 4 target files independently re-hashed
+byte-identical pre/post) — unrelated to Step 3 but found and fixed in the
+same session; full raw evidence in that session's conversation record, not
+duplicated here. No `src/` change. Full handoff:
+`docs/handoffs/HANDOFF_2026-07-24_adr22-repin-settings-fix-model-reinstate.md`.
+
 **Session 12 (2026-07-24): ADR-22 STANDING TICKLE re-probe RUN and GREEN at
 CLI 2.1.215** — see the STANDING TICKLE section above and doc 14 §2.7 for
 full evidence (Leg B, Synth Step B, Synth Step C all PASS, raw-verified,
@@ -319,10 +426,16 @@ none carried forward from Session 7/8 assumption:**
    `CLAUDE.md` documents many `python -m src....` operational commands but no
    test runner. This is not a probing gap — there is nothing left to probe;
    someone must author or supply the command.
-2. Ollama running with `qwen2.5-coder` pulled. **RE-CHECKED LIVE — UNMET.**
-   `ollama list` shows only `qwen2.5vl:7b`; `qwen2.5-coder` (the model
-   `config.yaml → reviewer.qwen.model` names) is not pulled. `ollama ps`
-   shows the service reachable but idle.
+2. Ollama running with the configured reviewer model pulled. **RE-CHECKED
+   LIVE Session 9 — UNMET at the time** (`ollama list` showed only
+   `qwen2.5vl:7b`; `config.yaml → reviewer.qwen.model` named the un-pulled
+   `qwen2.5-coder`). **CLOSED Session 13 (2026-07-24)** — that Session-9
+   check queried the wrong Ollama instance. `config.yaml →
+   reviewer.qwen.endpoint` (`http://localhost:11434`) is served by a
+   separate Docker Ollama instance; `localhost:11434/api/tags` queried
+   directly confirms `qwen2.5-coder:14b` present (14.8B, Q4_K_M, pulled
+   2026-04-17). `config.yaml` now points at `qwen2.5-coder:14b`, matching
+   the endpoint that will actually serve the reviewer at runtime.
 3. `Issues.md` authored in StockAgent in the `## <id>: <title>` format.
    **RE-CHECKED LIVE — UNMET, two independent problems.** (a) Wrong
    location: an untracked `docs/Issues.md` exists, but `main.py` resolves the
@@ -331,7 +444,10 @@ none carried forward from Session 7/8 assumption:**
    Wrong format: `docs/Issues.md` is a numbered list with inline
    `**STATUS:**` markers, not `## <id>: <title>` headings — parsing it as-is
    would raise `IssuesParseError` (no `## ` heading matches the grammar at
-   all).
+   all). **CLOSED Session 14 (2026-07-25)** — see the dated entry at the top
+   of the Resume point section below for full evidence. The file now exists
+   at the correct repo-root path, is committed on `agent-work` (`58bc162`),
+   and parses cleanly (5 valid `IssueSpec`s, no errors).
 4. Baseline green on StockAgent's `agent-work` branch. **BLOCKED on #1, not
    independently re-verifiable this session** — no known test command to
    run; guessing one (e.g. bare `pytest`) was judged unsafe given the
@@ -355,6 +471,21 @@ the 6 preflight items (0–5): item 5 is fully CLOSED; item 0 is now
 RUN/CLEAN-WITH-CAVEAT (not a plain close — see item 0 above, its own gate
 condition wasn't unqualifiedly met); items 1–4 remain
 UNMET/blocked/unconfirmed. Step 3 is still not ready to start.**
+
+> **UPDATE (Session 14, 2026-07-25).** Item counts above are stale as of
+> this date: item 2 is now CLOSED (Session 13) and item 3 is now CLOSED
+> (Session 14 — see the dated entry at the top of the Resume point section).
+> Item 0's caveat stands exactly as originally written above (RUN/CLEAN-WITH-
+> CAVEAT, not a plain close — its own gate condition still wasn't
+> unqualifiedly met; nothing about that finding has changed). Of the
+> remaining items, only 1 and 4 are still open (item 1's
+> `validation.commands` now has a real value in `config.yaml` per Session
+> 12, but has not been run to confirm it passes — item 4 stays blocked on
+> that until it is). A NEW, SEPARATE tracked item (not one of the original
+> 0–5, not folded into item 3) was opened Session 14: ingest does not verify
+> or enforce the checked-out branch before reading `Issues.md` — see the
+> dated entry at the top of the Resume point section for full evidence and
+> the two options recorded for decision.
 
 **Step 2 outcome (doc 14 §2):**
 - **2a billing** — split still PAUSED (Help Center art. 15036540, re-fetched
@@ -464,8 +595,11 @@ Verified THIS session (Windows, `claude` 2.1.207, `.venv` python):
 2. Directory name (StockAgent vs `C:\Projects\StockPhotoAgent`) + `agent-work`
    branch exists.
 3. Issues.md in StockAgent in the `## <id>: <title>` format (or author it).
-4. Ollama up + `qwen2.5-coder` pulled — gates the reviewer health check and the
-   live smoke.
+4. Ollama up + reviewer model pulled — gates the reviewer health check and
+   the live smoke. **CLOSED Session 13 (2026-07-24)** — see the Resume point
+   Session 13 entry and Step-3 precondition #2 above; `config.yaml` now
+   points at `qwen2.5-coder:14b`, verified present at the actual serving
+   endpoint (`localhost:11434`, Docker Ollama instance).
 5. Baseline green on `agent-work` (startup health check enforces it).
 6. StockAgent `.gitignore` covers build/test byproducts.
 7. ADR-19 tamper guard has no doc-03 event home — defer to Phase-4 prep.
