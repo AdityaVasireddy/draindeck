@@ -69,3 +69,6 @@ Permission deny rule (C:\Users\adity\.claude\settings.json): Write(.github/workf
 2026-07-25 16:52:06 [SessionEnd] OK committed
 2026-07-25 18:47:24 [SessionEnd] GATE run: transcript 748952B >= 50000B [turns=23 bytes=748952] (54b53467-3aa1-4bb3-82a2-72f9346abf96)
 2026-07-25 18:49:28 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-25.md (15 auto cases, 23 turns, 748952B, repaired=inserted-missing-front-matter-close, 54b53467-3aa1-4bb3-82a2-72f9346abf96)
+2026-07-25 18:49:28 [SessionEnd] OK committed
+2026-07-25 21:23:04 [replay] GATE bypassed: replay of a queued entry (bd4fb942-8e5a-4bfe-8845-3b981b60d8e7)
+2026-07-25 21:24:52 [replay] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-25.md (15 auto cases, 5 turns, 35229B, repaired=inserted-missing-front-matter-close, bd4fb942-8e5a-4bfe-8845-3b981b60d8e7)
