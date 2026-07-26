@@ -1066,3 +1066,25 @@ as-is.
 Gated live smoke (3) is now **UNBLOCKED on the ADR-22 contamination question**
 (§2.5) but still gated on its own separate preconditions (see NEXT.md) — not
 started this session. Supervised StockAgent runs (4) and wrap (5) follow.
+
+---
+
+### Carried-forward note (Session 16-17, 2026-07-26) — surfaces named UNWITNESSED ahead of live smoke
+
+This is a carry-forward transcription, not a new finding: transcribed from NEXT.md's
+Resume-point section (L269-276, Session 17) and
+`docs/handoffs/HANDOFF_2026-07-26_session17-dryrun-a-pass-correction-note.md`, which are
+the provenance for every item below. Each surface remains exactly as recorded there —
+UNWITNESSED / carried-forward — and no claim in this note is assigned any evidence label
+(VERIFIED / INFERRED / etc.) beyond what it already carried in those two sources. This note
+records that these surfaces are unwitnessed; it does not witness anything.
+
+1. **`main.py`'s end-to-end startup composition** (health checks → `_ingest_issues` → loop,
+   under the real CLI entrypoint) — Dry-run A (Session 17) bypassed it by constructing
+   `Orchestrator` directly; this composition remains carried-forward, unwitnessed.
+2. **The orphan-crash recovery path** — an accidental partial-spawn crash occurred mid-Dry-run-A
+   (Session 17), but the session wiped and re-cloned fresh rather than resuming through it, so
+   this path remains carried-forward, unwitnessed; the accidental crash is not evidence about it.
+3. **Real-tree behavior itself** — every Item 0 / Dry-run A run to date has used a scratch
+   workspace or clone, never StockPhotoAgent's actual working tree; this remains the
+   irreducible carried-forward, unwitnessed variable ahead of live smoke.
