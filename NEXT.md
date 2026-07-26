@@ -5,9 +5,14 @@
 > wins over NEXT.md. Doc 03 continues to win on event/state semantics; doc 02 section 3
 > wins on the advisory principle. NEXT.md never carries evidence labels.
 >
-> Exception: §3's precondition table (row 27) retains VERIFIED/INFERRED status labels by
-> design — that is live gate status, not archived narrative. All OTHER evidence lives in
-> the referenced docs; NEXT.md carries no evidence labels outside §3.
+> Exception: §3's precondition table retains VERIFIED/INFERRED status labels. The
+> zero-evidence-label rule above was pre-committed as a hard target for this rewrite; it was
+> NOT met for §3. On review, the rule was judged wrong for a live precondition table — a
+> gate-status table is not useful without status — and is amended here to exempt §3
+> specifically. This records a missed target and the reasoning for accepting the miss; it is
+> not the original design intent, discovered after the fact and relabeled as if it were.
+> All OTHER evidence lives in the referenced docs; NEXT.md carries no evidence labels
+> outside §3.
 
 ## 1. Current gate
 
@@ -17,7 +22,7 @@ path, and real-tree behavior remain carried-forward as UNWITNESSED ahead of live
 Gate (a), the vacuity-guard detectability question, is permanently unproven and carried as
 a labeled limitation, not a blocker to resolve first.
 Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-17,
-2026-07-26)" ["surfaces named UNWITNESSED ahead of live smoke"] (~L1072-1090).
+2026-07-26)" ["surfaces named UNWITNESSED ahead of live smoke"] (L1072-1090).
 
 ## 2. Immediate next actions
 
@@ -29,10 +34,9 @@ Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-
 2. Resolve the ingest branch-check gap (Option A: add `checkout_branch` before ingest, vs.
    Option B: accept as scoped risk) — precondition: none, a decision only. Pointer: §5
    below, "Ingest branch-check gap" (this file).
-3. Re-run doc 14 §2.4 Probe 2/3 at CLI 2.1.214 before leaning on the STANDING TICKLE again
-   — precondition: the next `claude` CLI version bump. Pointer:
-   `docs/handoffs/HANDOFF_2026-07-18_adr22-vacuity-control-restored.md` § "Deferred Work"
-   ["Re-running doc 14 §2.4 Probe 2/3 at CLI 2.1.214"].
+3. Close the CLI-2.1.214 Probe 2/3 coverage gap — precondition and trigger condition: see
+   §4 below, "CLI-2.1.214 Probe 2/3 two-leg re-probe" (single source of truth for this
+   item's trigger; not restated here).
 4. Build the env-witness script (docs/08 §5d spec) — precondition for the ADR-23
    end-to-end differential (all three of: script built, target collects >0 tests, a live
    "before" observed ahead of the next mechanism change). Pointer:
@@ -156,9 +160,15 @@ do NOT sunset (explicit user instruction); tickle re-armed for the next CLI bump
 `docs/14-session6-phase2-gate.md` § "2.7 — Session 12 (2026-07-24): CLI re-pin re-probe at
 2.1.215" ["Decision: re-probe and hold B"].
 
-**CLI-2.1.214 Probe 2/3 two-leg re-probe — still owed.** The STANDING TICKLE above has
-never actually been re-run at CLI 2.1.214 specifically (the version was skipped over,
-2.1.212 → 2.1.215). Owed whenever the CLI version is next checked. Pointer:
+**CLI-2.1.214 Probe 2/3 two-leg re-probe — permanent coverage gap, not independently
+actionable.** The STANDING TICKLE above has never actually been re-run at CLI 2.1.214
+specifically (the version was skipped over, 2.1.212 → 2.1.215; doc 14 §2.7 re-probed at
+2.1.215 instead and treated that as closing the acute gap). Re-probing literally at CLI
+2.1.214 is no longer possible now that the CLI has moved past it — the currently-installed
+version cannot be rolled back to 2.1.214 as a matter of routine. **Same trigger as the
+STANDING TICKLE above: the next `claude` CLI version bump** — there is no separate,
+earlier-firing trigger for this item; do not treat it as owed independently of that bump.
+Pointer:
 `docs/handoffs/HANDOFF_2026-07-18_adr22-vacuity-control-restored.md` § "Deferred Work"
 ["Re-running doc 14 §2.4 Probe 2/3 at CLI 2.1.214"].
 
@@ -185,8 +195,8 @@ has never fired across three independent, differently-constructed attempts. This
 carried into live smoke as a labeled limitation per standing ruling, not a blocker to
 resolve first. Pointer: `docs/14-session6-phase2-gate.md` § "Session 11 (2026-07-18) —
 ADR-22 vacuity-guard: synthetic positive control BUILT and RUN" ["three independent
-non-reproductions"] (~L894-977); background: § "2.6 — Session 9" ["the vacuity guard no
-longer fires"] (~L570-670).
+non-reproductions"] (L894-977); background: § "2.6 — Session 9" ["the vacuity guard no
+longer fires"] (L542-890).
 
 ## 6. Pointer index
 
@@ -235,7 +245,10 @@ longer fires"] (~L570-670).
 > come in. Evidence produced this session goes to doc 14 or the relevant ADR, never here.
 > If NEXT.md exceeds 120 lines, that is the signal to rotate, not to keep appending.
 >
-> NEXT.md is 232 lines at this rewrite (cap is 120). The overage is §3's precondition
-> table alone. This is the rotation trigger already firing: next session, §3 either shrinks
-> as preconditions close, or it graduates to its own tracking doc. Do not trim the rest to
-> hit 120 — the rest is already minimal.
+> The ≤120-line cap above was a pre-committed PASS target for this rewrite and was NOT met:
+> this file is 254 lines, longer than that at every point since the rewrite landed. The cap is retained
+> as the correct default target for future rewrites, not redefined — the miss is recorded
+> honestly here, not reframed as a pass. The overage is §3's precondition table alone; this
+> is the rotation trigger already firing: next session, §3 either shrinks as preconditions
+> close, or it graduates to its own tracking doc. Do not trim the rest to hit 120 — the rest
+> is already minimal, and trimming it would not address why the cap was missed.
