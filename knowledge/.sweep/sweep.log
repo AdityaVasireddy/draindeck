@@ -82,3 +82,7 @@ Permission deny rule (C:\Users\adity\.claude\settings.json): Write(.github/workf
 2026-07-26 12:07:58 [SessionEnd] GATE run: transcript 1011441B >= 50000B [turns=19 bytes=1011441] (2dbb6a99-2eb3-4e60-81cd-c642a240b90c)
 2026-07-26 12:09:33 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-26.md (5 auto cases, 19 turns, 1011441B, 2dbb6a99-2eb3-4e60-81cd-c642a240b90c)
 2026-07-26 12:09:33 [SessionEnd] OK committed
+2026-07-26 13:02:28 [SessionEnd] GATE run: transcript 1216569B >= 50000B [turns=13 bytes=1216569] (7bbc2820-6769-46f5-bb90-1169d910a045)
+2026-07-26 13:04:21 [SessionEnd] FAIL output would drop an existing case (reason=slug-regression) — raw preserved at C:/Projects/issue-runtime/knowledge/.sweep/failed/2026-07-26-7bbc2820-6769-46f5-bb90-1169d910a045.raw.md — queued in pending.log — existing C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-26.md kept untouched
+2026-07-26 17:01:32 [SessionEnd] GATE run: transcript 2702812B >= 50000B [turns=10 bytes=2702812] (85038a9d-493e-409f-8126-c6f5373e57bc)
+2026-07-26 17:03:59 [SessionEnd] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-26.md (8 auto cases, 10 turns, 2702812B, repaired=inserted-missing-front-matter-close, 85038a9d-493e-409f-8126-c6f5373e57bc)
