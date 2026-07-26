@@ -8,24 +8,23 @@ project:
   issues_file: Issues.md
   validation:
     commands:                      # ADR-23 rule 1: absolute interpreter, not
-      - "C:\\Python314\\python.exe -m pytest tests\\qc\\test_qc_rules.py"
-                                    # bare `python`. VERIFIED 2026-07-25: bare
-                                    # `python` resolved to issue-runtime's own
-                                    # .venv (lacks StockPhotoAgent's Pillow dep)
-                                    # in an activated shell, and to a DIFFERENT
-                                    # interpreter in a clean shell — same
-                                    # commit, different verdict. C:\Python314
-                                    # has StockPhotoAgent's requirements.txt
-                                    # installed (pillow==12.2.0 confirmed).
-                                    # NOTE: this fixes the interpreter defect
-                                    # ONLY. tests\qc\test_qc_rules.py has ZERO
-                                    # pytest-collectible test_* functions (VERIFIED:
-                                    # exit 5, "collected 0 items" even with the
-                                    # correct interpreter) — ADR-23's non-vacuity
-                                    # requirement is NOT yet satisfied by this
-                                    # command. Step-3 precondition #1 remains
-                                    # UNMET pending a real, non-vacuous target
-                                    # (see docs/08 §5d).
+      - "C:\\Python314\\python.exe -m pytest tests\\test_qc_rules.py tests\\test_csv_generator.py tests\\test_metadata_normalize.py tests\\test_validate_batch.py tests\\test_qc_engine.py"
+                                    # bare `python`. C:\Python314 has
+                                    # StockPhotoAgent's requirements.txt
+                                    # installed (pillow==12.2.0 confirmed);
+                                    # no project-local venv exists.
+                                    # ADR-23 rule 2: explicit file targets,
+                                    # not a bare dir/glob relying on discovery
+                                    # (pytest.ini's testpaths=tests is a
+                                    # default root, not a pin — a future
+                                    # conftest.py or new test file would be
+                                    # silently swept in). VERIFIED 2026-07-25:
+                                    # this exact backslash string, run via
+                                    # subprocess.run(cmd, shell=True) from
+                                    # C:\Python314\python.exe (mirroring
+                                    # Validator._run_once) with cwd=
+                                    # StockPhotoAgent, returncode 0, 26 tests
+                                    # collected. Step-3 precondition #1 CLOSED.
     timeout_seconds: 600
 engine:
   provider: claude-headless
