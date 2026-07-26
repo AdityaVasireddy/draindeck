@@ -26,6 +26,21 @@ production feature; everything builds on the event-log layer.
 - Every session ends at a runnable, committed checkpoint; update NEXT.md.
 - Kill criteria (ADR-19) are frozen: 20 issues, attempt-1 ≥30%, cost/shipped
   ≤ $3. Never tune them to dodge a verdict.
+- Process depth scales to blast radius, not session length. (Correction after ~17 sessions:
+  the five-gate method and heavy review apparatus were applied uniformly, including
+  reversible documentation work. This rule makes effort sizing explicit.)
+- Five gates are the default engineering discipline, but the heavy review apparatus
+  (pre-committed outcome matrices, detailed evidence accounting, multi-phase approvals)
+  is reserved for high-blast-radius changes.
+- High-blast-radius changes include:
+  real repository mutation, src/runtime behavior, event schemas, state transitions,
+  external contracts, Git/recovery behavior, and safety or durability claims about
+  committed behavior.
+- Low-blast-radius changes include:
+  documentation, NEXT.md, handoffs, scratch work, and reversible cleanup.
+  These use a lightweight scope check and verification of the result.
+- When uncertain, default to the lighter process unless the change touches the
+  high-blast-radius list above.
 
 ## Environment
 - Windows, Python 3.12+, deps: pyyaml, pydantic, pytest (no frameworks —
