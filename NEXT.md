@@ -168,6 +168,141 @@ not a reason to skip building a forward-looking control.
 
 ## Resume point
 
+**Session 16 (2026-07-26): Step-3 precondition #4 (baseline non-vacuity, doc
+08 §5d) CLOSED — VERIFIED, both legs witnessed this session.**
+
+**#4 CLOSED — both legs of doc 08 §5d witnessed.**
+- Collected>0 leg: rc=0, 26 passed (prior turn), cwd=StockPhotoAgent root.
+- Mutation leg: red = rc=1 / collected 26 (1 failed + 25 passed) /
+  assertion failure on `test_resolution_measure_score_below_minimum`;
+  green-after-revert = rc=0 / exactly 26 passed; revert-clean = `git status
+  --short` and `git diff` both empty on `resolution.py`.
+- Mutation used (for reproducibility): `src/qc/rules/resolution.py:17`,
+  `MIN_WIDTH_PX` 2000→500, reverted.
+- Execution surface both legs: `subprocess.run(cmd, cwd=..., shell=True)` via
+  `C:\Python314\python.exe`, matching `Validator._run_once`. Bash-tool
+  results excluded.
+
+**What remains OPEN — so "#4 CLOSED" is not over-read:**
+- Item 0 (composed real-spawn through ClaudeHeadlessEngine.run()): RUN,
+  clean-with-caveat — not unqualified pass, and not the gate it was
+  mislabeled as this session. Still open: (a) the vacuity-guard positive
+  control has never confirmed detectability (three independent
+  non-reproductions per doc 14 — the mechanism's ability to detect
+  contamination is unproven, only its failure to observe any); (b) every
+  Item 0 run so far used a scratch workspace — live smoke would be the
+  first run against a real target repo (doc 14's own note). What IS done:
+  two clean composed runs — 2026-07-17 (CLI 2.1.212, doc 14 §2.6/2.7) and
+  2026-07-24 re-probe (CLI 2.1.215) — exit 0, apiKeySource="none", denial
+  signals present, .git/knowledge/ absent across the 450s poll. The earlier
+  "unwitnessed/remains unwitnessed" wording in this session's artifacts was
+  stale and wrong; doc 14 shows the composed run closed.
+- ADR-23 end-to-end differential — still deferred behind its own
+  three-part AND (env-witness script not built, and the "before" half
+  unwitnessable for the Phase-2 change already landed).
+- Standing tickle: doc 14 §2.4 Probe 2/3 two-leg re-probes at CLI 2.1.214 —
+  untouched.
+
+**Precondition roll-up: 1 MET, 2 CLOSED, 3 CLOSED, 4 CLOSED, 5 MET — all
+five satisfied.** This clears the precondition wall but does **NOT**
+authorize live smoke. The real gate is not "run Item 0" (already run,
+clean-with-caveat — see above) — what actually stands between here and
+live smoke is the parked vacuity-guard question (positive control has
+never confirmed detectability) and the scratch-vs-real-repo step (Item 0
+has only ever run against a scratch workspace, never a real target repo).
+
+**Session-scope note:** scratch-only mutation session — no issue-runtime
+`src/` logic changed. Durability harness (60/60, seeds 42/1337) correctly
+SKIPPED per harness-gate convention (gates on `src/` logic changes only;
+none occurred this session).
+
+**Session 17 (2026-07-26): Dry-run A — composed-loop witness against a
+scratch clone of StockPhotoAgent — PASS. The LOOP-COMPOSITION variable of
+gate (b) is collapsed** (not all composition — see the carried-unwitnessed
+list below, worded this way deliberately so this line and that list can't
+be read as contradicting each other).
+
+Built per an approved plan (`twinkling-twirling-crane.md`), scratchpad-only,
+no `src/` change. A real `git clone` of StockPhotoAgent (HEAD-matched,
+verified) stood in for the real tree; `Orchestrator` was constructed
+directly against it with only the `claude -p` spawn stubbed (canned
+patches) — `GitCliAdapter`, `Validator` (real pytest command),
+`QwenOllamaReviewer` (real Ollama call), the event log, and
+commit-on-approval all ran real and unstubbed.
+
+Three cycles run 1→2→4 via explicit `step()` calls, each outcome adjudicated
+against a pre-committed matrix from mechanical git + event-log evidence
+only (attempt refs via `for-each-ref`, branch tips via `rev-parse`, taxonomy
+categories from event payloads — never engine/reviewer self-report):
+- **Cycle 1 (issue "1") → VALIDATION_FAILED: PASS.** `set_attempt_ref`-before-
+  `reset_hard` witnessed on real committed residue (`refs/attempts/1/1-e1` →
+  `22a29f43`, `issue/1` tip back at base `5e4018d2`).
+- **Cycle 2 (issue "2") → REVIEW_REJECTED: PASS**, second reject-path
+  ordering witness on a different reject leg (`refs/attempts/2/2-e1` →
+  `58ec1f16`, tip back at base). Real Qwen reviewer correctly REJECTed a
+  deliberately off-target patch — not scored toward the vacuity-guard
+  question (different mechanism), but a genuine positive datapoint on the
+  reviewer seam, sharpened by Cycle 3: the same reviewer drew the
+  discrimination on BOTH sides in this run — REJECT on off-target (this
+  cycle), APPROVE on on-target (Cycle 3) — which is the datapoint that
+  actually matters; either side alone would be consistent with a reviewer
+  that just rejects (or just approves) everything.
+- **Cycle 3 (issue "4") → clean APPROVE → commit-on-approval: PASS.** Real
+  Qwen APPROVE on an on-target patch; `CommitIntent`→`CommitCreated`
+  (`backfilled: false`)→`IssueCompleted`; `agent-work` advanced
+  `5e4018d2`→`5b76887e` via a real, non-backfilled merge; attempt refs GC'd
+  on completion (ADR-15). The leg the pre-commit said might have to be
+  carried forward unwitnessed was witnessed for real.
+
+One process note, not a finding about any seam: a `stderr_tail`-missing bug
+in the first stub attempt crashed mid-Cycle-1, leaving a partial
+`EXECUTION_SPAWNED` and a dirty `issue/1`. Fixed the stub, then **wiped and
+re-cloned fresh** rather than resuming through the crash — resuming would
+have driven the orphan-crash recovery seam instead of the intended one.
+Recorded so it isn't over-read either way: **this run did not witness the
+orphan-crash recovery path**; the accidental partial-spawn is not evidence
+about it.
+
+**What this licenses:** live smoke now changes exactly one variable (clone
+→ real tree) instead of two (composition + real tree) — gate (b)'s stated
+objective, achieved for the loop composition.
+**What remains UNWITNESSED, carried into live smoke as first-surface, not
+to be described as "composition already witnessed":**
+1. `main.py`'s end-to-end startup composition (health checks →
+   `_ingest_issues` → loop, under the real CLI entrypoint) — this run
+   bypassed it by constructing `Orchestrator` directly (recorded boundary,
+   harness docstring).
+2. The orphan-crash recovery path (see process note above).
+3. Real-tree behavior itself — the irreducible remaining variable.
+**Still UNPROVEN, untouched, carried into smoke labeled per standing
+ruling:** the vacuity-guard detectability question (three independent
+non-reproductions, positive control never fired).
+
+Scratch clone (`dryrun_a_clone`) and harness (`dryrun_a_harness.py`,
+`dryrun_a_run.py`) — scratchpad-only, abandoned, not committed, no doc 14
+edit.
+
+**Correction note (Session 17, 2026-07-26):** the Session-16 entry above
+(and this session's opening orientation, echoing it) describes a
+"correction pass" that "fixed stale 'unwitnessed' language across NEXT.md,
+the day file, and the handoff." That phrasing overstates what happened.
+Checked this session: `grep` for the doc-12 "**Correction note:**" marker
+across all three artifacts finds only the pre-existing Session-14 note
+(the mtime/commit-date mixup, unrelated); `git log --oneline` on the day
+file (`knowledge/issue-runtime/2026-07-26.md`) and the Session-16 handoff
+(`docs/handoffs/HANDOFF_2026-07-26_step3-precondition4-mutation-leg-closure.md`)
+both return zero commits — neither file was ever committed, so no diff can
+prove a stale "unwitnessed" version of either ever existed on disk. What
+actually happened: the corrected wording was reached in-draft during
+Session 16, before anything was written to disk, and only the corrected
+text ever landed. That is a same-session self-edit, not a doc-12-pattern
+correction pass (which appends a note flagging an error in previously
+*committed* text). The self-edit itself is not a data-integrity problem —
+low severity, correct final text, no prior committed error to have
+propagated — but the phrase "correction pass across three artifacts"
+should not be read as implying appended correction notes exist for this
+claim, and future sessions should not cite it as such.
+
 **Session 15 (2026-07-25): ADR-23 Phase 2 (`src/` mechanism) LANDED and
 VERIFIED at the unit + live-child level. The ADR-spec end-to-end
 differential against StockPhotoAgent is DEFERRED (not performed) — see the
