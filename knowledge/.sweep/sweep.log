@@ -72,3 +72,4 @@ Permission deny rule (C:\Users\adity\.claude\settings.json): Write(.github/workf
 2026-07-25 18:49:28 [SessionEnd] OK committed
 2026-07-25 21:23:04 [replay] GATE bypassed: replay of a queued entry (bd4fb942-8e5a-4bfe-8845-3b981b60d8e7)
 2026-07-25 21:24:52 [replay] OK wrote C:/Projects/issue-runtime/knowledge/issue-runtime/2026-07-25.md (15 auto cases, 5 turns, 35229B, repaired=inserted-missing-front-matter-close, bd4fb942-8e5a-4bfe-8845-3b981b60d8e7)
+2026-07-25 21:24:52 [replay] OK committed
