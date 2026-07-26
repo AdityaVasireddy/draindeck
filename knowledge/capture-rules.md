@@ -13,5 +13,5 @@ Discipline:
 
 ## Sweep health
 
-confirmed: 16
+confirmed: 58
 declined: 0
