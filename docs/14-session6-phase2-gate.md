@@ -1061,6 +1061,63 @@ as-is.
 
 ---
 
+### 2.8 — Session 18 (2026-07-26): ADR-22 Probe 2/3 literal re-probe at CLI 2.1.220 (STANDING TICKLE — fired, PASS)
+
+CLI drifted 2.1.215 (§2.7) → **2.1.220** (this session, live check via `claude --version`).
+NEXT.md §4 had flagged an identity gap left open by §2.7: that re-probe substituted the
+Session-11 synthetic-marker methodology (Leg B / Synth Step B / Synth Step C) and did **not**
+re-run the literal doc 14 §2.4 **Probe 2** (`--setting-sources ""` clean-run) / **Probe 3**
+(fence sanity under that same A-empty form) — those two specific probes had not been witnessed
+since CLI 2.1.211 (2026-07-16, Session 7). This session re-ran Probe 2 and Probe 3 literally, not
+a substitute, closing that identity gap directly.
+
+**Method.** A standalone scratch script (`probe_23.py`, scratchpad-only, never committed)
+hand-mirrors `ClaudeHeadlessEngine._command()`/`_hygienic_env()` token-for-token (23-entry
+`_DENY_TOOLS`, `--setting-sources ""` as its own list-form argv element, `--permission-mode
+acceptEdits`, subscription-strip env) — read against `src/runtime/engine/claude_headless.py` for
+fidelity, never importing it. Two fresh scratch cwds (never a real repo), trivial "reply OK, no
+tools" stdin for Probe 2, a `git init`-via-Bash instruction for Probe 3. Escalate-don't-retry:
+Probe 3 only run after Probe 2's result was read and did not land a FAIL cell.
+
+**Probe 2 (empty `--setting-sources`, clean-run) — PASS.** `rc=0`, `apiKeySource="none"`
+(matches baseline), `num_turns=1`, `claude_code_version="2.1.220"` (parsed from the transcript's
+`system`/`init` line, not asserted from a separate shell call). **CLEAN — no `knowledge/`**
+across all 16 poll ticks (t=0,30,...,450s; raw directory listing captured at every tick, not
+just start/end).
+
+**Probe 3 (fence sanity under A-empty) — PASS.** `rc=0`, `apiKeySource="none"`,
+`claude_code_version="2.1.220"`. The `git init` `tool_use` **was attempted, not self-censored**
+(`{"name":"Bash","input":{"command":"git init",...}}` present in the transcript). Denied with
+**both** 2.1.211-era signals: a `permission_denials` entry (`tool_name:"Bash"`,
+`tool_input.command:"git init"`) AND a `tool_result` with `is_error:true`
+("Permission to use Bash with command git init has been denied."), reconciled to the same
+`tool_use_id` (`toolu_011iGLNuMKNGxdkZ8LEWjGXP`) across both signals, ruling out a
+mismatched/stale-signal false positive. **`.git` ABSENT** — verified by a direct `ls` on the
+scratch cwd (`ls: cannot access 'probe3_cwd/.git': No such file or directory`), not inferred from
+the deny signals alone. Fence detection shape unchanged from 2.1.211 (§2.4 Probe 3).
+
+**Both-halves discipline, stated explicitly (per §2.4/§2.6/§2.7 convention — do not read either
+half as collapsing into the other):**
+1. This closes the **literal Probe 2/3 re-witness gap** named in NEXT.md §4 — the specific claim
+   "Probe 2/3 has not been re-run since 2.1.211" is now false as of this session, at CLI 2.1.220,
+   via the actual §2.4 procedure, not the §2.7 synthetic-marker substitute.
+2. This does **not** resolve the vacuity-guard question. A clean Probe 2 is consistent with both
+   "A-empty is still actively suppressing a hook that would otherwise fire" and "A-empty is a
+   no-op here because the upstream hook is itself inert for an unrelated reason" — Probe 2/3
+   cannot discriminate between these; only a positive control can (§2.6 Session 11, three
+   independent non-reproductions, unchanged and untouched this session).
+3. This does **not** license the B-layer sunset. **Decision: re-probe and hold B** —
+   `HISTORIAN_SWEEP_ACTIVE` stays in `config.yaml → engine.child_env` unchanged. Per NEXT.md §4's
+   standing record, sunset requires an explicit user decision each time, not an automatic
+   consequence of a green matrix — this session did not evaluate or act on sunset. The STANDING
+   TICKLE is re-armed for the next CLI bump past 2.1.220.
+
+Scope discipline preserved: no `src/`, `schema.py`, `transitions.py`, or `config.yaml` change this
+session. Witness script (`probe_23.py`) is ad hoc, uncommitted, scratchpad-only — matching every
+prior ADR-22 probe in this family.
+
+---
+
 ## Steps 3–5 — NOT STARTED
 
 Gated live smoke (3) is now **UNBLOCKED on the ADR-22 contamination question**

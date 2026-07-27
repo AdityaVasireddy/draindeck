@@ -155,22 +155,29 @@ A-empty (`--setting-sources ""`) has survived one clean CLI-upgrade cycle with t
 still clean at 450s, `apiKeySource` unchanged). On the next `claude` version bump, before
 anything else: re-run those probes, and if they pass, remove `HISTORIAN_SWEEP_ACTIVE` from
 `config.yaml → engine.child_env` and strike the B layer from doc 08 §5c as
-sunset-fulfilled. As of the last re-probe (CLI 2.1.215, Session 12): re-probe and hold B —
-do NOT sunset (explicit user instruction); tickle re-armed for the next CLI bump. Pointer:
-`docs/14-session6-phase2-gate.md` § "2.7 — Session 12 (2026-07-24): CLI re-pin re-probe at
-2.1.215" ["Decision: re-probe and hold B"].
+sunset-fulfilled. **Re-witnessed at CLI 2.1.220, Session 18 (2026-07-26) — literal §2.4
+Probe 2/3 re-run, both PASS.** Sunset was NOT evaluated or acted on — **re-probe and hold B
+remains the standing instruction, unchanged: a green re-probe does not, by itself, license
+the B-layer sunset**; that decision stays explicitly the user's to make, each time, not an
+automatic consequence of a passing matrix. Tickle re-armed for the next CLI bump past
+2.1.220. Pointer: `docs/14-session6-phase2-gate.md` § "2.8 — Session 18 (2026-07-26): ADR-22
+Probe 2/3 literal re-probe at CLI 2.1.220 (STANDING TICKLE — fired, PASS)" ["Decision:
+re-probe and hold B"].
 
-**CLI-2.1.214 Probe 2/3 two-leg re-probe — permanent coverage gap, not independently
-actionable.** The STANDING TICKLE above has never actually been re-run at CLI 2.1.214
-specifically (the version was skipped over, 2.1.212 → 2.1.215; doc 14 §2.7 re-probed at
-2.1.215 instead and treated that as closing the acute gap). Re-probing literally at CLI
-2.1.214 is no longer possible now that the CLI has moved past it — the currently-installed
-version cannot be rolled back to 2.1.214 as a matter of routine. **Same trigger as the
-STANDING TICKLE above: the next `claude` CLI version bump** — there is no separate,
-earlier-firing trigger for this item; do not treat it as owed independently of that bump.
-Pointer:
+**CLI-2.1.214 Probe 2/3 two-leg re-probe — CLOSED (identity gap, not the literal version).**
+Previously: the literal doc 14 §2.4 Probe 2/3 procedure had not been re-run since CLI 2.1.211
+— the 2.1.215 re-probe (doc 14 §2.7) substituted the Session-11 synthetic-marker methodology
+(Leg B / Synth Step B / Synth Step C) instead of re-running Probe 2/3 itself, and re-probing
+literally at 2.1.214 specifically was no longer possible once the CLI moved past it. **Session
+18 (2026-07-26, CLI 2.1.220) closed the underlying identity gap** by re-running the actual
+§2.4 Probe 2/3 procedure (not a substitute) and getting both PASS — see doc 14 §2.8. The
+specific "at exactly 2.1.214" version is still permanently unreachable (unchanged, cannot be
+rolled back to as a matter of routine), but the substantive gap it stood for — literal Probe
+2/3 going stale across multiple CLI bumps with only a substitute methodology re-run in its
+place — is closed as of 2.1.220. Pointer: `docs/14-session6-phase2-gate.md` § "2.8 — Session
+18 (2026-07-26)" (this file, above) supersedes
 `docs/handoffs/HANDOFF_2026-07-18_adr22-vacuity-control-restored.md` § "Deferred Work"
-["Re-running doc 14 §2.4 Probe 2/3 at CLI 2.1.214"].
+["Re-running doc 14 §2.4 Probe 2/3 at CLI 2.1.214"] as this item's live pointer.
 
 ## 5. Parked decisions
 
