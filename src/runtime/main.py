@@ -247,19 +247,31 @@ def cmd_run(args) -> int:
                             cfg.budget.hard_stop_proxy_cost_per_run_usd),
         artifacts_dir=artifacts_dir, run_id=run_id,
     )
+    exit_code = 0
     try:
         reason = orch.run()
+        m = orch.budget.metrics()
+        print(f"[done] {reason}")
+        print(f"[metrics] executions_this_run={m.executions_this_run} "
+              f"proxy_dollars_this_run=${m.proxy_dollars_this_run:.4f}")
     except (OrchestratorHalt, ReviewerError) as e:
         print(f"[halt] run stopped abnormally: {e}", file=sys.stderr)
-        return 2
+        exit_code = 2
     except KeyboardInterrupt:
         print("\n[stop] interrupted — current step finished; recovery owns the rest")
-        return 0
-    m = orch.budget.metrics()
-    print(f"[done] {reason}")
-    print(f"[metrics] executions_this_run={m.executions_this_run} "
-          f"proxy_dollars_this_run=${m.proxy_dollars_this_run:.4f}")
-    return 0
+        exit_code = 0
+    finally:
+        # ADR-20-class fix: restore cfg.project.branch on every exit path so
+        # the workspace is never left checked out on the last issue/N attempt
+        # branch. Self-guarded: a restore failure must not supersede the
+        # primary exit_code/exception from the try/except above.
+        try:
+            adapter.checkout_branch(cfg.project.branch)
+            print(f"[shutdown] restored {cfg.project.branch}")
+        except RepoError as e:
+            print(f"[shutdown] WARNING: failed to restore {cfg.project.branch}: {e}",
+                  file=sys.stderr)
+    return exit_code
 
 
 def main(argv=None) -> int:
