@@ -30,6 +30,7 @@ from .loop import Orchestrator, OrchestratorHalt
 from .queue.issues_md import IssuesParseError, parse as parse_issues
 from .recovery.bindings import bind_reconciler
 from .recovery.reconciler import recover
+from .repo.adapter import RepoError
 from .repo.git_adapter import GitCliAdapter
 from .reviewer.base import ReviewerError, ReviewerProvider
 from .reviewer.qwen_ollama import QwenOllamaReviewer
@@ -178,6 +179,18 @@ def cmd_run(args) -> int:
         return 1
     # 5. adapter
     adapter = GitCliAdapter(cfg.project.repository, cfg.attempts.ref_namespace)
+
+    # 5b. enforce checked-out branch BEFORE recovery/baseline (ADR-20 amendment,
+    # 2026-07-26): recovery binds its seams to cfg.project.branch and the baseline
+    # health check validates the physical tree — both are meaningless if the wrong
+    # branch is on disk. Reuses the existing adapter method (no create_from: we must
+    # never force-reset the target repo's long-lived branch, only switch to it).
+    try:
+        adapter.checkout_branch(cfg.project.branch)
+    except RepoError as e:
+        print(f"CHECKOUT FAILED: {e}", file=sys.stderr)
+        return 1
+    print(f"[startup] checked out {cfg.project.branch}")
 
     # 6. reap engine orphans BEFORE recovery (doc 12 §1.6)
     for r in engine.reap_orphans():

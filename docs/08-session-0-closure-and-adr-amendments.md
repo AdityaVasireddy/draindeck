@@ -86,6 +86,51 @@ The baseline-green requirement (doc 06) applies to StockAgent: its test suite mu
 
 **Rationale.** Real project, safe to experiment on, immediate business value, demoable; and choosing a real repo forces the repository-agnostic seam to be honest rather than theoretical.
 
+### ADR-20 — Amendment 1 (2026-07-26): enforce `cfg.project.branch` checkout before ingest
+
+**Status:** Accepted. Amends ADR-20's binding constraint above (`config.yaml → project.*` carries the branch);
+this closes a gap in enforcing that decision, not a new architectural mechanism.
+
+**Gap.** `cmd_run` (`src/runtime/main.py`) read `cfg.project.branch` throughout startup —
+`bind_reconciler(adapter, cfg.project.branch)` (recovery), `adapter.head_of(cfg.project.branch)`
+(baseline health check) — but never enforced or verified that branch was actually checked out
+on the target repo's working tree. Correctness depended entirely on ambient `HEAD` happening to
+match `cfg.project.branch`; nothing in the runtime detected or corrected a mismatch. Recorded as
+an open parked decision (`NEXT.md` §5, "Ingest branch-check gap") with two options: Option A
+(explicit checkout) vs. Option B (accept as scoped risk). Option A is adopted here.
+
+**Insertion point.** The checkout is enforced as a new step "5b" in `cmd_run`, immediately after
+the adapter is constructed and **before** orphan reap / recovery / the baseline health check —
+not immediately before ingest as a naive reading of the gap might suggest. Reasoning: recovery's
+`bind_reconciler` binds its three seams (`preserve_residue`, `check_unwitnessed_commit`,
+`check_dirty_workspace`) against `cfg.project.branch`, and the baseline health check's
+`Validator.validate` runs validation commands against the physical working tree at
+`cfg.project.repository`. Both are meaningless — recovery reconciling the wrong branch's state,
+baseline-green asserting nothing about the configured branch — if enforcement happens only at
+the ingest call site, after both have already run against whatever was on disk.
+
+**Mechanism.** No adapter change. Reuses the existing `RepositoryAdapter.checkout_branch`
+(`src/runtime/repo/adapter.py:100`, implemented at `src/runtime/repo/git_adapter.py:165-174`,
+already called once in production for per-issue branches at `src/runtime/loop.py:204`) —
+called as `adapter.checkout_branch(cfg.project.branch)`, deliberately **without** `create_from`:
+`create_from` force-creates/resets a branch at a pinned commit (`git checkout -B`), correct for
+disposable per-issue branches but wrong for the target repo's long-lived branch, which must only
+be switched to, never force-reset.
+
+**Failure-mode contract (fail-loud, no silent no-op).** `checkout_branch` already raises
+`RepoError` for a dirty working tree (`git_adapter.py:166-170`); with no `create_from`, a
+missing local branch surfaces as a nonzero `git checkout` exit, which `_git`'s `check=True`
+(`git_adapter.py:52-75`) re-raises as the same `RepoError` — one `except RepoError` arm in
+`cmd_run` covers both cases, printing to stderr and returning 1, matching the existing
+`except ConfigError` / `except EngineError` arms. Detached HEAD is not a distinct case: plain
+`git checkout <branch>` corrects it identically to switching from another named branch. Already
+being on the target branch is an idempotent no-op by construction (`git checkout` exits 0); the
+same `[startup] checked out {branch}` log line fires truthfully in both cases, so nothing is
+silently skipped.
+
+**Blast radius.** Confined to `src/runtime/main.py`; no event-schema or state-transition change
+(confirmed: `grep -rn "checkout" src/runtime/events/ src/runtime/state/` — zero matches).
+
 ---
 
 ## 5b. ADR-21 — Engine fence is a denylist; strict "no credential access" is accepted as unclosable while Bash exists

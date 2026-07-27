@@ -31,9 +31,12 @@ Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-
    decision only. Pointer: `docs/handoffs/HANDOFF_2026-07-26_session17-dryrun-a-pass-correction-note.md`
    § "Next Action" ["decide how to handle the two items Dry-run A explicitly left
    unwitnessed"].
-2. Resolve the ingest branch-check gap (Option A: add `checkout_branch` before ingest, vs.
-   Option B: accept as scoped risk) — precondition: none, a decision only. Pointer: §5
-   below, "Ingest branch-check gap" (this file).
+2. ~~Resolve the ingest branch-check gap~~ — **CLOSED, Session 20 (2026-07-26).** Option A
+   adopted and implemented: `cmd_run` now enforces `adapter.checkout_branch(cfg.project.branch)`
+   as step 5b, before recovery/baseline, fail-loud via `RepoError`. Durability harness re-run
+   green, 60/60 both seed 42 and seed 1337. Gated by `docs/08-session-0-closure-and-adr-
+   amendments.md` § "ADR-20 — Amendment 1 (2026-07-26)". Pointer: §5 below, "Ingest
+   branch-check gap" (this file), for the resolution note.
 3. ~~Close the CLI-2.1.214 Probe 2/3 coverage gap~~ — **CLOSED, Session 18 (2026-07-26).**
    The literal doc 14 §2.4 Probe 2/3 procedure was re-run and both legs PASSED at CLI
    2.1.220 (commit `ab99f55`) — the substantive identity gap (literal Probe 2/3 stale since
@@ -185,20 +188,34 @@ place — is closed as of 2.1.220. Pointer: `docs/14-session6-phase2-gate.md` §
 
 ## 5. Parked decisions
 
-**Ingest branch-check gap.** "Ingest does not verify/enforce checked-out branch before
-reading `Issues.md`." `Issues.md` is currently read correctly only because ambient `HEAD`
-happens to match `cfg.project.branch` — nothing in the runtime enforces or verifies this
-match. Two options recorded, neither chosen: **Option A** — add an explicit
-`checkout_branch(cfg.project.branch)` call before `_ingest_issues` in `main.py` (a `src/`
-change, needs explicit sign-off + likely an ADR). **Option B** — accept as scoped risk;
-rely on Step 3 preflight Item 0 to catch a branch mismatch before live smoke — but Item 0
-in its current (scratch-workspace) form does NOT cover this, verified this session; it
-would require widening Item 0's scope to the real StockPhotoAgent repo, or a separate
-check. Status: OPEN, decision needed; do NOT fold into precondition #3; no `src/` change
-made or proposed. Pointer: `docs/handoffs/next-md-archive-2026-07-26.md` is NOT this
-item's home — full evidence for this specific item lives only here; see also
-`docs/14-session6-phase2-gate.md` §2.6/§2.7 for Item 0's scoping evidence
-["scratch workspace — explicitly 'never StockPhotoAgent'"].
+**Ingest branch-check gap — RESOLVED, Session 20 (2026-07-26).** Originally: "Ingest does
+not verify/enforce checked-out branch before reading `Issues.md`." `Issues.md` was read
+correctly only because ambient `HEAD` happened to match `cfg.project.branch` — nothing in
+the runtime enforced or verified this match. Two options were recorded, neither chosen at
+the time: **Option A** — add an explicit `checkout_branch(cfg.project.branch)` call before
+`_ingest_issues` in `main.py`. **Option B** — accept as scoped risk, rely on Step 3
+preflight Item 0 (which did NOT cover this in its scratch-workspace form, verified that
+session).
+
+**Resolution (2026-07-26):** Option A implemented. `cmd_run` (`src/runtime/main.py`) now
+calls `adapter.checkout_branch(cfg.project.branch)` as a new step 5b, placed after the
+adapter is constructed and *before* orphan reap / recovery / the baseline health check —
+not immediately before ingest — because recovery's `bind_reconciler` and the baseline
+health check's `Validator.validate` both act against `cfg.project.branch`/the physical
+tree and would otherwise run pre-checkout. No adapter signature change: reuses the
+existing `checkout_branch(branch, *, create_from=None)`, called with no `create_from` so
+the target repo's long-lived branch is only switched to, never force-reset. Failure modes
+(dirty tree, missing local branch) both raise `RepoError`, caught by one new
+`except RepoError` arm that prints to stderr and returns 1 — fail-loud, no silent no-op;
+detached HEAD and already-on-branch are not special-cased (plain `checkout` handles both
+correctly, idempotently). Durability harness re-run in full post-change: 60/60 on seed 42
+AND 60/60 on seed 1337 (`tests/crash/harness.py`). Gated by, and full rationale recorded
+in, `docs/08-session-0-closure-and-adr-amendments.md` § "ADR-20 — Amendment 1
+(2026-07-26): enforce `cfg.project.branch` checkout before ingest". Pointer:
+`docs/handoffs/next-md-archive-2026-07-26.md` is NOT this item's home — full prior
+evidence for the original gap lives only here; see also `docs/14-session6-phase2-gate.md`
+§2.6/§2.7 for Item 0's scoping evidence ["scratch workspace — explicitly 'never
+StockPhotoAgent'"], preserved for history, not superseded by this resolution.
 
 **Vacuity-guard detectability — permanently unproven.** The positive control that would
 prove the ADR-22 A-empty mechanism can detect contamination (not just fail to observe it)

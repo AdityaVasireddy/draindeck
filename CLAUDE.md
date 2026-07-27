@@ -53,8 +53,9 @@ production feature; everything builds on the event-log layer.
 
 ## Verify commands
 - Unit: `python -m pytest tests\unit -q`  (expect 19 pass)
-- Durability gate: `python tests\crash\harness.py %TEMP%\ch`  (expect 46 pass,
-  invariants I-a..I-h; the harness is mutation-tested — it can actually fail)
+- Durability gate: `python tests\crash\harness.py %TEMP%\ch`  (expect 60 pass on
+  BOTH seed 42 and seed 1337, invariants I-a..I-h; the harness is mutation-tested —
+  it can actually fail; see docs/14 for current harness state)
 
 ## Current task
 Session 3: implement RepositoryAdapter (repo/adapter.py + repo/git_adapter.py
