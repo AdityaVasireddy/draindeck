@@ -26,11 +26,20 @@ Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-
 
 ## 2. Immediate next actions
 
-1. Decide how to sequence live-smoke design against the 3 carried-forward-unwitnessed
-   surfaces (witness one first vs. carry all three labeled) — precondition: none, a
-   decision only. Pointer: `docs/handoffs/HANDOFF_2026-07-26_session17-dryrun-a-pass-correction-note.md`
-   § "Next Action" ["decide how to handle the two items Dry-run A explicitly left
-   unwitnessed"].
+1. ~~Decide how to sequence live-smoke design against the 3 carried-forward-unwitnessed
+   surfaces~~ — **RESOLVED, Session 21 (2026-07-26), Option B.** Carry all three surfaces
+   labeled into live-smoke design (none pre-witnessed); A-deferred escape hatch: a
+   dedicated scratch probe reopens as a separately-gated item only if live-smoke design
+   later surfaces a specific real-tree risk warranting pre-witness. Evidence basis: `grep`
+   found zero `-m runtime` matches in `tests/crash/harness.py` — no existing scaffolding
+   drives the real `cmd_run` entrypoint (the harness's `run_worker` drives a separate
+   `WORKER` script via `Popen`), so a standalone witness probe for surfaces 1 & 2 would
+   need new harness code plus the same live `claude`+reviewer/Ollama+baseline-green stack
+   `cmd_run` hard-requires at steps 4/8 — strictly more costly than live smoke itself for
+   those two surfaces. Surface 3 (real-tree behavior) is irreducible either way. This
+   resolves the sequencing decision only; it witnesses nothing — §1 and all three surfaces
+   remain UNWITNESSED / carried-forward exactly as worded. Pointer: this session's record
+   for the full reasoning (no other doc holds it).
 2. ~~Resolve the ingest branch-check gap~~ — **CLOSED, Session 20 (2026-07-26).** Option A
    adopted and implemented: `cmd_run` now enforces `adapter.checkout_branch(cfg.project.branch)`
    as step 5b, before recovery/baseline, fail-loud via `RepoError`. Durability harness re-run
