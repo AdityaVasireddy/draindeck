@@ -131,6 +131,81 @@ silently skipped.
 **Blast radius.** Confined to `src/runtime/main.py`; no event-schema or state-transition change
 (confirmed: `grep -rn "checkout" src/runtime/events/ src/runtime/state/` — zero matches).
 
+### ADR-20 — Amendment 2 (2026-07-27): recovery runs BEFORE checkout, not after
+
+**Status:** Accepted. Re-sequences Amendment 1's placement of the branch-checkout step; does
+not touch the checkout mechanism, the checkout guard, or the decision that a checkout must
+happen before baseline/ingest — only WHEN relative to recovery.
+
+**Gap.** Amendment 1 placed `checkout_branch(cfg.project.branch)` as step 5b, immediately
+after adapter construction and **before** `reap_orphans`/`recover()`. Its stated rationale was
+that recovery's `bind_reconciler` seams and the baseline health check "are meaningless" if the
+wrong branch is on disk. Live fault-injection this session (Session 24, real `cmd_run`, real
+`claude -p` child, orchestrator killed mid-execution against a disposable scratch repo —
+evidence under `orphan-report/`, `NEXT.md` item 13) falsified that rationale for the recovery
+half: a genuine crash leaves the tree checked out on a per-issue attempt branch
+(`issue/N`, `loop.py:204`) with real uncommitted residue. `checkout_branch`'s own dirty-tree
+guard (`git_adapter.py:166-170`) then refuses — by design, it does not force-reset — and because
+the guard runs BEFORE recovery, recovery never gets a chance to clean the residue that would
+have satisfied it. This is a standing deadlock, not a transient race: every subsequent
+orchestrator start on that repo hits the identical refusal and exits 1 until a human
+intervenes outside the runtime, because nothing in the startup path can reach the code that
+would fix it.
+
+**Why recovery never needed the branch pre-switched (verified from source, not assumed).**
+`bind_reconciler`'s seams (`src/runtime/recovery/bindings.py`) operate two ways, neither of
+which requires `cfg.project.branch` to be the current checkout:
+- Read/compare operations (`check_unwitnessed_commit`'s `is_ancestor`/`find_merge_commit`,
+  `check_dirty_workspace`'s `_expected_commit` fallback `adapter.head_of(target_branch)`) all
+  resolve by explicit ref name (`refs/heads/<branch>`) via git plumbing (`rev-parse`,
+  `merge-base`, `for-each-ref`) — independent of what HEAD currently points at.
+- Mutating operations (`preserve_residue`'s `snapshot_commit`, `check_dirty_workspace`'s
+  `reset_hard`) act on whatever is CURRENTLY checked out — which, in the crash case, is
+  exactly the per-issue attempt branch the crash left behind, the correct target for residue
+  capture, not `cfg.project.branch`.
+- `snapshot_commit` (`git_adapter.py:176-184`) does `git add -A` (stages tracked, modified,
+  AND untracked) then `git commit --no-verify`, leaving the tree clean (`is_dirty()` false)
+  whenever it had something to commit. `check_dirty_workspace`'s `reset_hard`
+  (`git_adapter.py:203-205`, `git reset --hard` + `git clean -fd`) independently guarantees a
+  clean tree even if `preserve_residue` didn't run or didn't apply — it fires on
+  `dirty OR head != expected`, not gated on branch identity.
+- Net effect, confirmed by re-running the witnessed crash shape source-side line by line
+  (not merely asserted): by the time `recover()` returns, the physical tree is unconditionally
+  clean, on whichever branch it happens to be sitting on. `checkout_branch`, called
+  immediately after, therefore always finds `is_dirty() == False` and succeeds.
+
+**Doc 03 wins.** `src/runtime/recovery/reconciler.py`'s own module docstring states doc 03's
+ordering law plainly: "a crash may only leave a missing FACT, which the reconciler
+backfills... residue is preserved to an attempt ref, then `ExecutionCrashed` is emitted, then
+the workspace is reset." Amendment 1's checkout-before-recovery placement inverted this for
+the branch-checkout step specifically; per `CLAUDE.md` ("On any conflict between code and doc
+03, doc 03 wins"), doc 03's ordering law governs, and Amendment 1's placement is corrected
+here rather than left standing.
+
+**New insertion point.** `checkout_branch(cfg.project.branch)` moves to a new step "7b" in
+`cmd_run`, immediately after `recover()` returns and immediately before the reviewer
+health/baseline checks (step 8) and ingest (step 9) — both of which still run strictly after
+checkout, unchanged from Amendment 1's intent. Only the position relative to
+`reap_orphans`/`recover()` (steps 6/7) moves; nothing else in Amendment 1's mechanism,
+failure-mode contract, or blast-radius statement changes. The dirty-tree guard itself is
+NOT weakened or made conditional — it is reached later, at a point recovery has already
+guaranteed is clean, not bypassed.
+
+**Evidence.** Session 24 (2026-07-27) scratch-repo fault injection, preserved on disk under
+`orphan-report/` (`run2_stdout.log`: the pre-fix `CHECKOUT FAILED` exit, reproduced live) and
+`orphan-scratch-repo/` (left dirty exactly as the crash produced it, for comparison). Full
+mechanical trace of all three viability claims above (source line numbers,
+`snapshot_commit`/`preserve_residue`/`check_dirty_workspace` behavior on the witnessed shape)
+recorded in this session's transcript and `NEXT.md` item 13. Post-fix re-test (durability
+harness both seeds + the same scratch injection re-run) is the gate for calling this item
+done — see `NEXT.md` item 13 for the pass/fail criteria.
+
+**Blast radius.** Confined to `src/runtime/main.py` (pure reorder of two existing step
+groups, no new code paths); no adapter, event-schema, or state-transition change. Classed as
+a `main.py` startup-composition change (same class as `NEXT.md` item 8), so it carries item
+8's gates: full durability-harness re-run, 60/60, both seed 42 and seed 1337, required before
+landing.
+
 ---
 
 ## 5b. ADR-21 — Engine fence is a denylist; strict "no credential access" is accepted as unclosable while Bash exists

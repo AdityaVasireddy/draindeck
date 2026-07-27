@@ -135,13 +135,35 @@ unproven** (§5, unchanged).
    above resolves the actual (wrong-branch) defect, not the originally-misdescribed
    (dirty-tree) one. Recorded here so the next session does not re-derive this
    correction from scratch.
-9. **NEW, Session 22 (2026-07-27) — named, not blocking Phase-2.** Orphan-crash recovery
-   path has never been positively witnessed — every run to date, including this
-   session's live smoke, is happy-path only. The reconciler's reap/no-double-commit
-   behavior needs a deliberate fault-injection witness (kill `claude -p` mid-execution,
-   then resume) before the system can be trusted unsupervised. Not gated on Phase-2, but
-   must not be carried silently as "works" — this line is that explicit carry. Pointer:
-   doc 14 §2.9.
+9. **NEW, Session 22 (2026-07-27) — named, not blocking Phase-2. NOW GATED BY item 13
+   (Session 24).** Orphan-crash recovery path has never been positively witnessed —
+   every run to date, including this session's live smoke, is happy-path only. The
+   reconciler's reap/no-double-commit behavior needs a deliberate fault-injection
+   witness (kill `claude -p` mid-execution, then resume) before the system can be
+   trusted unsupervised. Not gated on Phase-2, but must not be carried silently as
+   "works" — this line is that explicit carry. Pointer: doc 14 §2.9.
+
+   **Session 24 (2026-07-27) follow-up — real injection attempted, BLOCKED, and a
+   second finding logged.** A real fault-injection run (disposable scratch repo, real
+   `cmd_run`, real `claude -p` child, orchestrator killed via `taskkill /PID <pid> /F`
+   with no `/T`) confirmed the kill mechanism works — GAP-1 live-child witness clean,
+   the real child was confirmed alive via `tasklist` immediately after the orchestrator
+   was terminated — but resume could not reach `recover()` at all; see item 13, which
+   this item is now gated on. Independent of item 13, the run surfaced a second finding
+   that must survive into whatever run finally exercises this item: the orphaned child
+   ran to completion fully unsupervised and left a real edit on the target repo's
+   per-issue attempt branch (uncommitted, in `calc.py`) with ZERO event-log trace — no
+   `ExecutionFinished`, no `ExecutionCrashed`, no residue ref, because recovery never
+   ran. Implication: real residue can exist on disk/in git with no corresponding
+   event-log record at all, so a future no-double-commit proof that keys only off
+   `CommitCreated`/event cardinality is insufficient by construction — it cannot detect
+   residue that was never witnessed as an event in the first place. The merge-commit
+   second-parent / attempt-ref provenance check already specified in this item's
+   approved outcome matrix (Session 24, design gate) is therefore load-bearing, not
+   redundant, and must not be dropped as a simplification when this item is re-attempted.
+   Evidence preserved on disk under `<scratchpad>/orphan-report/` and
+   `<scratchpad>/orphan-scratch-repo/` (untouched, not cleaned up — it is the
+   reproduction for item 13's fix re-test).
 10. **NEW, Session 22 (2026-07-27) — cosmetic, file-and-defer.** `Issues.md` STATUS text
     never written back after issues complete — cosmetic, not a correctness bug. The
     user hand-verified after the live smoke that all 5 issues in `Issues.md` still read
@@ -178,6 +200,134 @@ unproven** (§5, unchanged).
     subdirectories, and was deliberately left in place this session (not force-deleted)
     per reviewer instruction. Next session: delete manually or add a `.gitignore` line —
     a separate housekeeping decision, not part of item 8's fix commit.
+13. **NEW, Session 24 (2026-07-27) — fix BEFORE Phase-2. GATES item 9. RESOLVED,
+    same session.** Real
+    fault-injection (kill the orchestrator mid-execution against a disposable scratch
+    repo; real `claude -p` child confirmed alive post-parent-kill, GAP-1 witness clean)
+    surfaced a standing startup deadlock, not a transient race.
+    **Symptom:** on resume after a real mid-execution crash, `cmd_run` exits 1 at
+    `checkout_branch` (`src/runtime/repo/git_adapter.py:165-170`) with `refuse to
+    checkout <branch>: worktree dirty (upstream sequencing bug — residue must be
+    preserved first)`, BEFORE `reap_orphans` (`main.py` step 6) or `recover()` (step 7)
+    ever run.
+    **Root cause:** `main.py` step ordering — step 5b (`checkout_branch`, added by ADR-20
+    Amendment 1, dated 2026-07-26, §5 "Ingest branch-check gap") runs BEFORE reap/recover.
+    That amendment's stated rationale ("recovery's `bind_reconciler` and the baseline
+    health check... both act against `cfg.project.branch`/the physical tree and would
+    otherwise run pre-checkout") is now live-falsified: recovery's seams (`bindings.py`)
+    operate via explicit-ref git plumbing (`rev-parse`, `merge-base`, `for-each-ref`) and
+    mutate whatever branch is CURRENTLY checked out, not `cfg.project.branch`
+    specifically — they never needed the branch pre-switched. `checkout_branch`'s own
+    dirty-tree guard message ("upstream sequencing bug — residue must be preserved
+    first") already anticipated this conflict; the amendment was never reconciled
+    against it.
+    **Blast radius: STANDING DEADLOCK, not transient.** Once a real crash leaves the
+    tree dirty (the normal shape of a mid-execution crash — the engine works on a
+    per-issue `issue/N` attempt branch per `loop.py:204`, and a kill mid-edit leaves
+    uncommitted changes there), every subsequent orchestrator start on that repo hits
+    the identical refusal and exits 1 until a human manually intervenes outside the
+    runtime. This is on the mainline recovery path, not an edge case — it is item 9's
+    exact scenario.
+    **Evidence:** scratch-repo fault injection this session, preserved on disk under
+    `<scratchpad>/orphan-report/` (`run1_stdout.log` empty — confirms an uncatchable
+    hard kill, no graceful flush; `run2_stdout.log` is exactly the two-line
+    `CHECKOUT FAILED` message and nothing else) and `<scratchpad>/orphan-scratch-repo/`
+    (left exactly as the crash produced it: `git status` shows `## issue/1` /
+    ` M calc.py`, an uncommitted real edit from the killed `claude -p` child). Scratch
+    `events.jsonl` frozen at 5 events post-resume — no `ExecutionCrashed`, no second
+    `ExecutionSpawned`. See item 9's Session-24 follow-up for the orphaned child's fate.
+    **Cross-link:** GATES item 9 — orphan-reap / no-double-commit cannot be witnessed
+    until recovery can actually start on a genuinely dirty post-crash tree.
+    **Fix design (written up for gate, NOT implemented):** reorder `reap_orphans` +
+    `recover()` ahead of `checkout_branch` in `main.py`. Confirmed viable, not assumed:
+    `preserve_residue`'s `snapshot_commit` (`git_adapter.py:176-184`) does `git add -A`
+    + `git commit --no-verify` on whatever branch is currently checked out, which
+    leaves `is_dirty()` False afterward; check 3 (`check_dirty_workspace`) additionally
+    `reset_hard`s if still off-target. Both are branch-agnostic — neither needs
+    `cfg.project.branch` checked out first. `checkout_branch`, moved to run
+    immediately after `recover()` returns, therefore always finds a clean tree. Ingest
+    (step 9) and baseline (step 8) still run strictly after checkout, unchanged — only
+    recovery moves ahead of it, not ingest/baseline. Requires a new ADR entry (doc 08,
+    "ADR-20 — Amendment 2") since this reorders an already-ADR'd sequencing decision —
+    not an ad hoc change — plus a full durability harness re-run (60/60, both seed 42
+    and seed 1337) before landing, same class as item 8's `main.py` startup-composition
+    change. Pre-committed re-test: re-run the same scratch fault injection; PASS
+    condition is resume reaching `recover()` (an `ExecutionCrashed` event appended, not
+    a `CHECKOUT FAILED` exit) and the full item-9 outcome matrix becoming evaluable.
+
+    **Resolution (Session 24, 2026-07-27, NOT YET COMMITTED — implemented and gated,
+    commit pending explicit authorization).** `ADR-20 — Amendment 2` written in doc 08
+    (§5, after Amendment 1). `main.py` reordered exactly as designed: `reap_orphans`
+    (step 6) and `recover()` (step 7) now run before `checkout_branch` (moved to step
+    7b); ingest and baseline untouched, still strictly after checkout. All three gates
+    green: (1) durability harness 60/60 both seed 42 AND seed 1337 (raw: `ALL 60
+    SCENARIOS PASSED` both runs); (2) fresh scratch-repo v2 re-test — resume stdout
+    `[startup] reaped orphan engine 1-e1 (pid 48208)` / `[recovery] crashed orphans:
+    ['1-e1']` / `[startup] checked out agent-work`, no `CHECKOUT FAILED`, a real
+    `ExecutionCrashed` event appended (event_id 6); (3) item-9 outcome matrix now
+    evaluable for the first time and PASSES all three checks — orphan reaped (child pid
+    gone from `tasklist` after resume), no work repeated (exactly one retry
+    `ExecutionSpawned`, one terminal `IssueCompleted` for the crashed issue), no
+    double-commit (`rev-list --count` delta = 6 = 3 completed issues × 2 commits/issue,
+    no extras; `CommitCreated` count for the crashed issue = exactly 1; the merge's
+    second parent is the retry's own commit, verifiably distinct from the abandoned
+    residue commit). Evidence preserved under `<scratchpad>/orphan-report-v2/` and
+    `<scratchpad>/orphan-scratch-repo-v2/`, alongside the original pre-fix
+    `orphan-report/`/`orphan-scratch-repo/` left untouched for comparison. **The GATE-3
+    re-test also surfaced item 14 (evidence-integrity defect in attempt-ref
+    preservation) — independently confirmed NOT caused by this reorder (see item 14's
+    root cause); does not block calling this item's own fix verified.**
+14. **NEW, Session 24 (2026-07-27) — fix BEFORE Phase-2, EVIDENCE-INTEGRITY severity.**
+    Surfaced by item 13's GATE-3 re-test (the first real crash-residue scenario
+    recovery has ever been able to reach). **Symptom:** the `ExecutionCrashed` event for
+    execution `1-e1` asserts `residue_ref: "refs/attempts/1/1-e1"` as preserved, but
+    `git rev-parse refs/attempts/1/1-e1` fails ("unknown revision"), `git for-each-ref
+    refs/attempts` returns nothing, and `git fsck --unreachable` shows the residue
+    commit (`3297589670ae...`, message "crash residue 1-e1", confirmed present in the
+    `issue/1` reflog at `@{2}`) as dangling/unreachable — one `git gc` from permanent
+    loss. The event log asserts a durability guarantee the repository does not actually
+    keep.
+    **Root cause, confirmed from source (not hypothesized):** `loop.py:339` —
+    `self.adapter.delete_attempt_refs(issue)`, fired unconditionally on every
+    `IssueCompleted` ("both done -> close the issue, then GC attempt refs (ADR-15)") —
+    calls `delete_attempt_refs(issue_id)` (`git_adapter.py:240-244`), which internally
+    calls `list_attempt_refs(issue_id)` (`git_adapter.py:133-134`) using the glob
+    pattern `refs/attempts/<issue_id>` — **scoped to the ISSUE, not the execution** —
+    and deletes every ref that matches via `git update-ref -d`. On this run: `1-e1`
+    (crashed, residue preserved by recovery's `preserve_residue`,
+    `bindings.py:39`) and `1-e2` (the retry that actually succeeded, its own attempt
+    ref written normally at `loop.py:217`) both live under `refs/attempts/1/*`. When
+    `1-e2` completed and `IssueCompleted` fired, `delete_attempt_refs("1")` deleted
+    BOTH — the retry's own now-superseded-by-the-merge-commit ref (harmless, matches
+    the "idempotent; harmless if crashed pre-GC" comment's intent) AND the crashed
+    sibling execution `1-e1`'s residue ref (NOT harmless — that ref was the only
+    anchor for evidence of a DIFFERENT execution's abandoned work, unrelated to
+    whether the issue as a whole eventually succeeded). Confirmed as the actual
+    mechanism, not a race or environment quirk: the reflog timeline (`3297589`
+    committed -> `4c6365b` reset by check 3 -> `68dd430` committed by the retry) is
+    fully explained by existing code paths with no unexplained gap, and a manual
+    `git update-ref refs/attempts/1/1-e1 3297589...` in the same repo persists
+    immediately, ruling out a git/Windows write-persistence bug.
+    **Does NOT implicate item 13's reorder.** `delete_attempt_refs` fires from
+    `loop.py`'s normal issue-completion path, entirely independent of `main.py`'s
+    startup step order — it would delete the same refs regardless of whether
+    `checkout_branch` runs before or after `recover()`. Item 13's fix only made this
+    scenario reachable for the first time (previously, no real crash-residue run ever
+    got far enough for an issue to both crash AND later complete); it did not create
+    the bug.
+    **Why it matters:** confirms, in production, the exact risk item 9's Session-24
+    follow-up predicted — residue can exist with no reliable durable trace. GATE 3's
+    no-double-commit PASS this session survived only because that check compared
+    commit CONTENT (the merge's second parent vs. the residue commit's own sha, both
+    independently resolvable via the reflog) rather than trusting the `residue_ref`
+    itself; any future check or audit that trusts `residue_ref` as durable would be
+    reading a false guarantee.
+    **Cross-link:** related to item 9's second finding (Session 24) — this run is that
+    finding's production confirmation, not a new independent risk class. Does not gate
+    or block item 13's reorder fix, which is independently verified working.
+    **Fix:** NOT designed or implemented this session — root-cause trace only, per
+    explicit instruction. Evidence (console log, `events.jsonl`, reflog, fsck output)
+    preserved under `<scratchpad>/orphan-report-v2/`.
 
 ## 3. Open preconditions (Step 3's own five, plus its gating item 0)
 

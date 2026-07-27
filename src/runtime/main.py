@@ -180,22 +180,19 @@ def cmd_run(args) -> int:
     # 5. adapter
     adapter = GitCliAdapter(cfg.project.repository, cfg.attempts.ref_namespace)
 
-    # 5b. enforce checked-out branch BEFORE recovery/baseline (ADR-20 amendment,
-    # 2026-07-26): recovery binds its seams to cfg.project.branch and the baseline
-    # health check validates the physical tree — both are meaningless if the wrong
-    # branch is on disk. Reuses the existing adapter method (no create_from: we must
-    # never force-reset the target repo's long-lived branch, only switch to it).
-    try:
-        adapter.checkout_branch(cfg.project.branch)
-    except RepoError as e:
-        print(f"CHECKOUT FAILED: {e}", file=sys.stderr)
-        return 1
-    print(f"[startup] checked out {cfg.project.branch}")
-
     # 6. reap engine orphans BEFORE recovery (doc 12 §1.6)
     for r in engine.reap_orphans():
         print(f"[startup] {r}")
-    # 7. recovery — the full production seam binding proven by harness f4
+    # 7. recovery — the full production seam binding proven by harness f4. Runs
+    # BEFORE checkout (ADR-20 Amendment 2, 2026-07-27): recovery's seams act via
+    # explicit-ref git plumbing (rev-parse/merge-base/for-each-ref) and mutate
+    # whatever is CURRENTLY checked out, not cfg.project.branch specifically —
+    # they never needed the branch pre-switched. Running recovery first lets
+    # check 1 (preserve_residue -> snapshot_commit) and check 3
+    # (check_dirty_workspace -> reset_hard) leave a genuinely dirty post-crash
+    # tree clean BEFORE checkout_branch's dirty-tree guard is reached, instead
+    # of deadlocking against it (Amendment 1's placement did the opposite and
+    # could never resolve real crash residue — see NEXT.md item 13).
     proj, report = recover(
         log,
         is_execution_alive=engine.is_execution_alive,
@@ -205,6 +202,21 @@ def cmd_run(args) -> int:
         print(f"[recovery] crashed orphans: {report.orphans_crashed}")
     for r in report.workspace_repairs:
         print(f"[recovery] {r}")
+
+    # 7b. enforce checked-out branch BEFORE baseline/ingest (ADR-20 Amendment 1,
+    # 2026-07-26, re-sequenced by Amendment 2, 2026-07-27): the baseline health
+    # check and ingest both act against the physical tree and are meaningless if
+    # the wrong branch is on disk. Now runs AFTER recovery, which has already
+    # guaranteed a clean tree (see step 7 above) — the guard itself is
+    # unchanged/unweakened. Reuses the existing adapter method (no create_from:
+    # we must never force-reset the target repo's long-lived branch, only switch
+    # to it).
+    try:
+        adapter.checkout_branch(cfg.project.branch)
+    except RepoError as e:
+        print(f"CHECKOUT FAILED: {e}", file=sys.stderr)
+        return 1
+    print(f"[startup] checked out {cfg.project.branch}")
 
     # 8. health checks
     ok, detail = _reviewer_reachable(cfg)
