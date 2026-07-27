@@ -24,6 +24,7 @@ production feature; everything builds on the event-log layer.
   session (ran it, saw it pass) from what is ASSUMED. Never report a test
   as passing without running it.
 - Every session ends at a runnable, committed checkpoint; update NEXT.md.
+- No commit without explicit authorization. Never commit or push until the user has explicitly authorized that specific commit.
 - Kill criteria (ADR-19) are frozen: 20 issues, attempt-1 ≥30%, cost/shipped
   ≤ $3. Never tune them to dodge a verdict.
 - Process depth scales to blast radius, not session length. (Correction after ~17 sessions:

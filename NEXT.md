@@ -22,7 +22,7 @@ path, and real-tree behavior remain carried-forward as UNWITNESSED ahead of live
 Gate (a), the vacuity-guard detectability question, is permanently unproven and carried as
 a labeled limitation, not a blocker to resolve first.
 Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-17,
-2026-07-26)" ["surfaces named UNWITNESSED ahead of live smoke"] (L1072-1090).
+2026-07-26)" ["surfaces named UNWITNESSED ahead of live smoke"] (L1129).
 
 ## 2. Immediate next actions
 
