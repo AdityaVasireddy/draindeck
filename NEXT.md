@@ -89,7 +89,8 @@ unproven** (§5, unchanged).
    this is a live possibility on future runs, not evidence the pack needs no revision.
    `--allowedTools`/settings hardening remains a non-goal (ADR-21 settled the fence),
    unchanged. Pointer: doc 14 §2.9 for full evidence.
-8. **NEW, Session 22 (2026-07-27) — fix BEFORE Phase-2.** Working tree left on the last
+8. **NEW, Session 22 (2026-07-27) — fix BEFORE Phase-2. RESOLVED, Session 23
+   (2026-07-27), commit `86e2476`.** Working tree left on the last
    `issue/N` attempt branch after a clean drain, not on `cfg.project.branch` —
    deterministic, not incidental. Root cause: `loop.py:204`
    (`self.adapter.checkout_branch(f"issue/{issue}", create_from=base)`, inside
@@ -107,6 +108,33 @@ unproven** (§5, unchanged).
    session that implements it; not a sneak-in one-liner. Pointer: doc 14 §2.9 for the
    full mechanical trace (both `checkout_branch` call sites, `run()`'s exit, `cmd_run`'s
    exit, and the live `issue/5`-at-rest evidence, left dirty on purpose for this filing).
+
+   **Resolution (Session 23, 2026-07-27, commit `86e2476`):** Fix landed in `cmd_run`
+   (`src/runtime/main.py`) only — `loop.py`/schema/transitions untouched. The early
+   `return 2`/`return 0` inside the `orch.run()` try/except were replaced with an
+   `exit_code` variable, and a `finally` attached to that same `try` now calls
+   `adapter.checkout_branch(cfg.project.branch)` unconditionally on every exit path:
+   clean drain, budget hard stop, `OrchestratorHalt`/`ReviewerError`, `KeyboardInterrupt`,
+   and uncaught-exception fall-through. The restore is self-guarded (`except RepoError`
+   inside the `finally`, logs a `[shutdown] WARNING` and does not re-raise) so a failed
+   shutdown checkout cannot supersede an in-flight halt's `exit_code`. Verified, not
+   assumed: `tests/unit/test_main_exit_paths.py`, 5/5 (four exit paths + the
+   restore-failure-survives-halt guard, each asserting `checkout_branch` was actually
+   called, not asserted from the shape alone); durability harness 60/60 at both seed 42
+   and seed 1337, re-run post-change per the fix-BEFORE-Phase-2 gating requirement above.
+
+   **Defect reclassification — correct the record, don't silently re-derive it next
+   session:** the original filing above (and this session's opening brief) described the
+   defect as the workspace being left with a "dirty tree" / uncommitted changes. Live
+   re-verification this session (`git status` on `StockPhotoAgent`, full form, not just
+   `--porcelain`) showed the opposite: `On branch issue/5` / `nothing to commit, working
+   tree clean`. The actual defect was narrower and purely branch-identity: the tree is
+   checked out on the wrong branch (`issue/5` instead of `agent-work`) with no
+   uncommitted changes at all. Same fix class (restore `cfg.project.branch` on exit),
+   same root cause (`loop.py:204`'s per-issue checkout, no matching restore) — the fix
+   above resolves the actual (wrong-branch) defect, not the originally-misdescribed
+   (dirty-tree) one. Recorded here so the next session does not re-derive this
+   correction from scratch.
 9. **NEW, Session 22 (2026-07-27) — named, not blocking Phase-2.** Orphan-crash recovery
    path has never been positively witnessed — every run to date, including this
    session's live smoke, is happy-path only. The reconciler's reap/no-double-commit
@@ -141,6 +169,15 @@ unproven** (§5, unchanged).
     (unwitnessed crash-recovery) — both ultimately trust the event log's integrity and
     availability. Not blocking Phase-2; tracked so it is not carried as an unstated
     assumption. Pointer: doc 14 §2.9.
+12. **NEW, Session 23 (2026-07-27) — housekeeping, not blocking.** A stray `--help/`
+    directory exists at the issue-runtime repo root — leftover harness-fixture scratch
+    from an accidental `python tests\crash\harness.py --help` invocation this session
+    (the harness has no `argparse`/`--help` handling; `sys.argv[1]` is taken literally
+    as the run root, so `--help` was treated as a directory name). It is untracked
+    (`git status` shows `?? --help/`), contains only empty harness-fixture
+    subdirectories, and was deliberately left in place this session (not force-deleted)
+    per reviewer instruction. Next session: delete manually or add a `.gitignore` line —
+    a separate housekeeping decision, not part of item 8's fix commit.
 
 ## 3. Open preconditions (Step 3's own five, plus its gating item 0)
 
