@@ -1145,3 +1145,207 @@ records that these surfaces are unwitnessed; it does not witness anything.
 3. **Real-tree behavior itself** — every Item 0 / Dry-run A run to date has used a scratch
    workspace or clone, never StockPhotoAgent's actual working tree; this remains the
    irreducible carried-forward, unwitnessed variable ahead of live smoke.
+
+---
+
+## Step 3 — LIVE SMOKE: Session 22 (2026-07-27) — RUN, first witness of all three carried-forward surfaces
+
+Authorized this session after a read-only precondition sweep confirmed all five of Step 3's
+own preconditions (NEXT.md §3) mechanically satisfied: (1) validation command real and
+previously VERIFIED (26 tests, exit 0, 2026-07-25); (2) `qwen2.5-coder:14b` present at the
+Docker Ollama instance actually serving `config.yaml → reviewer.qwen.endpoint`
+(`localhost:11434/api/tags`), distinct from the native CLI's stale `ollama list`
+(`qwen2.5vl:7b` only — wrong instance, per the docs/12 correction already on record); (3)
+`C:\Projects\StockPhotoAgent\Issues.md` exists (1904 bytes, modified 2026-07-17), 5 real
+`## <id>: <title>` issues, not a placeholder; (4) target repo present, on `agent-work`,
+clean; (5) `.gitignore` hygiene previously MET, re-confirmed unchanged (`git status
+--porcelain=v1 --ignored` — only this repo's own build/cache byproducts, nothing new).
+Environment: `claude --version` → `2.1.220` (unchanged from last witness), `ANTHROPIC_API_KEY`
+confirmed unset.
+
+**Real invocation, confirmed from `src/runtime/main.py`'s own argparse wiring** (not
+guessed): `python -m runtime.main run --config config.yaml`, run from repo root
+(`C:\Projects\issue-runtime`). Note: `event_log.path` (`state/events.jsonl`) resolves via
+bare `Path(cfg.event_log.path)` in `cmd_run` — cwd-relative, NOT joined with
+`cfg.project.repository` — so the event log lands at
+`C:\Projects\issue-runtime\state\events.jsonl`, not under the target repo. This was
+confirmed by checking both candidate paths before reading (`ls` on the target-repo
+candidate: "No such file or directory"; the issue-runtime-root candidate: present, 16526
+bytes).
+
+**Raw stdout (background task, exit code 0):**
+```
+[startup] checked out agent-work
+[health] reviewer: reachable at http://localhost:11434
+[health] baseline green
+[ingest] 5 new issue(s); 5 total in queue
+[done] queue drained — no actionable issue
+[metrics] executions_this_run=5 proxy_dollars_this_run=$1.5532
+```
+(The captured file showed a mangled `�` in place of the em-dash on the `[done]` line —
+a console-codepage/UTF-8 capture artifact, not a corruption of the event log itself, which
+correctly stores the same character as valid JSON `\u2014`.)
+
+### Attempt-1 / cost table (from `ExecutionFinished.payload`, every issue)
+
+| issue | execution_id | dollars | input_tokens | output_tokens | duration_s |
+|---|---|---|---|---|---|
+| 1 | 1-e1 | 0.3410544 | 55 | 3160 | 53.42 |
+| 2 | 2-e1 | 0.4218623 | 317 | 4800 | 91.90 |
+| 3 | 3-e1 | 0.4674186 | 44 | 5876 | 136.95 |
+| 4 | 4-e1 | 0.1728148 | 18 | 1822 | 46.61 |
+| 5 | 5-e1 | 0.1500676 | 16 | 1288 | 33.63 |
+| **sum** | | **1.5532177** | 450 | 16946 | 362.51 |
+
+Every `execution_id` in the log is `{issue}-e1` — no `-e2` or higher appears anywhere, and
+no `ExecutionAbandoned`/retry event type occurs at all. **5/5 issues committed on attempt 1.**
+Cost/shipped-issue = $1.5532177 / 5 = **$0.3106**. Sum matches the run's own printed
+`proxy_dollars_this_run=$1.5532` (rounding). **n=5, not an ADR-19 verdict** —
+`experiment.sample_size` is 20; this is one smoke run.
+
+### Event-log ↔ git-ref cross-check (mechanical, not self-report)
+
+For each issue, the event log's `CommitCreated.payload.merge_commit` was checked against
+`git log --oneline agent-work` and `git rev-parse agent-work` directly, independent of
+anything the engine or reviewer reported:
+
+| issue | merge_commit (event log) | reachable from `agent-work`? |
+|---|---|---|
+| 1 | `fa1aa56e523272b8ab5645673673b0cad85f430c` | yes — `agent-work~4` |
+| 2 | `7789ba1b684374365fa8e4e5735c7f153510481f` | yes — `agent-work~3` |
+| 3 | `974e9127466c6b57b0b7e64dacde36d5708ca128` | yes — `agent-work~2` |
+| 4 | `2995ca5f239a6b782435ca66bb4605004dc99453` | yes — `agent-work~1` |
+| 5 | `cf5cd8ce66b2ebd8edf359f9ccdcee27c5fd745a` | yes — `agent-work` (tip) |
+
+`git rev-parse agent-work` → `cf5cd8ce66b2ebd8edf359f9ccdcee27c5fd745a`, exactly matching
+issue 5's logged merge commit. **Verdict: PASS, 5/5, independently cross-checked.**
+
+### Surface findings
+
+**Surface 1 (`main.py` end-to-end startup composition) — WITNESSED, clean.** Checkout →
+orphan-reap → recovery → reviewer health check → baseline-green → ingest → loop, one real
+process, real `claude` binary, real target repo, no crash, exit 0.
+
+**Surface 2 (orphan-crash recovery path) — STILL UNWITNESSED.** Nothing crashed this run;
+`report.orphans_crashed` / `report.workspace_repairs` code paths were not exercised. Happy
+path is not evidence about the crash path. Filed as NEXT.md §2 item 9 (named, not blocking
+Phase-2).
+
+**Surface 3 (real-tree behavior) — WITNESSED, WITH DEFECT.** After the run, target-repo
+`git status --porcelain=v1 --branch` read `## issue/5`, not `## agent-work`. Confirmed this
+was NOT a corruption of `agent-work` (its own `git log`/`rev-parse` above matches the event
+log exactly) — it is the *working tree* left checked out on the last issue's attempt
+branch.
+
+**Root cause, mechanically traced.** The only two `checkout_branch` call sites in the
+entire codebase:
+```
+src/runtime/loop.py:204:        self.adapter.checkout_branch(f"issue/{issue}", create_from=base)
+src/runtime/main.py:189:        adapter.checkout_branch(cfg.project.branch)
+```
+`main.py:189` runs once, at STARTUP (step 5b), before recovery/baseline. `loop.py:204` runs
+once *per issue*, inside `_commit_sequence`, switching the tree **to** `issue/{issue}`.
+`Orchestrator.run()` (`loop.py:98-110`) is a bare `while True` whose only return path is
+"`_next_actionable()` is `None`" — no `finally`, no restore call. `cmd_run`'s own code after
+`orch.run()` returns (`main.py:250-262`) prints metrics and returns 0 — it does not touch
+the branch either:
+```python
+    try:
+        reason = orch.run()
+    except (OrchestratorHalt, ReviewerError) as e:
+        print(f"[halt] run stopped abnormally: {e}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\n[stop] interrupted — current step finished; recovery owns the rest")
+        return 0
+    m = orch.budget.metrics()
+    print(f"[done] {reason}")
+    print(f"[metrics] executions_this_run={m.executions_this_run} "
+          f"proxy_dollars_this_run=${m.proxy_dollars_this_run:.4f}")
+    return 0
+```
+**Conclusion: on a clean drain-to-completion, the working tree is unconditionally left on
+whatever the last-processed issue's attempt branch was.** This is deterministic, not
+incidental — confirmed by `git rev-parse --abbrev-ref HEAD` on the target repo reading
+`issue/5` after this run, matching issue 5 being the last one processed. The tree was left
+dirty on purpose after this finding, at the user's explicit instruction, so it could be
+filed from the observed state rather than a healed one.
+
+**Classification: fix-BEFORE Phase-2.** Rationale: Phase-2 is a supervised metric-capture
+run; a deterministic dirty-tree-at-rest breaks the "work lives on `agent-work`, tree is on
+`agent-work`" assumption any observer or crash-recovery makes. This is the harness-masking
+pattern — `main.py:189`'s startup re-checkout hides the *previous* run's uncleaned
+end-state on the *next* invocation, the same shape of gap ADR-20 Amendment 1 already closed
+for ingest (doc 08 §"ADR-20 — Amendment 1"). Fix shape: restore `cfg.project.branch` in the
+normal-exit path (`Orchestrator.run()`'s return, or `cmd_run`'s teardown after `orch.run()`
+returns). This touches src/ exit-path logic on a real state-transition surface — REQUIRES a
+full durability harness re-run, 60/60 both seed 42 AND seed 1337, in the session that
+implements it. Filed as NEXT.md §2 item 8.
+
+**Both-halves discipline, stated explicitly (per §2.4/§2.6/§2.7/§2.8 convention):**
+1. This closes nothing about gate (a) — the vacuity-guard detectability question is
+   untouched, stays permanently unproven (NEXT.md §5, unchanged).
+2. A green smoke run does not, by itself, constitute an ADR-19 verdict — n=5 vs. the
+   required sample of 20, stated above and in NEXT.md §1.
+3. This does not close Surface 2 — a run with no crash is not evidence about the crash
+   path; only a deliberate fault-injection witness can close it (NEXT.md §2 item 9).
+4. This does not establish re-run safety under event-log loss. Ingest idempotency was
+   confirmed (statically — see the addendum below, NEXT.md §2 item 10) only for the
+   log-intact case: `state/events.jsonl` (issue-runtime-side) surviving between runs. If
+   that log is deleted, moved, or repointed while `Issues.md` still lists issues as
+   available text, ingest re-emits every issue as new, producing real duplicate
+   executions and duplicate commits on `agent-work`. This dependency is named, not
+   closed, by this session (NEXT.md §2 item 11).
+
+### Addendum — Session 22 (2026-07-27): ingest idempotency, verified statically (not by a second run)
+
+After this smoke, the user hand-verified that `Issues.md` still read `STATUS: OPEN — not
+started.` on all 5 issues despite all 5 being `DONE` in the event log — raising the
+question of whether a second invocation of `python -m runtime.main run` would re-ingest
+and duplicate-commit them. This was traced from the code, not tested with a second live
+run (which would have created real duplicate commits had the answer been bad).
+
+**Finding: `Issues.md`'s STATUS text is never read for dedup at all.** `IssueSpec`
+(`src/runtime/queue/issues_md.py:37-43`) has no `status` field, and the parser
+(`issues_md.py:46-85`, read in full) contains no STATUS-handling regex anywhere — the
+`STATUS: OPEN — not started.` line folds into the issue's free-text `body` and is never
+extracted or actioned.
+
+**Dedup is `spec.id in proj.issues`** (`src/runtime/main.py:138`, inside
+`_ingest_issues`) — pure dict-membership on the issue id string. That membership is set
+exactly once, permanently, by `_issue_created` (`src/runtime/events/projections.py:134-
+138`):
+```python
+def _issue_created(p: StateProjection, ev: Event) -> None:
+    iid = _need(ev, "issue_id")
+    if iid in p.issues:
+        raise TransitionError(f"duplicate IssueCreated for {iid} (event {ev.event_id})")
+    p.issues[iid] = IssueState.PENDING
+```
+No code path removes a key from `proj.issues` afterward — later events only change its
+*value* (`PENDING`→`ACTIVE`→`DONE`), never delete the key. `proj` is rebuilt at every
+startup from the **persistent** event log (`state/events.jsonl`, issue-runtime-side) via
+`recover()` — the same file across invocations, not reset between runs. Issues 1-5's
+`IssueCreated` events (event_ids 1-5) are already durably recorded there from this
+session's run.
+
+**Conclusion: a second invocation, with the event log intact, would read `[ingest] 0 new
+issue(s); 5 total in queue`** — `proj.issues` already holds all 5 ids (ending state
+`DONE`), so `_ingest_issues` (`main.py:138`) skips every spec via `continue`, and
+`_next_actionable()` (`src/runtime/loop.py:112-122`) finds no `ACTIVE` or
+deps-met-`PENDING` issue (all 5 are `DONE`, matching neither branch), so `run()` drains
+immediately: `"queue drained — no actionable issue"`, 0 executions, $0 spent, 0 new
+commits.
+
+**Ruling: CONFIRMED idempotent, cosmetic classification.** The stale `Issues.md` text is
+not load-bearing for any runtime decision — filed as NEXT.md §2 item 10 (file-and-defer).
+The dependency this idempotency rests on — `state/events.jsonl` surviving between runs —
+is named separately as NEXT.md §2 item 11 (a tracked invariant, not a fix, sharing a
+trust surface with item 9's unwitnessed crash-recovery gap: both ultimately trust the
+event log's integrity and availability). Neither gates Phase-2.
+
+Scope discipline preserved: no `src/`, `config.yaml`, or `schema.py` change this session —
+this was a read-only-except-for-the-runtime's-own-designed-mutation live smoke (the 5
+commits on `agent-work` are the runtime's own commit-on-approval behavior under test, not a
+manual action). No commit made in `issue-runtime` this session pending explicit
+authorization.

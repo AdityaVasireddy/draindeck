@@ -16,13 +16,30 @@
 
 ## 1. Current gate
 
-Live smoke is **NOT authorized.** Gate (b)'s loop-composition variable is collapsed
-(Dry-run A PASS); `main.py`'s end-to-end startup composition, the orphan-crash recovery
-path, and real-tree behavior remain carried-forward as UNWITNESSED ahead of live smoke.
-Gate (a), the vacuity-guard detectability question, is permanently unproven and carried as
-a labeled limitation, not a blocker to resolve first.
-Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-17,
-2026-07-26)" ["surfaces named UNWITNESSED ahead of live smoke"] (L1129).
+**Step-3 live smoke RAN, Session 22 (2026-07-27).** Core claim: **PASS** — 5/5 issues
+attempt-1 (every `execution_id` is `{issue}-e1`; no `-e2`+, no `ExecutionAbandoned` event
+anywhere in the log), event-log↔git-ref cross-check verified independently (every
+`CommitCreated.merge_commit` hash confirmed reachable from `agent-work`'s own `git log`,
+not taken from the engine's or reviewer's self-report), proxy cost **$0.3106/shipped
+issue** ($1.5532177 total / 5) — mechanically below the ADR-19
+`cost_per_shipped_issue_max_usd` ceiling ($3.00) and above `attempt1_success_min` (0.30).
+**This is n=5, NOT an ADR-19 verdict** — ADR-19's own sample size is 20
+(`experiment.sample_size`); this is a positive smoke signal consistent with the
+kill-criteria thresholds, not a pass of the kill-criteria themselves. Full evidence:
+`docs/14-session6-phase2-gate.md` §2.9.
+
+**Surface witnesses (of the three carried-forward from Session 16-17, doc 14 L1129):**
+- **Surface 1 (`main.py` end-to-end startup composition) — WITNESSED.** Ran clean:
+  checkout → orphan-reap → recovery → reviewer health check → baseline-green → ingest →
+  loop, all in one real process against the real `StockPhotoAgent` target, no crash.
+- **Surface 2 (orphan-crash recovery path) — STILL UNWITNESSED.** Happy-path only;
+  nothing crashed, so the reconciler's reap/no-double-commit behavior was never
+  exercised. See §2 item 9.
+- **Surface 3 (real-tree behavior) — WITNESSED, WITH DEFECT.** See §2 item 8 and doc 14
+  §2.9 for the filed root cause.
+
+**Gate (a), vacuity-guard detectability — untouched this session, stays permanently
+unproven** (§5, unchanged).
 
 ## 2. Immediate next actions
 
@@ -64,11 +81,66 @@ Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-
 6. **Not owed now** — the ADR-22 STANDING TICKLE fired and PASSED this session at CLI
    2.1.220 (commit `ab99f55`); re-armed for the next `claude` CLI version bump past 2.1.220,
    before anything else, same as before. Pointer: §4 below, "Standing tickles" (this file).
-7. Then 5 real StockAgent issues, supervised; record cost + outcomes; expect to revise the
-   context pack — precondition: live smoke authorized (see §1). `--allowedTools`/settings
-   hardening is a non-goal (ADR-21 settled the fence); sanitized-env hardening is a
-   pre-Phase-4 item, not this step. Pointer: `docs/05-architecture-decision-records.md`
-   (ADR-21) / doc 08 §5b.
+7. ~~Then 5 real StockAgent issues, supervised; record cost + outcomes; expect to revise
+   the context pack~~ — **RAN, Session 22 (2026-07-27).** Live smoke executed exactly
+   this: 5 real StockAgent issues from `Issues.md`, supervised, cost recorded ($1.5532177
+   total, $0.3106/issue, 5/5 attempt-1). Context-pack revision was NOT triggered — no
+   execution needed a retry, escalation, or reviewer rejection to expose a context gap;
+   this is a live possibility on future runs, not evidence the pack needs no revision.
+   `--allowedTools`/settings hardening remains a non-goal (ADR-21 settled the fence),
+   unchanged. Pointer: doc 14 §2.9 for full evidence.
+8. **NEW, Session 22 (2026-07-27) — fix BEFORE Phase-2.** Working tree left on the last
+   `issue/N` attempt branch after a clean drain, not on `cfg.project.branch` —
+   deterministic, not incidental. Root cause: `loop.py:204`
+   (`self.adapter.checkout_branch(f"issue/{issue}", create_from=base)`, inside
+   `_commit_sequence`) has no matching restore call anywhere; `main.py:189`'s step-5b
+   checkout runs only at STARTUP and masks the *previous* run's dirty end-state on the
+   *next* invocation — it does not fix the end-state itself. Classification: fix-BEFORE
+   Phase-2. Rationale: Phase-2 is a supervised metric-capture run; a deterministic
+   dirty-tree-at-rest breaks the "work lives on `agent-work`, tree is on `agent-work`"
+   assumption any observer or crash-recovery makes — this is the harness-masking pattern
+   (a startup reset hiding an uncleaned end-state), the same shape of gap ADR-20
+   Amendment 1 already closed for ingest. Fix shape: restore `cfg.project.branch` in the
+   normal-exit path (`Orchestrator.run()`'s return in `loop.py`, or `cmd_run`'s teardown
+   after `orch.run()` returns, `main.py:250-262`). This is src/ exit-path logic —
+   REQUIRES a full durability harness re-run, 60/60 both seed 42 AND seed 1337, in the
+   session that implements it; not a sneak-in one-liner. Pointer: doc 14 §2.9 for the
+   full mechanical trace (both `checkout_branch` call sites, `run()`'s exit, `cmd_run`'s
+   exit, and the live `issue/5`-at-rest evidence, left dirty on purpose for this filing).
+9. **NEW, Session 22 (2026-07-27) — named, not blocking Phase-2.** Orphan-crash recovery
+   path has never been positively witnessed — every run to date, including this
+   session's live smoke, is happy-path only. The reconciler's reap/no-double-commit
+   behavior needs a deliberate fault-injection witness (kill `claude -p` mid-execution,
+   then resume) before the system can be trusted unsupervised. Not gated on Phase-2, but
+   must not be carried silently as "works" — this line is that explicit carry. Pointer:
+   doc 14 §2.9.
+10. **NEW, Session 22 (2026-07-27) — cosmetic, file-and-defer.** `Issues.md` STATUS text
+    never written back after issues complete — cosmetic, not a correctness bug. The
+    user hand-verified after the live smoke that all 5 issues in `Issues.md` still read
+    `STATUS: OPEN — not started.` despite all 5 being `DONE` in the event log.
+    **Confirmed idempotent, statically, not by a second run** (which would have created
+    real duplicate commits had the answer been bad): `issues_md.py`'s `IssueSpec` has no
+    `status` field and its parser has no STATUS-handling regex anywhere — the text folds
+    into the issue body and is never actioned. Dedup keys off `spec.id in proj.issues`
+    (`main.py:138`), and `proj.issues` membership is set once, permanently, by
+    `_issue_created` (`projections.py:134-138`) on replay of the persistent event log's
+    `IssueCreated` events — never off `Issues.md`'s text. A second invocation with the
+    event log intact would read `[ingest] 0 new issue(s)` and drain immediately, $0
+    spent, 0 duplicate commits. Optional future nicety: write `DONE` back to `Issues.md`
+    for human legibility — nothing in the runtime depends on it. Pointer: doc 14 §2.9.
+11. **NEW, Session 22 (2026-07-27) — named latent-dependency, not a fix, a tracked
+    invariant.** Ingest idempotency (item 10) depends on `state/events.jsonl`
+    (issue-runtime-side, i.e. `C:\Projects\issue-runtime\state\events.jsonl`, not the
+    target repo) surviving between runs. If that event log is ever deleted, moved, or
+    repointed while `Issues.md` still lists issues as available text, ingest loses all
+    memory of what already ran and re-emits every issue as new — real duplicate
+    executions and real duplicate commits on `agent-work`. This is the precondition
+    idempotency rests on, not a contradiction of it. Relevant because the recovery model
+    treats the event log as source of truth; this makes "event log durable and correctly
+    located" an invariant to protect, and it shares a trust surface with item 9
+    (unwitnessed crash-recovery) — both ultimately trust the event log's integrity and
+    availability. Not blocking Phase-2; tracked so it is not carried as an unstated
+    assumption. Pointer: doc 14 §2.9.
 
 ## 3. Open preconditions (Step 3's own five, plus its gating item 0)
 
@@ -237,6 +309,9 @@ longer fires"] (L542-890).
 
 ## 6. Pointer index
 
+- **Session 22 (2026-07-27) — Step-3 live smoke (first real run), event-log↔git-ref
+  cross-check, attempt-1/cost table, surface-3 defect root cause, orphan-recovery gap:**
+  `docs/14-session6-phase2-gate.md` §2.9.
 - **Session-by-session narrative & evidence (Sessions 5-17, superseded/closed items):**
   `docs/handoffs/next-md-archive-2026-07-26.md`.
 - **ADR-22 mechanism, vacuity-guard probe evidence, CLI re-pin probes:**
