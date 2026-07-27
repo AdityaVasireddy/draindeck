@@ -34,9 +34,13 @@ Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-
 2. Resolve the ingest branch-check gap (Option A: add `checkout_branch` before ingest, vs.
    Option B: accept as scoped risk) — precondition: none, a decision only. Pointer: §5
    below, "Ingest branch-check gap" (this file).
-3. Close the CLI-2.1.214 Probe 2/3 coverage gap — precondition and trigger condition: see
-   §4 below, "CLI-2.1.214 Probe 2/3 two-leg re-probe" (single source of truth for this
-   item's trigger; not restated here).
+3. ~~Close the CLI-2.1.214 Probe 2/3 coverage gap~~ — **CLOSED, Session 18 (2026-07-26).**
+   The literal doc 14 §2.4 Probe 2/3 procedure was re-run and both legs PASSED at CLI
+   2.1.220 (commit `ab99f55`) — the substantive identity gap (literal Probe 2/3 stale since
+   2.1.211, only a substitute methodology re-run at 2.1.215) is closed. "Exactly 2.1.214"
+   itself remains permanently unreachable (unchanged) — the closure is on the identity gap,
+   not that literal version. Pointer: §4 below, "CLI-2.1.214 Probe 2/3 two-leg re-probe" /
+   `docs/14-session6-phase2-gate.md` § "2.8 — Session 18 (2026-07-26)".
 4. Build the env-witness script (docs/08 §5d spec) — precondition for the ADR-23
    end-to-end differential (all three of: script built, target collects >0 tests, a live
    "before" observed ahead of the next mechanism change). Pointer:
@@ -45,9 +49,9 @@ Pointer: `docs/14-session6-phase2-gate.md` § "Carried-forward note (Session 16-
 5. Author/confirm a real StockAgent test command that both resolves the interpreter
    ambiguity (done) AND collects >0 real tests (not done) — precondition: StockPhotoAgent-side
    authoring, user input required. Pointer: §8 below, "NEEDS USER INPUT" (this file).
-6. On the next `claude` CLI version bump, before anything else: re-run the ADR-22 probes
-   (STANDING TICKLE) — precondition: a CLI version bump. Pointer: §4 below, "Standing
-   tickles" (this file).
+6. **Not owed now** — the ADR-22 STANDING TICKLE fired and PASSED this session at CLI
+   2.1.220 (commit `ab99f55`); re-armed for the next `claude` CLI version bump past 2.1.220,
+   before anything else, same as before. Pointer: §4 below, "Standing tickles" (this file).
 7. Then 5 real StockAgent issues, supervised; record cost + outcomes; expect to revise the
    context pack — precondition: live smoke authorized (see §1). `--allowedTools`/settings
    hardening is a non-goal (ADR-21 settled the fence); sanitized-env hardening is a
