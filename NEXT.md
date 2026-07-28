@@ -514,7 +514,7 @@ longer fires"] (L542-890).
   neither is superseded by anything in this file.
 
 ## 7. Verify commands (updated)
-- Unit: `python -m pytest tests\unit -q`  (expect 106)
+- Unit: `python -m pytest tests\unit -q`  (expect 117)
 - Durability gate: `python tests\crash\harness.py %TEMP%\ch`  (expect 60;
   minutes. `... %TEMP%\ch 1337` also 60. `... %TEMP%\ch 42 <point>` filters to
   one crash point.) Use the `.venv` python — the system Python on this
