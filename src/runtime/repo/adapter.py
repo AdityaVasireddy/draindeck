@@ -140,10 +140,14 @@ class RepositoryAdapter(ABC):
         not on ``target_branch``. Raises MergeConflictError on conflict."""
 
     @abstractmethod
-    def delete_attempt_refs(self, issue_id: str) -> int:
-        """Delete all attempt refs for ``issue_id``; return the count
-        removed. ADR-15 GC on issue completion. IDEMPOTENT (deleting
-        absent refs is a no-op returning 0)."""
+    def delete_attempt_ref(self, issue_id: str, execution_id: str) -> bool:
+        """Delete the single attempt ref ``<ns>/<issue_id>/<execution_id>``;
+        return True if a ref was removed, False if it did not exist. ADR-15
+        Amendment 1: GC is scoped to the COMPLETING execution's own
+        now-redundant ref (its content is already reachable via the merge
+        it just produced) — never the whole issue, which would collaterally
+        delete a crashed sibling execution's only residue anchor.
+        IDEMPOTENT (deleting an absent ref is a no-op returning False)."""
 
     @abstractmethod
     def recover_workspace(self) -> list[str]:

@@ -355,6 +355,88 @@ The Phase 2 `src/` mechanism landed and passed its full gate chain this session:
 
 ---
 
+## 5e. ADR-15 — Amendment 1 (2026-07-27): GC scope corrected to the completing execution, not the whole issue
+
+**Status:** Accepted. Corrects ADR-15's original decision text (doc 05: "Namespaced
+attempt refs (`refs/attempts/<issue>/<execution>`) for every execution including
+failures/crash residue, committed before any reset; diffs always `git diff
+start..end`; GC refs on completion.") — the phrase "GC refs on completion" was
+ambiguous on scope (issue vs. execution) and the shipped implementation resolved
+that ambiguity the wrong way, contradicting the decision's own stated purpose.
+
+**Gap.** `loop.py`'s `_commit_sequence` GC'd attempt refs on `IssueCompleted` by
+calling `delete_attempt_refs(issue_id)` — issue-scoped, deleting every ref under
+`refs/attempts/<issue_id>/*`, not just the completing execution's own ref. Real
+fault-injection this session (NEXT.md item 14, surfaced by item 13's GATE-3
+re-test) witnessed the consequence: a crashed execution's residue ref
+(`refs/attempts/1/1-e1`), durably written by recovery's `preserve_residue`
+moments after the crash, was silently deleted the instant a *different*
+execution of the same issue (`1-e2`, the retry) completed — leaving the residue
+commit dangling, one `git gc` from permanent loss, while the `ExecutionCrashed`
+event's `residue_ref` field kept asserting it was preserved. This directly
+contradicts ADR-15's own stated purpose: attempt refs are named as existing
+specifically "including failures/crash residue" — evidence worth preserving,
+not disposable the moment the issue as a whole happens to resolve via a
+different attempt.
+
+**Correction.** GC on `IssueCompleted` is scoped to the **completing
+execution's own ref only** (`refs/attempts/<issue>/<completing_execution_id>`).
+This is safe and non-leaking for the one ref in scope: by the time
+`IssueCompleted` fires, that execution's `end_commit` is already a parent of
+the merge commit just landed on the target branch (`loop.py`'s
+`_commit_sequence` is a strict three-step ladder — `CommitIntent` →
+`merge_to`/`CommitCreated` → `IssueCompleted`+delete — each step returning
+immediately after emitting its fact, so the delete step is only ever reached
+on a later invocation than the merge step; witnessed directly against the
+Session-24 scratch run: `git merge-base --is-ancestor <1-e2 end_commit>
+agent-work` → exit 0), so its content stays permanently reachable through
+real branch history regardless of whether the attempt ref itself survives.
+Deleting it is genuine GC, not evidence loss.
+
+**Residue lifecycle (does a crashed execution's ref ever get GC'd?).** Not by
+this mechanism, and not automatically at all under this amendment: a crashed
+execution's residue ref is retained **indefinitely** once written. No event in
+doc 03's frozen vocabulary marks "this crash's evidence is no longer needed,"
+and `ExecutionCrashed` is itself doc 03's terminal state for that execution
+("EXECUTING is abandonable, never resumed") — there is no later event to hang
+a reap on. Cost is bounded: one extra ref + one extra (typically small) commit
+object **per crashed execution**, not per execution overall; crashes are the
+exception path (Session 22's live smoke: 5/5 attempt-1, zero crashes), so this
+is "keep abandoned/crashed attempts forever," not "keep everything forever" —
+the same cost class as a CI system retaining failed-build artifacts longer
+than successful ones. If accumulated crash-residue growth ever becomes a real
+concern in practice, a dedicated periodic reap mechanism — decoupled from
+`IssueCompleted`, using `is_ancestor` against the target branch as its "safe
+to discard" predicate — is a candidate **future, separate** ADR. It is
+deliberately not folded into `IssueCompleted`'s GC path now, because that
+exact conflation (issue-done implies all-this-issue's-evidence-is-disposable)
+is item 14's root cause.
+
+**Mechanism.** `RepositoryAdapter.delete_attempt_refs(issue_id) -> int`
+(issue-scoped) is replaced by `delete_attempt_ref(issue_id, execution_id) ->
+bool` (single-ref-scoped), mirroring `set_attempt_ref`'s per-execution
+signature. `loop.py:339` (the sole production caller) now passes
+`ex.execution_id` alongside `issue`. The old issue-scoped method is removed
+entirely, not left dormant beside the new one — `git_adapter.py`'s
+`delete_attempt_refs` had exactly one caller in `src/`, so retaining the
+issue-scoped bulk-delete unused would leave a foot-gun a future call site
+could reintroduce this same defect through.
+
+**Blast radius.** `src/runtime/repo/adapter.py` (interface),
+`src/runtime/repo/git_adapter.py` (implementation), `src/runtime/loop.py`
+(call site) — no event-schema or state-transition change (`IssueCompleted`'s
+shape is unchanged; this is evidence housekeeping, not state-machine
+behavior), no change to `bindings.py`'s crash-residue *write* path
+(`preserve_residue` was already correct — the bug was purely on the delete
+side). Classed as a `src/runtime` Git/recovery-behavior change, same class as
+ADR-20 Amendment 2: gated on the full durability harness re-run (60/60, both
+seed 42 and seed 1337) plus a targeted scratch re-test asserting the inverse
+of item 14's finding — the crashed execution's residue ref survives issue
+completion, the completing execution's own ref is correctly gone, and the
+residue commit is not dangling in `git fsck`.
+
+---
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml

@@ -332,11 +332,14 @@ class Orchestrator:
                                     "backfilled": backfilled},
                                    execution_id=ex.execution_id))
             return
-        # both done → close the issue, then GC attempt refs (ADR-15)
+        # both done → close the issue, then GC this execution's own attempt
+        # ref (ADR-15 Amendment 1: scoped to the completing execution, not
+        # the whole issue — its content is already reachable via the merge
+        # above; a crashed sibling's residue ref must survive this GC)
         self._emit(self._event(EventType.ISSUE_COMPLETED, issue,
                                {"reason": "accepted",
                                 "evidence_refs": [ex.end_commit]}))
-        self.adapter.delete_attempt_refs(issue)  # idempotent; harmless if crashed pre-GC
+        self.adapter.delete_attempt_ref(issue, ex.execution_id)  # idempotent
 
 
 def _has_duplicate_feedback(categories: list[str]) -> bool:

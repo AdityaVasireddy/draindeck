@@ -76,11 +76,9 @@ class FakeAdapter:
             return dict(self._refs)
         return {r: s for r, s in self._refs.items() if f"/{issue}/" in r}
 
-    def delete_attempt_refs(self, issue):
-        gone = [r for r in self._refs if f"/{issue}/" in r]
-        for r in gone:
-            del self._refs[r]
-        return len(gone)
+    def delete_attempt_ref(self, issue, xid):
+        ref = f"refs/attempts/{issue}/{xid}"
+        return self._refs.pop(ref, None) is not None
 
 
 class FakeEngine:

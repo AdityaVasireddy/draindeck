@@ -197,13 +197,16 @@ def test_find_merge_commit_absent(adapter: GitCliAdapter):
     assert adapter.find_merge_commit("trunk", adapter.current_commit()) is None
 
 
-# ── delete_attempt_refs: idempotent GC ───────────────────────────────
-def test_delete_attempt_refs(adapter: GitCliAdapter):
+# ── delete_attempt_ref: idempotent, execution-scoped GC (ADR-15 Am1) ──
+def test_delete_attempt_ref_is_execution_scoped(adapter: GitCliAdapter):
     c = adapter.current_commit()
     adapter.set_attempt_ref("042", "042-e1", c)
     adapter.set_attempt_ref("042", "042-e2", c)
-    assert adapter.delete_attempt_refs("042") == 2
-    assert adapter.delete_attempt_refs("042") == 0   # idempotent
+    assert adapter.delete_attempt_ref("042", "042-e1") is True
+    # sibling execution's ref MUST survive — this is the item-14 fix
+    assert adapter.list_attempt_refs("042") == {"refs/attempts/042/042-e2": c}
+    assert adapter.delete_attempt_ref("042", "042-e1") is False   # idempotent
+    assert adapter.delete_attempt_ref("042", "042-e2") is True
     assert adapter.list_attempt_refs("042") == {}
 
 

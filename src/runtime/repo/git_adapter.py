@@ -237,11 +237,12 @@ class GitCliAdapter(RepositoryAdapter):
         self._checkpoint("merge:post-update-ref")
         return mc
 
-    def delete_attempt_refs(self, issue_id: str) -> int:
-        refs = self.list_attempt_refs(issue_id)
-        for ref in refs:
-            self._git("update-ref", "-d", ref)
-        return len(refs)
+    def delete_attempt_ref(self, issue_id: str, execution_id: str) -> bool:
+        ref = f"{self.ns}/{issue_id}/{execution_id}"
+        if self.ref_target(ref) is None:
+            return False
+        self._git("update-ref", "-d", ref)
+        return True
 
     def recover_workspace(self) -> list[str]:
         repairs: list[str] = []
