@@ -325,9 +325,28 @@ unproven** (§5, unchanged).
     **Cross-link:** related to item 9's second finding (Session 24) — this run is that
     finding's production confirmation, not a new independent risk class. Does not gate
     or block item 13's reorder fix, which is independently verified working.
-    **Fix:** NOT designed or implemented this session — root-cause trace only, per
-    explicit instruction. Evidence (console log, `events.jsonl`, reflog, fsck output)
+    ~~**Fix:** NOT designed or implemented this session — root-cause trace only, per
+    explicit instruction.~~ Evidence (console log, `events.jsonl`, reflog, fsck output)
     preserved under `<scratchpad>/orphan-report-v2/`.
+
+    **CORRECTION (dated 2026-07-29, added the session after next — the line above went
+    stale within Session 24 itself and was never updated).** The struck sentence is
+    WRONG as a description of the current repo: the fix WAS designed and implemented,
+    later the same session, at commit `9c071ed` ("fix(repo): scope attempt-ref GC to
+    the completing execution (ADR-15 Amendment 1)", 2026-07-27 20:29:01 — after this
+    item's filing but still within Session 24). `loop.py:339`'s issue-scoped
+    `delete_attempt_refs(issue)` was replaced with execution-scoped
+    `delete_attempt_ref(issue_id, execution_id)` (`loop.py:342`,
+    `git_adapter.py:240-245`); the issue-scoped method no longer exists anywhere in
+    `src/` (`grep -rn "delete_attempt_refs" src/` → zero matches, re-confirmed live
+    2026-07-29). Full correction record: `docs/08-session-0-closure-and-adr-amendments.md`
+    §5e. Per the commit message: gated by 117/117 unit, 60/60 durability harness (both
+    seeds), and a scratch re-test showing the crashed sibling's residue ref survives —
+    those are the fix commit's own self-reported gates, not independently re-run by the
+    session that added this correction note. This item (14) should be treated as
+    RESOLVED, not open, in any future read of this file; left in place under its
+    original number rather than renumbered, per the append-only correction pattern —
+    do not silently rewrite history, annotate it.
 
 ## 3. Open preconditions (Step 3's own five, plus its gating item 0)
 
