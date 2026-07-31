@@ -419,6 +419,51 @@ labels for their own sub-claims.
 - `NEXT.md` item 14's stale text — flagged in §0; corrected this session (see the
   `NEXT.md` diff accompanying this commit) — no longer out of scope, closed.
 
+## 6. Group R/S execution phases (pre-committed witness plan)
+
+**Status: pre-committed execution plan, NOT yet run. Promoted from HANDOFF_2026-07-31
+Knowledge Captured, verbatim.**
+
+Run Group R (startup recovery on the `10-e2` fixture) then Group S (live orphan witness
+using the layered discriminator) against real StockPhotoAgent — gated on Adi's explicit
+go-ahead.
+
+- **Group R** = startup recovery of the 10-e2 fixture. PASS requires BOTH:
+    (1) ExecutionCrashed(10-e2) appears in the event log ordered BEFORE any fresh
+    ExecutionSpawned retry for the same issue — crash-and-preserve precedes re-spawn;
+    (2) that ExecutionCrashed carries residue_ref NON-null (a real refs/attempts ref that
+    git rev-parse resolves) — the first non-null residue this project has witnessed live,
+    contrasting 10-e1's correct null (empty-tree stdin-starvation death, §6 below). HARD
+    STOP after Group R; Group S does not begin until Group R passes.
+- The recorded `child_pid` (the `claude.CMD` shim, image `cmd.exe`) reliably exits shortly
+  after handing off to the real worker while work continues on disk — witnessed three
+  separate times this session and the prior one. Group S must use `leaf_worker_pid` (Layer
+  1) plus work-liveness via `capture_work_liveness` (Layer 2) as the orphan discriminator;
+  `child_pid` alone is not a valid witness.
+- Group S's planned witness sequence, as designed and promoted into this matrix:
+  - **S-A** (pre-kill): both layers alive/advancing — `leaf_worker_pid` present in
+    `tasklist`, and `capture_work_liveness` on the live edit target shows movement.
+  - **S-B**: crash witnessed post-kill (the kill target is the **orchestrator** pid, `/F`,
+    explicitly **no** `/T` — the opposite of the reset-kill's tree-kill — so the leaf worker
+    is orphaned, not killed directly).
+  - **S-C**: reap + residue preserved on resume.
+  - **S-D**: no work repeated (no duplicate execution spawned for the same unit of work
+    (issue/execution pair)).
+  - **S-E**: no double-commit (merge commit's second-parent content check, same technique
+    used in the earlier real-run session's fixture verification).
+  - An ambiguous result on only one layer (e.g., leaf process gone but the work file still
+    shows fresh activity, or vice versa) is a **STOP**, not an orphan claim — both layers
+    must agree.
+- `10-e1`'s crash produced `residue_ref: null` in its `ExecutionCrashed` event — not a bug.
+  Confirmed via source read this session: `bindings.py`'s `preserve_residue` hits its own
+  documented "b1: nothing happened" branch when `snapshot_commit` finds a clean tree, which
+  is exactly what happened — `10-e1` died from stdin starvation (the pre-fix bug) before it
+  ever touched the workspace. `10-e2` is different in kind: it holds a real, verified
+  uncommitted edit (`config.ini.example`, +1 line), so the next recovery pass should
+  produce a non-null residue ref for the first time this project has witnessed live.
+
+Maps to matrix Row A/D. HARD STOP after Group R.
+
 ---
 *Produced as a design-gate artifact, item 9 (orphan-crash recovery witness), following
 the prior turn's `recover()`/`bindings.py` source trace. No StockPhotoAgent write, no
