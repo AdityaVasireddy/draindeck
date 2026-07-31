@@ -435,6 +435,18 @@ go-ahead.
     git rev-parse resolves) — the first non-null residue this project has witnessed live,
     contrasting 10-e1's correct null (empty-tree stdin-starvation death, §6 below). HARD
     STOP after Group R; Group S does not begin until Group R passes.
+- **Entrypoint discipline (LOAD-BEARING):**
+  - Group R (and any gated recovery-only phase) MUST use `python -m runtime.main recover`
+    — recovery-only, prints a report, spawns NO fresh executions, satisfies HARD STOP by
+    construction.
+  - `python -m runtime.main run` is the FULL orchestrator loop: it crash-recovers dangling
+    executions AND THEN continues — spawning fresh executions, running real engine children,
+    and merging real completions into the target. It does NOT stop after recovery and MUST
+    NOT be used for any phase whose contract is "recover, then hard stop."
+  - Session-25 failure of record: Group R was run with `run`; it recovered 10-e2 correctly
+    (event 78, non-null residue — signal valid) but then spawned 10-e3 and merged issue-10
+    to agent-work (b66e795), an unauthorized real mutation. Disposition: completion stands;
+    10-e2 fixture consumed; Group S requires a fresh fixture.
 - The recorded `child_pid` (the `claude.CMD` shim, image `cmd.exe`) reliably exits shortly
   after handing off to the real worker while work continues on disk — witnessed three
   separate times this session and the prior one. Group S must use `leaf_worker_pid` (Layer

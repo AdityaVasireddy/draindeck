@@ -42,6 +42,12 @@ production feature; everything builds on the event-log layer.
   These use a lightweight scope check and verification of the result.
 - When uncertain, default to the lighter process unless the change touches the
   high-blast-radius list above.
+- Entrypoint scope (recover vs run): For any gated recovery-only phase, use
+  `python -m runtime.main recover` — it hard-stops after recovery by construction.
+  `python -m runtime.main run` is the full loop and will continue past recovery into fresh
+  spawns and real target merges; never use `run` for a phase contracted to stop after
+  crash-preserve. Verify the entrypoint's scope against main.py's usage banner BEFORE any
+  gated run against StockPhotoAgent.
 
 ## Environment
 - Windows, Python 3.12+, deps: pyyaml, pydantic, pytest (no frameworks —
