@@ -204,3 +204,35 @@ in Outstanding Issues below — it was not touched or corrected this session.
   session.
 - The exact origin/trigger of the "history(auto): StockPhotoAgent 2026-07-31" commit — no direct
   visibility into what created it.
+
+## COLD-START BLOCKERS (resolve BEFORE any next-session `run`)
+
+1. **Unauthored commit on `agent-work`.** StockPhotoAgent's `agent-work` tip is `1e06481`
+   ("history(auto): StockPhotoAgent 2026-07-31"), one commit AHEAD of `b66e795` — the commit
+   every "agent-work clean" verification in this and prior sessions was made against. The
+   `"history(auto)"` message matches the engineering-historian auto-sweep's signature: this
+   commit was NOT authored through the relay (no `git commit` against StockPhotoAgent was run
+   by me this session, and its timestamp predates this session's own activity). **BLOCKER**:
+   before any next-session `run`, diagnose `1e06481` mechanically —
+   `git -C StockPhotoAgent show --stat 1e06481` and
+   `git -C StockPhotoAgent log --oneline b66e795..1e06481` — and determine what wrote it and
+   whether it must be reverted/reset before `agent-work` can be trusted as a clean baseline
+   again. Do NOT `run` until this is resolved: startup checkout would build the next execution
+   on top of this unaudited tip.
+
+2. **Target on the wrong branch.** StockPhotoAgent is currently checked out on `issue/11`, not
+   `agent-work` (see Outstanding Issues / Runtime & System State above for how this happened —
+   the orchestrator's branch-restore `finally` block never ran because it was hard-killed).
+   Startup checkout normally handles switching to `cfg.project.branch`, but combined with
+   blocker 1, a cold restart is not automatically safe: verify both branch state AND
+   `agent-work` tip integrity before spawning, not just one or the other.
+
+3. **Combined picture, cross-referenced**: a next-session `run` is unsafe until all three of the
+   following are addressed, not just one — (a) `1e06481` is diagnosed per blocker 1 above,
+   (b) StockPhotoAgent's branch/worktree state is verified clean and on `agent-work`, and (c) the
+   S-A′ re-plan fork is decided (issue-11 is `ACTIVE` with 2 of 3 attempts used and `11-e2`
+   still dangling — the very next `run`, regardless of the above, will recover `11-e2` into
+   another `ExecutionCrashed` + residue event and spawn `11-e3`, NOT reach issue-12, per the
+   queue-precedence findings recorded above). The uncommitted `hold_pid` diff in
+   `claude_headless.py` is unaffected by any of this and needs no action — it stays uncommitted
+   per standing constraint regardless of how (a)-(c) resolve.
