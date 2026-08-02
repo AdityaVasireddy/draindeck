@@ -1,8 +1,7 @@
 # v1 reference config (doc 08 §6). Copy to config.yaml and fill in the
-# StockAgent validation command. ⚠ Confirm directory name on disk:
-# decision says "StockAgent", path says "StockPhotoAgent".
+# StockPhotoAgent validation command below.
 project:
-  name: StockAgent
+  name: StockPhotoAgent
   repository: 'C:\Projects\StockPhotoAgent'
   branch: agent-work
   issues_file: Issues.md
