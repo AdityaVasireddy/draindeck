@@ -7,7 +7,7 @@ project:
   issues_file: Issues.md
   validation:
     commands:
-      - '<StockAgent test command — REQUIRED before first run>'
+      - '<StockAgent test command - REQUIRED before first run>'
     timeout_seconds: 600
 engine:
   provider: claude-headless
