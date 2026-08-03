@@ -50,11 +50,14 @@ Accepted for v1 — no psutil (deps are frozen to pyyaml/pydantic/pytest).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import signal
 import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -298,17 +301,61 @@ class ClaudeHeadlessEngine:
             # pidfile immediately after Popen — the crash-surviving record for
             # reap_orphans/is_execution_alive.
             self._write_pidfile(pidfile, proc.pid)
-            try:
-                # communicate covers stdin-write + wait + timeout as ONE
-                # operation — no bare stdin.write() that could block before the
-                # timeout arms (stdout/stderr are files, nothing else to drain).
-                proc.communicate(
-                    input=prompt_bytes, timeout=self.cfg.timeout_seconds
-                )
-            except subprocess.TimeoutExpired:
+
+            # (a) prompt delivery, off-thread, BEFORE any pause/wait. stdin is
+            # the only PIPE here (stdout/stderr are real files, out_f/err_f
+            # above — the OS writes those straight to disk with no fixed
+            # buffer to fill, so there is nothing to "drain" on that side at
+            # any pause length). The stdin PIPE DOES have a small OS buffer,
+            # so a synchronous write() would hang forever against a child
+            # that never reads it — exactly what
+            # test_timeout_arms_when_child_never_reads_stdin pins (a 500KB
+            # prompt past the pipe buffer, a child that never reads stdin,
+            # asserting the timeout still arms within cfg.timeout_seconds).
+            # Writing on a bounded-join thread preserves that guarantee
+            # unchanged: a stalled write is treated exactly like a stalled
+            # child — timeout, kill, reap — and the sentinel is never reached
+            # (there is no "prompt delivered" state to usefully pause on).
+            write_err: list[BaseException] = []
+
+            def _feed_stdin() -> None:
+                try:
+                    proc.stdin.write(prompt_bytes)
+                    proc.stdin.close()
+                except OSError as e:  # child exited / closed its end early
+                    write_err.append(e)
+
+            writer = threading.Thread(target=_feed_stdin, daemon=True)
+            writer.start()
+            writer.join(timeout=self.cfg.timeout_seconds)
+
+            if writer.is_alive():
+                # stdin never drained — same outcome the pre-split
+                # communicate()-based code produced for this case.
                 timed_out = True
                 _kill_tree(proc.pid)
-                proc.communicate()  # unconditional reap; guarantees returncode
+                proc.wait()
+            else:
+                # (b) prompt fully delivered — ITEM9_SENTINEL (test-only,
+                # item-9 fault-injection control): unset in production, this
+                # branch is never taken and the wait/kill path below is
+                # unchanged. The child now HAS its prompt and is doing real
+                # work; pausing here cannot starve it of stdin (already
+                # delivered+closed) and cannot deadlock it on stdout/stderr
+                # (plain files, not pipes). See _sentinel_pause.
+                if os.environ.get("ITEM9_SENTINEL") == "1":
+                    _sentinel_pause(xdir, os.getpid(), proc.pid, execution_id)
+
+                # (c) wait/timeout starts counting HERE, strictly after any
+                # pause returns — cfg.timeout_seconds is the wall-clock
+                # runaway backstop on the CHILD's own work, never on how long
+                # a test-only sentinel held it paused first.
+                try:
+                    proc.wait(timeout=self.cfg.timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    _kill_tree(proc.pid)
+                    proc.wait()  # unconditional reap; guarantees returncode
         duration = time.monotonic() - t0
         pidfile.unlink(missing_ok=True)
 
@@ -398,6 +445,224 @@ class ClaudeHeadlessEngine:
 
 
 # ── module-level helpers (no instance state) ─────────────────────────
+
+# LAYER 1 tuning (item-9 fault-injection control, ITEM9_SENTINEL=1 only).
+# Confirmed 3x live against real StockPhotoAgent runs: the recorded child_pid
+# (a claude.CMD shim -> cmd.exe) reliably exits shortly after handing off to
+# the real worker, while work visibly continues on disk — "is child_pid
+# alive" is unfalsifiable as an orphan witness. These constants bound the
+# re-resolve loop that instead walks the real descendant chain to a stable
+# leaf. 20 polls * 0.5s = 10s wall-clock cap; 3 consecutive identical
+# "deepest pid" observations before a leaf is trusted as stable (a single
+# repeat could be a poll-to-poll race, not settled process state).
+_LEAF_MAX_POLLS = 20
+_LEAF_MAX_SECONDS = 10.0
+_LEAF_POLL_INTERVAL = 0.5
+_LEAF_STABLE_COUNT = 3
+
+
+def _all_pid_ppid_pairs() -> dict[int, int]:
+    """pid -> parent pid for every process currently running (Windows only,
+    one CIM query per call). No psutil (deps frozen) — same constraint
+    _pid_image already lives under; tasklist alone doesn't expose PPID, so
+    this uses the same Win32_Process CIM class Windows itself uses to answer
+    "who is whose parent", via powershell.exe (already an OS-provided tool,
+    not a new dependency)."""
+    try:
+        out = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process | "
+             "ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    pairs: dict[int, int] = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or "," not in line:
+            continue
+        pid_s, _, ppid_s = line.partition(",")
+        try:
+            pairs[int(pid_s)] = int(ppid_s)
+        except ValueError:
+            continue
+    return pairs
+
+
+def _walk_descendants(root_pid: int) -> tuple[list[int], dict[int, int]]:
+    """BFS descendants of ``root_pid`` from one process-table snapshot.
+    Returns (descendant_pids, depth_of) — depth_of maps each descendant to
+    its depth below root (a direct child is depth 1). No cross-poll state:
+    each call is a fresh, independent snapshot, by design (the caller polls
+    repeatedly to observe the chain forming, not to trust one snapshot)."""
+    pairs = _all_pid_ppid_pairs()
+    children: dict[int, list[int]] = {}
+    for pid, ppid in pairs.items():
+        children.setdefault(ppid, []).append(pid)
+    depth_of: dict[int, int] = {}
+    descendants: list[int] = []
+    frontier = [root_pid]
+    depth = 0
+    while frontier:
+        depth += 1
+        nxt: list[int] = []
+        for p in frontier:
+            for c in children.get(p, []):
+                if c in depth_of or c == root_pid:  # cycle guard
+                    continue
+                depth_of[c] = depth
+                descendants.append(c)
+                nxt.append(c)
+        frontier = nxt
+    return descendants, depth_of
+
+
+def _deepest_pid(descendants: list[int], depth_of: dict[int, int]) -> Optional[int]:
+    """The leaf candidate for one poll: the deepest descendant. Ties (branching,
+    not expected for the linear shim->node->worker shape but not assumed away)
+    break on lowest pid, deterministically."""
+    if not descendants:
+        return None
+    max_depth = max(depth_of[p] for p in descendants)
+    return min(p for p in descendants if depth_of[p] == max_depth)
+
+
+def _resolve_leaf_worker(
+    root_pid: int,
+    *,
+    max_polls: int = _LEAF_MAX_POLLS,
+    max_seconds: float = _LEAF_MAX_SECONDS,
+    poll_interval: float = _LEAF_POLL_INTERVAL,
+    stable_count: int = _LEAF_STABLE_COUNT,
+) -> tuple[list[int], Optional[int], list[dict], Optional[str]]:
+    """Bounded re-resolve loop (LAYER 1). Repeatedly walks root_pid's
+    descendant chain until the deepest pid repeats for ``stable_count``
+    consecutive polls (settled — the shim has handed off and the real worker
+    is up), or the poll/time cap is hit first. Returns (last_descendant_pids,
+    leaf_worker_pid, poll_log, reason) — leaf_worker_pid is None (never the
+    shim as a silent fallback) if it never stabilized; ``reason`` explains
+    why, only set when leaf_worker_pid is None."""
+    poll_log: list[dict] = []
+    last_leaf: Optional[int] = None
+    stable_run = 0
+    deadline = time.monotonic() + max_seconds
+    descendants: list[int] = []
+    for i in range(1, max_polls + 1):
+        descendants, depth_of = _walk_descendants(root_pid)
+        leaf = _deepest_pid(descendants, depth_of)
+        poll_log.append({"poll": i, "descendant_pids": list(descendants), "leaf": leaf})
+        if leaf is not None and leaf == last_leaf:
+            stable_run += 1
+        else:
+            stable_run = 1 if leaf is not None else 0
+        last_leaf = leaf
+        if stable_run >= stable_count:
+            return descendants, leaf, poll_log, None
+        if i >= max_polls or time.monotonic() >= deadline:
+            break
+        time.sleep(poll_interval)
+    reason = (
+        f"leaf did not repeat for {stable_count} consecutive polls within "
+        f"{len(poll_log)} poll(s) / {max_seconds}s cap"
+    )
+    return descendants, None, poll_log, reason
+
+
+def _sentinel_pause(
+    xdir: Path, orchestrator_pid: int, child_pid: int, execution_id: str
+) -> None:
+    """ITEM9_SENTINEL=1 only (see the single call site in ``run()``). Fires
+    AFTER the pidfile is written (child confirmed live, pid durable) and
+    BEFORE ``proc.communicate()`` (i.e. before ExecutionFinished can ever be
+    emitted back in loop.py) — the exact window a real orphan can exist in.
+    Runs LAYER 1's bounded re-resolve loop against ``child_pid`` (the shim)
+    to find the real leaf worker BEFORE the chain can change further, writes
+    a witnessed-ready marker naming the whole chain, then blocks on an
+    external ``sentinel_resume`` file. Never kills anything itself — a fault
+    -injection harness (or a human) does that from outside, at leisure,
+    against the pids this marker names, instead of racing real wall-clock
+    execution time or trusting a shim pid that may already be gone."""
+    marker = xdir / "sentinel_ready"
+    resume = xdir / "sentinel_resume"
+    chain_log = xdir / "sentinel_chain_log.jsonl"
+    hold_ready = xdir / "hold_ready"
+
+    descendants, leaf_worker_pid, poll_log, reason = _resolve_leaf_worker(child_pid)
+    with open(chain_log, "w", encoding="utf-8") as f:
+        for entry in poll_log:
+            f.write(json.dumps(entry) + "\n")
+
+    # Orchestrator-side companion hold process (Group-S hold-alive redesign,
+    # item 9). Deliberately a child of THIS process (os.getpid()), never of
+    # child_pid/proc.pid — it exists to give the external witness a
+    # STRUCTURALLY guaranteed-alive pid (it cannot exit before `resume`
+    # exists, by construction), decoupled from however long the real
+    # descendants of child_pid happen to live. _resolve_leaf_worker(child_pid)
+    # above is UNCHANGED and still the production-shape witness/
+    # shape-falsification instrument — this addition never touches that walk.
+    hold_script = (
+        "import pathlib, time;"
+        f"pathlib.Path(r'{hold_ready}').touch();"
+        f"\nwhile not pathlib.Path(r'{resume}').exists():"
+        "\n    time.sleep(0.2)"
+    )
+    hold_proc = subprocess.Popen([sys.executable, "-c", hold_script])
+
+    # Popen returning a pid only proves the process was CREATED, not that it
+    # has run past the initial `touch` yet — wait (bounded) for hold_ready
+    # before advertising hold_pid, so the witness gate's guarantee holds at
+    # WRITE time, not just eventually. A stuck/failed hold child surfaces as
+    # a raised error here, not a silent race.
+    hold_deadline = time.monotonic() + 2.0
+    while not hold_ready.exists():
+        if time.monotonic() >= hold_deadline:
+            raise RuntimeError(
+                f"hold_proc (pid={hold_proc.pid}) did not reach its loop "
+                f"body within 2s — hold_ready never appeared"
+            )
+        time.sleep(0.05)
+
+    marker.write_text(json.dumps({
+        "orchestrator_pid": orchestrator_pid,
+        "child_pid": child_pid,
+        "execution_id": execution_id,
+        "paused_at": datetime.now(timezone.utc).isoformat(),
+        "descendant_pids": descendants,
+        "leaf_worker_pid": leaf_worker_pid,
+        "leaf_worker_reason": reason,
+        "hold_pid": hold_proc.pid,
+        "chain_log_path": str(chain_log),
+    }), encoding="utf-8")
+    print(f"[sentinel] paused: orchestrator_pid={orchestrator_pid} "
+          f"child_pid={child_pid} leaf_worker_pid={leaf_worker_pid} "
+          f"execution_id={execution_id} hold_pid={hold_proc.pid}", flush=True)
+    while not resume.exists():
+        time.sleep(0.5)
+
+
+# LAYER 2 (Group-S witness helper, built now, not called against
+# StockPhotoAgent this phase): captures a work-target's mtime + content hash
+# at call time, independent of any process-liveness signal — the whole
+# reason Layer 1 exists is that process pids alone proved unreliable, so
+# Group S's pre-kill/post-kill/post-interval witness on the actual edited
+# file is a second, orthogonal discriminator, not a replacement for Layer 1.
+def capture_work_liveness(path: Path | str) -> dict:
+    p = Path(path)
+    try:
+        stat = p.stat()
+    except OSError:
+        return {"path": str(p), "exists": False, "mtime": None, "sha256": None}
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return {
+        "path": str(p), "exists": True,
+        "mtime": stat.st_mtime, "sha256": h.hexdigest(),
+    }
+
+
 def _kill_tree(pid: int) -> None:
     """Uncatchably terminate ``pid`` and its descendants (mirrors
     tests/crash/worker.py::_hard_kill_self's SIGKILL/TerminateProcess). Windows:
