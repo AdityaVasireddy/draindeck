@@ -164,6 +164,30 @@ unproven** (§5, unchanged).
    Evidence preserved on disk under `<scratchpad>/orphan-report/` and
    `<scratchpad>/orphan-scratch-repo/` (untouched, not cleaned up — it is the
    reproduction for item 13's fix re-test).
+
+   **Session 31 (2026-08-03) follow-up — GAP-1 witnessed on a disposable scratch
+   target, not on live StockPhotoAgent.** With item 13 resolved, a real
+   fault-injection run was attempted; the live StockPhotoAgent backlog was found
+   already fully drained (`run-20260803T050931Z`), so a disposable scratch target
+   was built and used instead — live StockPhotoAgent was deliberately untouched
+   this session. Results, precisely scoped:
+   - GAP-1 live-child witness: **PASS, witnessed twice** on the scratch target
+     (issues 902 and 903), via marker-file-polling detection (polling the
+     `sentinel_ready` marker file's existence, not text-scanning the live log —
+     the detection method that made the witness reliable). **NOT witnessed
+     against live StockPhotoAgent.**
+   - Recovery mechanics (crash detect / exactly one retry / content-based
+     no-double-commit / residue durability): **PASS**, on issue 902's completed
+     cycle, scratch target only.
+   - Escalation path (reviewer-reject → cap-hit → `IssueEscalated`, residue refs
+     persist, no merge): **PASS**, on issue 903, scratch target only.
+   - Layer-2 `capture_work_liveness` movement-across-kill: **still OPEN** — the
+     snapshot mechanism itself works (correctly-formed snapshots on every call),
+     but no pre/post-kill content delta was ever observed across three attempts;
+     the agent collapsed even an explicitly staged multi-step task into a single
+     atomic write each time.
+   Dated 2026-08-03, session 31. Full evidence: handoff commit `3040c25`
+   (`docs/handoffs/HANDOFF_2026-08-03_session31-item9-scratch-fault-injection.md`).
 10. **NEW, Session 22 (2026-07-27) — cosmetic, file-and-defer.** `Issues.md` STATUS text
     never written back after issues complete — cosmetic, not a correctness bug. The
     user hand-verified after the live smoke that all 5 issues in `Issues.md` still read
