@@ -681,3 +681,30 @@ longer fires"] (L542-890).
 >    None of the three is fixed or authorized for fixing this session — decomposition,
 >    permission-posture change, and validation-command-list change are all still open,
 >    tracked here only.
+
+## 2026-08-05 — CORRECTION: issue-19 decomposition premise (session 34)
+
+Correcting the session-32 and session-33 record. Does not invalidate any shipped work.
+
+WHAT WAS RECORDED: issue 19 escalated as needs-decomposition and was read as genuinely too complex, prompting decomposition into 23/24/25.
+
+WHAT IS ACTUALLY TRUE (VERIFIED, session 34):
+- "needs-decomposition" / "decompose" is written at exactly one place in the codebase: loop.py:236 and loop.py:239-240, inside the branch guarded by `result.num_turns >= self.cfg.engine.max_turns` (loop.py:231-232).
+- The code never inspects why the turn budget was exhausted. Genuine complexity and permission-denial turn-burn produce byte-identical payloads.
+- Issue 19's ExecutionFinished (event_id 170) carries taxonomy needs-decomposition with exit_status 0, so it entered that branch and no other. Issue 19 hit the turn cap. It was never assessed for complexity by anything.
+- The "too complex" reading was an inference from a label that does not carry that meaning.
+
+WHAT THIS DOES NOT CHANGE: issues 23 and 24 shipped through the full pipeline with ValidationPassed + ReviewApproved (merges ec888d1, db504eb). Their work stands on its own gates. No retroactive rework required.
+
+WHAT IT DOES CHANGE — decomposition is not the remedy for turn-budget escalation:
+- Issue 25 was the smallest possible unit (one test module) and hit the same cap.
+- Decomposing did not address the cause. It made 2 of 3 units small enough to finish under the cap; the third still failed.
+- This is Gap 3 chaining off Gap 1 (headless child cannot self-verify via Bash under --permission-mode acceptEdits + --setting-sources ""), exactly as logged in session 33.
+
+GAP 4 (NEW, session 34): num_turns is the deciding value in the escalation branch and is never persisted to any event. Issue 19's ExecutionSpawned records budget max_turns 30; no event records the turn count actually reached. The discriminating value is unobservable after the fact. Persisting it would make Gap 1's severity measurable rather than inferred.
+
+COST/WASTE NOTE: 19-e1 produced end_commit 199db62b9dbd67e8c504be2396bfab1b9e60ce4f, then reset_hard(base) discarded it (loop.py:243). Turn-budget escalation throws away real work before validation ever runs. 19-e1 cost $0.9706 / 13,692 output tokens for a discarded result.
+
+STATUS: diagnosis only. Gaps 1, 3, 4 remain UNAUTHORIZED for fixing — Adi's call.
+
+ALSO STALE (unrelated, noted in passing): Issues.md STATUS: fields read "OPEN — not started" for issues 13-25, all of which are terminal in the event log (15 CommitCreated, 19 and 25 escalated). Issues.md is a static input file the runtime never writes back to. Do not use its STATUS field as state; the event log is authoritative.
