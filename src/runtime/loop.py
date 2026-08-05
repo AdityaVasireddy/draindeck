@@ -220,6 +220,7 @@ class Orchestrator:
         common = {
             "start_commit": base, "end_commit": end,
             "exit_status": result.exit_status,
+            "num_turns": result.num_turns,
             "usage": result.usage, "duration_s": result.duration_s,
             "transcript_path": str(result.transcript_path),
             "pid": os.getpid(),
