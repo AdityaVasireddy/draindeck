@@ -236,3 +236,20 @@ in Outstanding Issues below — it was not touched or corrected this session.
    queue-precedence findings recorded above). The uncommitted `hold_pid` diff in
    `claude_headless.py` is unaffected by any of this and needs no action — it stays uncommitted
    per standing constraint regardless of how (a)-(c) resolve.
+
+---
+## CORRECTION 2026-08-02 (session 27 reviewer gate)
+
+The "Testing / Verification Performed" entry above claiming gate (c) PASS —
+"(c) tasklist confirms hold_pid alive — all three held on the one live spawn
+(11-e2)" — is corrected to UNWITNESSED.
+
+Reason: no tasklist artifact exists on disk for the 11-e2 spawn. state/artifacts/11-e2/
+contains sentinel_ready, hold_ready, and sentinel_chain_log.jsonl, but NO captured
+tasklist snapshot proving hold_pid=68064 was observed alive by an external witness.
+The gate (c) PASS rested on prior-session prose, not a reproducible artifact.
+
+Gates (a) and (b) remain VERIFIED from raw artifacts (sentinel_ready JSON present +
+hold_ready present + sentinel_resume absent; hold_pid=68064 non-null). Gate (d)
+remains NOT ACHIEVED (leaf never stabilized: 11-e2 chain_log shows 9 polls, leaf_worker_pid
+null, matching miss mode 2). This note does not change any code or any other claim.
