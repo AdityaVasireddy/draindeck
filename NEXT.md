@@ -594,3 +594,90 @@ longer fires"] (L542-890).
 > is the rotation trigger already firing: next session, §3 either shrinks as preconditions
 > close, or it graduates to its own tracking doc. Do not trim the rest to hit 120 — the rest
 > is already minimal, and trimming it would not address why the cap was missed.
+
+> **NOTE (Session 33, 2026-08-05) — two observability/ergonomics gaps found during the
+> issue-23 live run (`run-20260805T132808Z`).** Neither fixed; neither authorized for
+> fixing this session; recorded here so neither is silently re-derived later.
+>
+> 1. **Reviewer verdict rationale not persisted.** The `ReviewApproved` event (schema as
+>    seen live, event_id 203 this run) persists only `reviewed_commit`, `reviewer_provider`,
+>    and `verdict`. The Qwen reviewer's raw JSON response (`severity`, `feedback[]`) is
+>    parsed in-memory by `_parse()` in `src/runtime/reviewer/qwen_ollama.py` and never
+>    written to disk or the event log. Consequence: after a run, there is no retrievable
+>    artifact explaining why the reviewer approved or rejected — the approval rationale is
+>    structurally unwitnessable. Candidate fix (NOT authorized now, just noted): persist
+>    `severity` and `feedback` into the `ReviewApproved`/`ReviewRejected` payload, or write
+>    the raw reviewer response to `state/artifacts/<exec-id>/review.json`. Flag: any
+>    schema/event-payload change is a five-gate `src/` change requiring 60/60 both seeds.
+> 2. **`run` subcommand has no per-issue scope flag.** `run` exposes only `--config` and
+>    `--skip-baseline`. Scoping a live run to a single issue currently requires temporarily
+>    editing `budget.max_executions_per_run` (done 10→1→10 for the issue-23 run,
+>    working-tree only, reverted to an empty `git diff`, no commit). Candidate fix (NOT
+>    authorized now, just noted): a real `--issue <id>` or `--max-executions <n>` flag so
+>    single-issue scoping doesn't require a config maneuver.
+
+> **NOTE (Session 33, 2026-08-05) — issue 25 hand-merged onto StockPhotoAgent `agent-work`,
+> bypassing the orchestrator pipeline, by explicit Adi authorization.** Merge commit
+> `f1e816e` (second parent `2978c486`, the escalated execution's own attempt-ref commit),
+> touching only `tests/test_country_derivation.py` (+79 lines, one new file). Not an
+> orchestrator-driven commit — no `CommitCreated`/`IssueCompleted` event exists for issue 25
+> in `state/events.jsonl`; the event log's last word on issue 25 remains `IssueEscalated`
+> (event 218). This note is the durable record of the out-of-band land.
+>
+> **Reason for bypass.** The execution (`25-e1`) exhausted its 30-turn budget
+> (`num_turns` 33 ≥ `engine.max_turns` 30, confirmed live: `grep -o
+> "\"num_turns\":[0-9]*" state/artifacts/25-e1/transcript.jsonl` → `"num_turns":33`;
+> `config.yaml`'s `engine.max_turns: 30`) retrying `pytest` calls that were auto-rejected
+> under the headless engine's `--permission-mode acceptEdits` + `--setting-sources ""`
+> posture — every Bash invocation the child attempted came back `"This command requires
+> approval"` / `non_execution_kind: user-rejected`, including a trivial `python -c
+> "print(1+1)"` sanity check and one call marked `dangerouslyDisableSandbox: true`; 15
+> distinct denied `Bash` calls total, zero successful pytest runs anywhere in the
+> transcript. The turn-budget guard in `loop.py:231-243` then emitted
+> `ExecutionFinished(outcome=REJECTED, taxonomy_category=needs-decomposition)` and
+> `IssueEscalated` inline, in the same branch, with no call to `_validate()` anywhere in
+> that code path — validation was not skipped by a decision, it was structurally
+> unreachable for this execution. Traced from source this session, not inferred: `loop.py`'s
+> post-execution branch reads only `result.timed_out` / `result.num_turns` /
+> `result.exit_status` (the engine's own advisory signals), never anything the child
+> self-reports — this is verdict (A) from the session's source trace.
+>
+> **Consequence / provenance asymmetry — record this precisely, do not let it blur into
+> "issue 25 shipped like 23/24 did."** Issue 25 has **no `ReviewApproved` event** and
+> **never passed the orchestrator's own validation gate** — unlike issues 23 and 24, both
+> of which have a full `ValidationPassed`→`ReviewApproved`→`CommitCreated`→`IssueCompleted`
+> chain in the event log. The 5 tests in `tests/test_country_derivation.py` were instead
+> manually verified green by checking the file out of the unmerged commit into the
+> then-current `agent-work` tree (both before the merge, against `db504eb`, and after,
+> against the merge commit `f1e816e`): `C:\Python314\python.exe -m pytest
+> tests\test_country_derivation.py -v` → `5 passed`, returncode 0, both times. That manual
+> verification is real evidence the tests pass, but it is a human/session-level check, not
+> a pipeline gate — the distinction matters for any future audit of what "shipped through
+> the runtime" means for this repo.
+>
+> **Three distinct gaps this exposes. Gaps 1 and 2 were investigated and documented earlier
+> this same session (Session 33) but are recorded here for the first time as NEXT.md items —
+> the entry directly above this one covers two DIFFERENT Session-33 gaps (reviewer-rationale
+> persistence, `run`'s missing per-issue scope flag) and is not their source. Gap 3 is new:**
+> 1. Headless child cannot self-verify via Bash under the current permission posture — see
+>    this note's own "Reason for bypass" paragraph above for the full mechanism
+>    (`--permission-mode acceptEdits` + `--setting-sources ""`, confirmed from
+>    `src/runtime/engine/claude_headless.py`'s `_command()`).
+> 2. `config.yaml`'s validation command list (`project.validation.commands`) is a fixed,
+>    hardcoded file set that excludes `tests/test_country_derivation.py` — so even if issue
+>    25 HAD reached the orchestrator's validation gate, the new tests would not have been
+>    exercised by it. Any future issue that adds a new test file has this same exposure
+>    until the validation command list is made to discover new test modules rather than
+>    naming them individually.
+> 3. **New, distinct from 1 and 2: the turn-budget escalation itself is a third gap, not a
+>    restatement of the permission gap.** A child that cannot self-verify (gap 1) will
+>    predictably burn its turn budget retrying and escalate as `needs-decomposition` (gap
+>    3) BEFORE the pipeline ever reaches validation (where gap 2 would additionally have
+>    bitten it) — three independent failure modes chained into one observed outcome. Fixing
+>    only one of the three would not have been sufficient to land issue 25 through the
+>    normal pipeline; all three would need addressing (or the permission gap specifically,
+>    since it is the root trigger of the chain) before trusting unsupervised runs not to
+>    repeat this pattern on a future issue that also needs child-side self-verification.
+>    None of the three is fixed or authorized for fixing this session — decomposition,
+>    permission-posture change, and validation-command-list change are all still open,
+>    tracked here only.
