@@ -95,6 +95,18 @@ def test_diff_derivable(adapter: GitCliAdapter, repo: Path):
     assert "edited" in d and "README" in d
 
 
+def test_added_files_detects_new_not_modified(adapter: GitCliAdapter, repo: Path):
+    """Gap 2 (doc 08 §5d Design A): added_files() must report a genuinely
+    NEW file and must NOT report a merely-modified existing one --
+    --diff-filter=A, structured, never text-parsed."""
+    base = adapter.current_commit()
+    (repo / "README").write_text("edited\n")           # modified, not added
+    (repo / "test_new.py").write_text("def test_x(): pass\n")  # added
+    head = adapter.snapshot_commit("mixed change")
+    added = adapter.added_files(base, head)
+    assert added == ["test_new.py"]
+
+
 # ── snapshot_commit: CONVERGENT ──────────────────────────────────────
 def test_snapshot_none_when_clean(adapter: GitCliAdapter):
     assert adapter.snapshot_commit("noop") is None

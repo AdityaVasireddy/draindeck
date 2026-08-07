@@ -36,6 +36,7 @@ class FakeAdapter:
         self._commits = {base}
         self._refs: dict[str, str] = {}
         self._merged: dict[str, str] = {}
+        self._added_files: dict[tuple, list] = {}
 
     def _new(self, tag="c"):
         sha = f"{tag}{next(self._c)}"
@@ -61,6 +62,7 @@ class FakeAdapter:
 
     def reset_hard(self, commit): self._head = commit
     def diff(self, base, head): return f"diff {base}..{head}\n"
+    def added_files(self, base, head): return self._added_files.get((base, head), [])
     def commit_exists(self, sha): return sha in self._commits
     def is_ancestor(self, a, target): return a in self._merged
     def find_merge_commit(self, target, end): return self._merged.get(end)
@@ -94,7 +96,7 @@ class FakeValidator:
     def __init__(self, passed_fn=None):
         self.passed_fn = passed_fn or (lambda xid: True)
 
-    def validate(self, workspace, validated_commit, execution_id):
+    def validate(self, workspace, validated_commit, execution_id, extra_commands=None):
         from runtime.validation.runner import ValidationResult
         ok = self.passed_fn(execution_id)
         return ValidationResult(

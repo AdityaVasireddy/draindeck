@@ -144,6 +144,19 @@ class GitCliAdapter(RepositoryAdapter):
     def diff(self, base: str, head: str) -> str:
         return self._git("diff", base, head).stdout
 
+    def added_files(self, base: str, head: str) -> list[str]:
+        out = self._git(
+            "diff", "--name-status", "--diff-filter=A", base, head
+        ).stdout
+        paths = []
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            status, _, path = line.partition("\t")
+            if status == "A":
+                paths.append(path)
+        return paths
+
     def find_merge_commit(self, target_branch: str, merged: str) -> Optional[str]:
         head = self.head_of(target_branch)
         if head is None:

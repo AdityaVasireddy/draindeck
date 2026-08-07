@@ -22,6 +22,7 @@ ends the run cleanly.
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 from pathlib import Path
 
@@ -258,8 +259,24 @@ class Orchestrator:
         self.adapter.reset_hard(base)  # residue already on the attempt ref
 
     # ── row: VALIDATING ───────────────────────────────────────────────
+    def _new_test_commands(self, ex: ExecutionView) -> list[str]:
+        """Gap-2 hook (doc 08 Amendment, Session 35): child-authored new test
+        files, turned into their OWN explicit single-file commands (ADR-23
+        rule 2 preserved -- never a bare glob/dir handed to pytest). Inert
+        (returns []) unless config.project.validation.new_test_pattern AND
+        new_test_command_prefix are BOTH set -- existing configs are
+        unaffected until they opt in."""
+        vcfg = self.cfg.project.validation
+        if not vcfg.new_test_pattern or not vcfg.new_test_command_prefix:
+            return []
+        added = self.adapter.added_files(ex.base_commit, ex.end_commit)
+        matched = [p for p in added if fnmatch.fnmatch(p, vcfg.new_test_pattern)]
+        return [f"{vcfg.new_test_command_prefix} {p}" for p in matched]
+
     def _validate(self, issue: str, ex: ExecutionView) -> None:
-        result = self.validator.validate(self.workspace, ex.end_commit, ex.execution_id)
+        extra = self._new_test_commands(ex)
+        result = self.validator.validate(self.workspace, ex.end_commit, ex.execution_id,
+                                          extra_commands=extra)
         if result.passed:
             self._emit(self._event(EventType.VALIDATION_PASSED, issue,
                                    {"validated_commit": ex.end_commit,

@@ -318,6 +318,24 @@ def test_command_fence_present_without_model(tmp_path):
     assert argv[di + 1:] == list(_DENY_TOOLS)
 
 
+def test_command_permission_mode_is_bypass_permissions(tmp_path):
+    """Gap 1 (doc 08 §5b Amendment 2, Session 35): under acceptEdits/default
+    a headless -p child cannot self-verify -- every Bash tool_use, even a
+    single non-chained pytest command, is auto-denied
+    (non_execution_kind="user-rejected"), VERIFIED live this session.
+    bypassPermissions is the only mode that lets a non-denied Bash command
+    run, while the denylist (asserted unchanged above) keeps denying
+    curl/rm/git identically (non_execution_kind="permission-rule").
+    This pins the argv so a future edit cannot silently regress to a mode
+    that reintroduces the self-verification deadlock."""
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    eng._claude_exe = "claude"
+    eng.cfg = EngineCfg(provider="claude-headless", auth_mode="subscription")
+    argv = ClaudeHeadlessEngine._command(eng, tmp_path / "p.txt")
+    pi = argv.index("--permission-mode")
+    assert argv[pi + 1] == "bypassPermissions"
+
+
 # ── recovery integration (unit-level M3 proof) ───────────────────────
 def test_reap_orphans_kills_survivor(tmp_path):
     """A real survivor with a production-written pidfile is detected as alive,

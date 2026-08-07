@@ -25,6 +25,16 @@ project:
                                     # StockPhotoAgent, returncode 0, 26 tests
                                     # collected. Step-3 precondition #1 CLOSED.
     timeout_seconds: 600
+    # Gap-2 hook (doc 08 Amendment, Session 35): a child-authored new test
+    # file matching this glob, added between an execution's base and end
+    # commit, gets its OWN single-file pytest command appended for that
+    # execution's validation gate only -- the commands list above (the
+    # always-run baseline) is never mutated. Same absolute-interpreter
+    # convention as commands above (ADR-23 rule 1); each match still runs
+    # as an explicit single-file command, never a directory/glob handed to
+    # pytest itself (ADR-23 rule 2 preserved).
+    new_test_pattern: 'tests/test_*.py'
+    new_test_command_prefix: 'C:\\Python314\\python.exe -m pytest'
 engine:
   provider: claude-headless
   auth_mode: subscription        # ADR-18; api_key requires ANTHROPIC_API_KEY

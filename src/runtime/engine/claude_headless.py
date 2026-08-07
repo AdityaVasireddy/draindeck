@@ -10,8 +10,9 @@ recovery/bindings.py and the orchestrator) owns every git contact, and doc 03
 §5 owns every event.
 
 VERIFIED CLI contract (claude 2.1.207, Windows, 2026-07-11; re-verified at
-2.1.211 on 2026-07-16 — see the ADR-21 fence block below and doc 14 §2 —
-re-pin on upgrade):
+2.1.211 on 2026-07-16; re-verified at 2.1.224 on 2026-08-07 (Session 35,
+doc 08 §5b Amendment 2) — see the ADR-21 fence block below — re-pin on
+upgrade):
   * argv: ``claude -p --output-format stream-json --verbose
     --no-session-persistence`` (+ ``--model`` when != "default", + permission
     scoping). ``--verbose`` is REQUIRED for stream-json in print mode. The
@@ -84,9 +85,26 @@ _SUBSCRIPTION_STRIP = (
     "CLAUDE_CODE_USE_VERTEX",
 )
 
-# "acceptEdits" auto-accepts file-edit tool calls without a TTY prompt (-p mode
-# has none to show). It does NOT act as a fence — see _DENY_TOOLS below.
-_DEFAULT_PERMISSION_MODE = "acceptEdits"
+# "bypassPermissions" skips the CLI's interactive Bash-approval heuristic —
+# REQUIRED for a headless -p child to self-verify via pytest AT ALL.
+# VERIFIED (Session 35, doc 08 §5b Amendment 2): under "default"/"acceptEdits",
+# every Bash tool_use attempt — even a single, non-chained, single-file pytest
+# command — is auto-denied: tool_result is_error=true,
+# tool_result_meta.non_execution_kind="user-rejected". This is the CLI's own
+# interactive-approval gate, DISTINCT from the denylist below, firing with no
+# human present in -p mode to approve it. "plan" mode never reaches Bash at
+# all (headless ExitPlanMode is unavailable). Only "bypassPermissions" lets a
+# non-denied Bash command actually run (is_error=false, real pytest stdout
+# observed). It does NOT act as a fence on its own — see _DENY_TOOLS below,
+# whose enforcement is UNCHANGED and INDEPENDENT of this value: a denied
+# command surfaces tool_result_meta.non_execution_kind="permission-rule",
+# confirmed identical under default/acceptEdits/bypassPermissions (curl, rm,
+# and git all denied this way under every mode tested).
+# KNOWN RESIDUAL: the Write tool has no cwd confinement under ANY permission
+# mode (pre-existing, not introduced by this change; unconfirmed whether the
+# same escape reproduces under acceptEdits without model self-restraint
+# intervening) — see doc 08 §5b Amendment 2 for the full record.
+_DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
 # ─────────────────────── ADR-21: the engine fence ───────────────────────
 # PROBE-VERIFIED against claude 2.1.207 (Windows, subscription, 2026-07-12).

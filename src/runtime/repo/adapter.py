@@ -87,6 +87,17 @@ class RepositoryAdapter(ABC):
         never stored (ADR-15)."""
 
     @abstractmethod
+    def added_files(self, base: str, head: str) -> list[str]:
+        """Paths ADDED between ``base`` and ``head`` (``git diff
+        --diff-filter=A`` semantics) — workspace-relative, forward-slash
+        separated. Structured (``--name-status``), never text-parsed out of
+        ``diff()``'s unified output. Feeds the Gap-2 validation-gate hook
+        (loop.py ``_validate``): detects child-authored new test files, still
+        run as explicitly-named commands per ADR-23 rule 2 (doc 08 §5d) —
+        never via directory/glob discovery — so the orchestrator's fixed
+        validation-command list is never the only thing that ran."""
+
+    @abstractmethod
     def find_merge_commit(self, target_branch: str, merged: str) -> Optional[str]:
         """The merge commit on ``target_branch``'s first-parent chain whose
         second parent is ``merged``, or None. Supplies

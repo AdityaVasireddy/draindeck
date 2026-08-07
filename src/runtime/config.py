@@ -41,6 +41,22 @@ class ValidationCfg(_Frozen):
     # this ADR addresses. Machine-specific names live HERE, in config —
     # src/ stays language-agnostic and never learns what these mean.
     env: dict[str, str | None] = Field(default_factory=dict)
+    # Gap-2 hook (doc 08 Amendment, Session 35). Both fields below must be
+    # set together to activate it; either left None (the default) leaves
+    # existing configs' behavior byte-identical to before this field
+    # existed. new_test_pattern is an fnmatch glob matched against paths
+    # RepositoryAdapter.added_files() reports for an execution's base->end
+    # diff. new_test_command_prefix is the SAME absolute-interpreter
+    # convention ADR-23 rule 1 requires of commands -- deliberately NOT
+    # inferred from commands (rule 1: "the runtime resolves nothing").
+    # Each matched added file becomes its OWN single-file command
+    # (f"{new_test_command_prefix} {path}") -- never a bare
+    # directory/glob handed to pytest itself, so ADR-23 rule 2 ("never a
+    # bare runner, directory, or glob relying on discovery") is preserved:
+    # the pattern only decides WHICH explicit per-file commands get
+    # constructed, it is never itself passed to the test runner.
+    new_test_pattern: str | None = None
+    new_test_command_prefix: str | None = None
 
 
 class ProjectCfg(_Frozen):

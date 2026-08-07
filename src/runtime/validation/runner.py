@@ -64,13 +64,22 @@ class Validator:
         self.env: dict[str, str | None] = dict(env) if env else {}
 
     def validate(self, workspace: Path | str, validated_commit: str,
-                 execution_id: str) -> ValidationResult:
+                 execution_id: str,
+                 extra_commands: list[str] | None = None) -> ValidationResult:
+        """``extra_commands`` (Gap-2, doc 08 §5d Design A) are appended AFTER
+        ``self.commands`` for this call only — ``self.commands`` (the
+        config-sourced fixed list) is never mutated, so it stays the
+        always-run, auditable baseline independent of any single execution.
+        Typically child-authored new test files the caller detected via
+        ``RepositoryAdapter.added_files`` and turned into pinned-interpreter
+        commands (ADR-23 rule 1) before calling here."""
         workspace = Path(workspace)
         logdir = self.artifacts_dir / execution_id / "validation"
         logdir.mkdir(parents=True, exist_ok=True)
         result = ValidationResult(passed=True, validated_commit=validated_commit)
 
-        for i, cmd in enumerate(self.commands):
+        commands = self.commands + list(extra_commands or [])
+        for i, cmd in enumerate(commands):
             log_path = logdir / f"{i}.log"
             ok, dur = self._run_once(cmd, workspace, log_path)
             if not ok:
