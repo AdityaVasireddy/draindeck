@@ -115,7 +115,7 @@ class QwenOllamaReviewer(ReviewerProvider):
             raise ReviewParseError(f"verdict is not valid JSON: {e}") from e
         if not isinstance(obj, dict):
             raise ReviewParseError("verdict is not a JSON object")
-        verdict = obj.get("verdict")
+        verdict = str(obj.get("verdict") or "").strip().upper()
         if verdict not in ("APPROVE", "REJECT"):
             raise ReviewParseError(f"verdict must be APPROVE|REJECT, got {verdict!r}")
         severity = obj.get("severity", "blocking")

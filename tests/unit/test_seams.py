@@ -148,3 +148,44 @@ def test_reviewer_transport_failure_retries_then_unavailable(monkeypatch):
     with pytest.raises(ReviewerUnavailableError):
         r.review(_pack())
     assert calls["n"] == 2  # initial + one retry
+
+
+# ── QwenOllamaReviewer verdict case-normalization ──────────────────────
+@pytest.mark.parametrize("raw_verdict", ["Approve", "approve", " APPROVE "])
+def test_reviewer_normalizes_verdict_case_to_approve(raw_verdict):
+    r = _reviewer()
+    v = r._parse(_pack(), '{"verdict":"' + raw_verdict + '","feedback":[]}')
+    assert v.verdict == "APPROVE"
+    assert v.approved
+
+
+def test_reviewer_normalizes_verdict_case_to_reject():
+    r = _reviewer()
+    v = r._parse(_pack(), '{"verdict":"Reject","severity":"blocking",'
+                 '"feedback":[{"category":"review-correctness","message":"bug"}]}')
+    assert v.verdict == "REJECT"
+    assert not v.approved
+
+
+def test_reviewer_reject_lowercase_empty_feedback_is_unparseable():
+    r = _reviewer()
+    with pytest.raises(ReviewParseError):
+        r._parse(_pack(), '{"verdict":"reject","feedback":[]}')
+
+
+def test_reviewer_none_verdict_is_unparseable():
+    r = _reviewer()
+    with pytest.raises(ReviewParseError):
+        r._parse(_pack(), '{"verdict":null,"feedback":[]}')
+
+
+def test_reviewer_maybe_verdict_is_unparseable():
+    r = _reviewer()
+    with pytest.raises(ReviewParseError):
+        r._parse(_pack(), '{"verdict":"MAYBE","feedback":[]}')
+
+
+def test_reviewer_non_string_verdict_is_unparseable_not_attributeerror():
+    r = _reviewer()
+    with pytest.raises(ReviewParseError):
+        r._parse(_pack(), '{"verdict":123,"feedback":[]}')
