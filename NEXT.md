@@ -708,3 +708,17 @@ COST/WASTE NOTE: 19-e1 produced end_commit 199db62b9dbd67e8c504be2396bfab1b9e60c
 STATUS: diagnosis only. Gaps 1, 3, 4 remain UNAUTHORIZED for fixing — Adi's call.
 
 ALSO STALE (unrelated, noted in passing): Issues.md STATUS: fields read "OPEN — not started" for issues 13-25, all of which are terminal in the event log (15 CommitCreated, 19 and 25 escalated). Issues.md is a static input file the runtime never writes back to. Do not use its STATUS field as state; the event log is authoritative.
+
+## SCOPING GAP — single-issue live scope is not reliable
+
+`max_executions_per_run` caps TOTAL executions per run, not the targeted issue.
+If the target issue escalates early (e.g. duplicate-feedback guard trips before the
+cap), the budget slot falls through to the NEXT queued issue and it ships
+unplanned (session 40: issue 36 escalated → issue 37 shipped on the freed slot).
+
+Mitigation until fixed: when running a single issue live, confirm the queue tail —
+no unintended next-issue should be eligible to consume a freed slot. If manual
+reject-injects are needed, VARY taxonomy_category so the dup-guard doesn't escalate
+early.
+
+Ref: events 381 (36 escalated), 389 (37 completed).
