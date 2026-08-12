@@ -69,6 +69,19 @@ In subscription mode, where dollar cost is not directly metered, the budget mana
 
 **Honesty clause (per User Constraints, doc 00 handoff):** thresholds may not be revised after the run begins. If the run fails a threshold, the verdict is Kill/Redesign — parameter tuning to re-run requires an explicit new ADR superseding this one, with the failed run's data attached.
 
+### ADR-19 — CLOSED PASS (2026-08-11)
+
+**Verdict:** kill-criteria met across two independent samples.
+
+- **Sample 1** (n=20, issues 13–22 + prior 10, `run-20260803T050931Z`): attempt-1 17/20 = 85%; cost ~$0.36/shipped; no double-commit. Ref: handoff `HANDOFF_2026-08-03_session29-adr19-pass-holdpid-blocked.md`.
+- **Sample 2** (n=19, issues 29–47): attempt-1 16/19 = 84%; cost $9.8269/16 = $0.61/shipped incl. wasted escalation spend; no double-commit; all shipped -e1 (Rule B strict). Escalations 36 (needs-human), 39/43 (needs-decomposition) are turn-budget/decomposition, not review rejections. Refs: `events.jsonl` 322–461; run_ids `run-20260810T002149Z`, `run-20260810T193401Z`, `run-20260810T201428Z`, `run-20260811T235441Z`.
+
+Both bars: attempt-1 ≥30% PASS; cost/shipped ≤$3 PASS; $15 hard stop never breached.
+
+Carried non-blocking: reviewer raw-response not persisted; reviewer model-string INFERRED.
+
+Backlog: decompose 39, 43, 36.
+
 ---
 
 ## 5. ADR-20 — Initial target repository: StockAgent; repository is configuration only
