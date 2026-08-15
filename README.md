@@ -37,11 +37,18 @@ with `-File` from `validation.commands`.
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests\unit
 .\.venv\Scripts\python.exe -m runtime.main verify-log --log state\events.jsonl
+.\.venv\Scripts\python.exe -m runtime.main show-state --log state\events.jsonl
+.\.venv\Scripts\python.exe -m runtime.main recover --config config.local.yaml
 .\.venv\Scripts\python.exe -m runtime.main check-config config.local.yaml
 ```
 
 `check-config` only inspects local configuration and environment. It does not
 run an engine or reviewer.
+
+`verify-log` and `show-state` are strictly read-only. A missing or incomplete
+log is reported without repair. Torn-tail repair occurs only when `run` or
+configured `recover --config` holds both workspace ownership and exclusive
+authoritative-log writer ownership; bare `recover --log` is not supported.
 
 ## Authorization and safety
 

@@ -1,8 +1,10 @@
 """Unit tests for the runtime foundation — reconciled against doc 03."""
 from __future__ import annotations
 
+import multiprocessing
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -10,12 +12,36 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from runtime.config import ConfigError, load_config, validate_environment
-from runtime.events.log import CorruptionError, EventLog
+from runtime.events.log import (
+    CorruptionError,
+    EventLog,
+    EventLogUnavailable,
+    IncompleteLogError,
+    ReadOnlyEventLog,
+)
 from runtime.events.projections import StateProjection
 from runtime.events.schema import Event, EventType, SchemaError
 from runtime.recovery.reconciler import recover
 from runtime.state.model import ExecutionState, IssueState
 from runtime.state.transitions import TransitionError
+
+
+def _open_writer_in_child(path: str, conn) -> None:
+    """Spawn-safe helper for the real Windows named-mutex integration test."""
+    try:
+        with EventLog(path):
+            conn.send("acquired")
+    except EventLogUnavailable:
+        conn.send("unavailable")
+    finally:
+        conn.close()
+
+
+def _hold_writer_in_child(path: str, ready, release) -> None:
+    """Hold a real writer until the parent terminates this child."""
+    with EventLog(path):
+        ready.set()
+        release.wait()
 
 
 # ── event log ────────────────────────────────────────────────────
@@ -35,10 +61,11 @@ def test_append_replay_roundtrip(tmp_path):
 
 def test_event_id_persists_across_reopen(tmp_path):
     p = tmp_path / "e.jsonl"
-    EventLog(p).append(Event(EventType.ISSUE_CREATED, issue_id="042"))
-    log2 = EventLog(p)
-    assert log2.last_event_id == 1
-    assert log2.append(Event(EventType.ISSUE_ACTIVATED, issue_id="042")) == 2
+    with EventLog(p) as log1:
+        log1.append(Event(EventType.ISSUE_CREATED, issue_id="042"))
+    with EventLog(p) as log2:
+        assert log2.last_event_id == 1
+        assert log2.append(Event(EventType.ISSUE_ACTIVATED, issue_id="042")) == 2
 
 
 def test_torn_tail_quarantined(tmp_path):
@@ -55,6 +82,141 @@ def test_torn_tail_quarantined(tmp_path):
     assert len(sidecars) == 1
     assert b"torn-garbage" in sidecars[0].read_bytes()
     assert log2.append(Event(EventType.ISSUE_ACTIVATED, issue_id="042")) == 2
+
+
+def test_read_only_log_replays_complete_bytes_without_mutation(tmp_path):
+    path = tmp_path / "state" / "events.jsonl"
+    with EventLog(path) as writer:
+        writer.append(Event(EventType.ISSUE_CREATED, issue_id="042"))
+    before_bytes = path.read_bytes()
+    before_entries = sorted(p.name for p in path.parent.iterdir())
+
+    reader = ReadOnlyEventLog(path)
+    assert [event.event_id for event in reader.replay()] == [1]
+
+    assert path.read_bytes() == before_bytes
+    assert sorted(p.name for p in path.parent.iterdir()) == before_entries
+
+
+def test_read_only_log_does_not_create_missing_path(tmp_path):
+    path = tmp_path / "missing" / "events.jsonl"
+
+    with pytest.raises(FileNotFoundError):
+        ReadOnlyEventLog(path)
+
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
+def test_read_only_log_reports_torn_tail_without_repair(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"event_id":1')
+    before = path.read_bytes()
+    before_entries = sorted(p.name for p in tmp_path.iterdir())
+
+    reader = ReadOnlyEventLog(path)
+    with pytest.raises(IncompleteLogError):
+        list(reader.replay())
+
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == before_entries
+
+
+def test_writer_repairs_torn_tail_under_exclusive_ownership(tmp_path):
+    path = tmp_path / "events.jsonl"
+    with EventLog(path) as writer:
+        writer.append(Event(EventType.ISSUE_CREATED, issue_id="042"))
+    with open(path, "ab") as fh:
+        fh.write(b'{"event_id":2')
+
+    with EventLog(path) as writer:
+        assert writer.last_event_id == 1
+        assert writer.append(Event(EventType.ISSUE_ACTIVATED, issue_id="042")) == 2
+        assert [event.event_id for event in writer.replay()] == [1, 2]
+
+    sidecars = list(tmp_path.glob("events.jsonl.torn.*"))
+    assert len(sidecars) == 1
+    assert sidecars[0].read_bytes() == b'{"event_id":2'
+
+
+def test_writer_contention_fails_closed_across_processes_and_releases(tmp_path):
+    path = tmp_path / "events.jsonl"
+    with EventLog(path) as owner:
+        assert owner.append(Event(EventType.ISSUE_CREATED, issue_id="042")) == 1
+        ctx = multiprocessing.get_context("spawn")
+        recv, send = ctx.Pipe(duplex=False)
+        contender = ctx.Process(target=_open_writer_in_child, args=(str(path), send))
+        contender.start()
+        assert recv.recv() == "unavailable"
+        contender.join(timeout=10)
+        assert contender.exitcode == 0
+        assert [event.event_id for event in owner.replay()] == [1]
+
+    ctx = multiprocessing.get_context("spawn")
+    recv, send = ctx.Pipe(duplex=False)
+    successor = ctx.Process(target=_open_writer_in_child, args=(str(path), send))
+    successor.start()
+    assert recv.recv() == "acquired"
+    successor.join(timeout=10)
+    assert successor.exitcode == 0
+    assert [event.event_id for event in ReadOnlyEventLog(path).replay()] == [1]
+
+
+def test_writer_ownership_is_released_after_owner_process_death(tmp_path):
+    path = tmp_path / "events.jsonl"
+    ctx = multiprocessing.get_context("spawn")
+    ready = ctx.Event()
+    release = ctx.Event()
+    owner = ctx.Process(target=_hold_writer_in_child, args=(str(path), ready, release))
+    owner.start()
+    assert ready.wait(timeout=10)
+
+    owner.terminate()
+    owner.join(timeout=10)
+    assert owner.exitcode is not None
+
+    with EventLog(path) as successor:
+        assert successor.append(Event(EventType.ISSUE_CREATED, issue_id="042")) == 1
+
+
+def test_same_writer_serializes_concurrent_thread_appends(tmp_path):
+    path = tmp_path / "events.jsonl"
+    with EventLog(path) as writer:
+        real_fh = writer._fh
+        entered_write = threading.Event()
+        release_write = threading.Event()
+        write_calls = []
+
+        class BlockingFile:
+            def write(self, data):
+                write_calls.append(data)
+                if len(write_calls) == 1:
+                    entered_write.set()
+                    assert release_write.wait(timeout=5)
+                return real_fh.write(data)
+
+            def flush(self): return real_fh.flush()
+            def fileno(self): return real_fh.fileno()
+            def close(self): return real_fh.close()
+
+        writer._fh = BlockingFile()
+        results = []
+
+        def append(issue_id):
+            results.append(writer.append(Event(EventType.ISSUE_CREATED, issue_id=issue_id)))
+
+        first = threading.Thread(target=append, args=("001",))
+        second = threading.Thread(target=append, args=("002",))
+        first.start()
+        assert entered_write.wait(timeout=5)
+        second.start()
+        second.join(timeout=.1)
+        assert second.is_alive()
+        release_write.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert results == [1, 2]
+        assert [event.event_id for event in writer.replay()] == [1, 2]
 
 
 def test_midfile_corruption_refuses_to_load(tmp_path):
@@ -212,7 +374,9 @@ def test_recovery_crashes_orphan_with_residue(tmp_path):
     assert crashed[0].payload["residue_ref"] == "refs/attempts/042/042-e1"
     assert crashed[0].payload["last_known_state"] == "EXECUTING"
     # idempotent: second recovery finds nothing
-    proj2, rep2 = recover(EventLog(tmp_path / "e.jsonl"))
+    log.close()
+    with EventLog(tmp_path / "e.jsonl") as second_log:
+        proj2, rep2 = recover(second_log)
     assert rep2.orphans_crashed == [] and rep2.emitted == []
     assert proj2.digest() == proj.digest()
 

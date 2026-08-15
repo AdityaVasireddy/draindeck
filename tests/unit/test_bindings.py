@@ -120,9 +120,10 @@ def test_check1_idempotent_second_pass(world):
     _activate(log, base)
     (repo / "work.py").write_text("x")
     recover(log, **bind_reconciler(adapter, TRUNK))
-    log2 = EventLog(log.path)
-    _, rep2 = recover(log2, **bind_reconciler(adapter, TRUNK))
-    assert rep2.orphans_crashed == []                        # nothing to redo
+    log.close()
+    with EventLog(log.path) as log2:
+        _, rep2 = recover(log2, **bind_reconciler(adapter, TRUNK))
+        assert rep2.orphans_crashed == []                    # nothing to redo
 
 
 def test_check1_never_witnesses_finished(world):
@@ -188,10 +189,11 @@ def test_check2_idempotent_second_pass(world):
     end = adapter.snapshot_commit("feature")
     _intent_log(log, base, end)
     recover(log, **bind_reconciler(adapter, TRUNK))
-    log2 = EventLog(log.path)
-    _, rep2 = recover(log2, **bind_reconciler(adapter, TRUNK))
-    assert EventType.COMMIT_CREATED.value not in rep2.emitted
-    assert len(_created_events(log2)) == 1                    # no double-commit
+    log.close()
+    with EventLog(log.path) as log2:
+        _, rep2 = recover(log2, **bind_reconciler(adapter, TRUNK))
+        assert EventType.COMMIT_CREATED.value not in rep2.emitted
+        assert len(_created_events(log2)) == 1                # no double-commit
 
 
 def test_check2_tamper_raises(world):

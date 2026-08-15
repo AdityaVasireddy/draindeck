@@ -2,7 +2,7 @@
 
   python -m runtime.main verify-log  [--log PATH]   replay, enforce contract
   python -m runtime.main show-state  [--log PATH]   print projection summary
-  python -m runtime.main recover     [--log PATH]   run recovery, print report
+  python -m runtime.main recover     --config CONFIG  run configured recovery
   python -m runtime.main check-config CONFIG        structural + env validation
   python -m runtime.main run         --config CONFIG  the orchestrator loop
 
@@ -17,13 +17,20 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from .budget.manager import BudgetManager
 from .config import Config, ConfigError, load_config, validate_environment
 from .context.pack import build_prompt  # noqa: F401  (re-exported convenience)
 from .engine.claude_headless import ClaudeHeadlessEngine, EngineError
-from .events.log import CorruptionError, EventLog
+from .events.log import (
+    CorruptionError,
+    EventLog,
+    EventLogUnavailable,
+    IncompleteLogError,
+    ReadOnlyEventLog,
+)
 from .events.projections import StateProjection
 from .events.schema import Event, EventType
 from .loop import Orchestrator, OrchestratorHalt
@@ -39,24 +46,37 @@ from .validation.runner import Validator
 from .workspace_lease import WorkspaceLease, probe_controller_identity
 
 
-def _load(path: str) -> EventLog:
-    return EventLog(Path(path))
-
-
 def cmd_verify_log(args) -> int:
     try:
-        log = _load(args.log)
-        n = sum(1 for _ in log.replay())
+        with ReadOnlyEventLog(Path(args.log)) as log:
+            events = list(log.replay())
+    except FileNotFoundError:
+        print(f"LOG MISSING: {args.log} (not created)", file=sys.stderr)
+        return 1
+    except IncompleteLogError as e:
+        print(f"LOG INCOMPLETE: {e} (not repaired)", file=sys.stderr)
+        return 1
     except CorruptionError as e:
         print(f"CORRUPT: {e}", file=sys.stderr)
         return 1
-    print(f"OK: {n} events, last_event_id={log.last_event_id}")
+    last_event_id = events[-1].event_id if events else 0
+    print(f"OK: {len(events)} events, last_event_id={last_event_id}")
     return 0
 
 
 def cmd_show_state(args) -> int:
-    log = _load(args.log)
-    proj = StateProjection().rebuild(log.replay())
+    try:
+        with ReadOnlyEventLog(Path(args.log)) as log:
+            proj = StateProjection().rebuild(log.replay())
+    except FileNotFoundError:
+        print(f"LOG MISSING: {args.log} (not created)", file=sys.stderr)
+        return 1
+    except IncompleteLogError as e:
+        print(f"LOG INCOMPLETE: {e} (not repaired)", file=sys.stderr)
+        return 1
+    except CorruptionError as e:
+        print(f"CORRUPT: {e}", file=sys.stderr)
+        return 1
     out = {
         "last_event_id": proj.last_event_id,
         "digest": proj.digest(),
@@ -73,18 +93,120 @@ def cmd_show_state(args) -> int:
     return 0
 
 
+class WorkspaceOwnershipUnavailable(RuntimeError):
+    """Configured recovery/run could not become the workspace owner."""
+
+
+@dataclass
+class _StartupRecovery:
+    """Owned safety-critical startup boundary shared by run and recover."""
+
+    lease: WorkspaceLease
+    log: EventLog
+    engine: ClaudeHeadlessEngine
+    adapter: GitCliAdapter
+    artifacts_dir: Path
+    proj: StateProjection
+    report: object
+
+    def close(self) -> None:
+        """Release authoritative-log ownership before workspace ownership."""
+        try:
+            self.log.close()
+        finally:
+            self.lease.release_and_close()
+
+
+def _load_runtime_config(config_path: str) -> Config | None:
+    """Load configuration and fail before workspace/log ownership on error."""
+    try:
+        cfg = load_config(config_path)
+    except ConfigError as e:
+        print(f"CONFIG INVALID: {e}", file=sys.stderr)
+        return None
+    problems = validate_environment(cfg)
+    if problems:
+        print("ENVIRONMENT PROBLEMS (refusing to start):", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return None
+    return cfg
+
+
+def _open_startup_recovery(cfg: Config) -> _StartupRecovery:
+    """Perform the ownership-to-bound-recovery startup boundary exactly once."""
+    lease = WorkspaceLease.acquire(cfg.project.repository)
+    if not lease.acquired:
+        raise WorkspaceOwnershipUnavailable(
+            f"{lease.state.value}: {lease.detail}")
+
+    log: EventLog | None = None
+    try:
+        # Writer ownership covers repair and replay before any containment or
+        # workspace recovery action.  Workspace ownership is deliberately
+        # separate: it protects the wider B4/runtime boundary.
+        log = EventLog(Path(cfg.event_log.path))
+        resolve_startup_containment(
+            log, lease.workspace_key, controller_probe=probe_controller_identity)
+
+        artifacts_dir = Path(cfg.event_log.path).parent / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        engine = ClaudeHeadlessEngine(cfg.engine, artifacts_dir)
+        adapter = GitCliAdapter(cfg.project.repository, cfg.attempts.ref_namespace)
+        for repair in engine.reap_orphans():
+            print(f"[startup] {repair}")
+        proj, report = recover(
+            log,
+            is_execution_alive=engine.is_execution_alive,
+            workspace_key=lease.workspace_key,
+            **bind_reconciler(adapter, cfg.project.branch),
+        )
+        return _StartupRecovery(lease, log, engine, adapter, artifacts_dir, proj, report)
+    except Exception:
+        try:
+            if log is not None:
+                try:
+                    log.close()
+                except Exception:
+                    # Preserve the startup failure; the lease cleanup below
+                    # must still run even if writer cleanup itself fails.
+                    pass
+        finally:
+            lease.release_and_close()
+        raise
+
+
 def cmd_recover(args) -> int:
-    log = _load(args.log)
-    proj, rep = recover(log)
-    print(json.dumps({
-        "replayed_events": rep.replayed_events,
-        "orphans_crashed": rep.orphans_crashed,
-        "emitted": rep.emitted,
-        "checks_run": rep.checks_run,
-        "checks_skipped": rep.checks_skipped,
-        "digest": proj.digest(),
-    }, indent=2))
-    return 0
+    cfg = _load_runtime_config(args.config)
+    if cfg is None:
+        return 1
+    try:
+        startup = _open_startup_recovery(cfg)
+    except WorkspaceOwnershipUnavailable as e:
+        print(f"WORKSPACE OWNERSHIP UNAVAILABLE: {e}", file=sys.stderr)
+        return 1
+    except EventLogUnavailable as e:
+        print(f"AUTHORITATIVE LOG WRITER UNAVAILABLE: {e}", file=sys.stderr)
+        return 1
+    except WorkspaceContainmentBlocked as e:
+        print(f"CONTAINMENT BLOCKED: {e}", file=sys.stderr)
+        return 1
+    except EngineError as e:
+        print(f"ENGINE INIT FAILED: {e}", file=sys.stderr)
+        return 1
+    try:
+        report = startup.report
+        print(json.dumps({
+            "replayed_events": report.replayed_events,
+            "orphans_crashed": report.orphans_crashed,
+            "emitted": report.emitted,
+            "checks_run": report.checks_run,
+            "checks_skipped": report.checks_skipped,
+            "digest": startup.proj.digest(),
+        }, indent=2))
+        return 0
+    finally:
+        startup.close()
 
 
 def cmd_check_config(args) -> int:
@@ -150,171 +272,85 @@ def _ingest_issues(cfg: Config, log: EventLog, proj: StateProjection,
     return emitted
 
 
-def cmd_run(args) -> int:
-    # 1. config (structural, no side effects)
-    try:
-        cfg = load_config(args.config)
-    except ConfigError as e:
-        print(f"CONFIG INVALID: {e}", file=sys.stderr)
-        return 1
-    # 2. environment (repo/git/branch, ADR-18 key posture)
-    problems = validate_environment(cfg)
-    if problems:
-        print("ENVIRONMENT PROBLEMS (refusing to start):", file=sys.stderr)
-        for p in problems:
-            print(f"  - {p}", file=sys.stderr)
-        return 1
-
-    # Workspace authority comes before anything which could inspect, repair, or
-    # launch work in that workspace.  The mutex is exclusion only; containment
-    # is separately replayed and resolved below.
-    lease = WorkspaceLease.acquire(cfg.project.repository)
-    if not lease.acquired:
-        print(f"WORKSPACE OWNERSHIP UNAVAILABLE ({lease.state.value}): {lease.detail}", file=sys.stderr)
-        return 1
-
-    try:
-        state_dir = Path(cfg.event_log.path).parent
-        artifacts_dir = state_dir / "artifacts"
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-        run_id = "run-" + datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y%m%dT%H%M%SZ")
-        # 3. log
-        log = EventLog(Path(cfg.event_log.path))
-    except Exception:
-        lease.release_and_close()
-        raise
-    try:
-        resolve_startup_containment(
-            log, lease.workspace_key, controller_probe=probe_controller_identity)
-    except WorkspaceContainmentBlocked as e:
-        # No work was launched by this owner; relinquishing the mutex is not a
-        # release of containment and lets a later evidence-bearing owner retry.
-        lease.release_and_close()
-        print(f"CONTAINMENT BLOCKED: {e}", file=sys.stderr)
-        return 1
-    except Exception:
-        lease.release_and_close()
-        raise
-
-    # 4. engine (fails fast if `claude` not on PATH), after containment gate.
-    try:
-        engine = ClaudeHeadlessEngine(cfg.engine, artifacts_dir)
-    except EngineError as e:
-        lease.release_and_close()
-        print(f"ENGINE INIT FAILED: {e}", file=sys.stderr)
-        return 1
-    # 5. adapter
-    adapter = GitCliAdapter(cfg.project.repository, cfg.attempts.ref_namespace)
-
-    # 6. reap engine orphans BEFORE recovery (doc 12 §1.6)
-    try:
-        for r in engine.reap_orphans():
-            print(f"[startup] {r}")
-    # 7. recovery — the full production seam binding proven by harness f4. Runs
-    # BEFORE checkout (ADR-20 Amendment 2, 2026-07-27): recovery's seams act via
-    # explicit-ref git plumbing (rev-parse/merge-base/for-each-ref) and mutate
-    # whatever is CURRENTLY checked out, not cfg.project.branch specifically —
-    # they never needed the branch pre-switched. Running recovery first lets
-    # check 1 (preserve_residue -> snapshot_commit) and check 3
-    # (check_dirty_workspace -> reset_hard) leave a genuinely dirty post-crash
-    # tree clean BEFORE checkout_branch's dirty-tree guard is reached, instead
-    # of deadlocking against it (Amendment 1's placement did the opposite and
-    # could never resolve real crash residue — see NEXT.md item 13).
-        proj, report = recover(
-            log,
-            is_execution_alive=engine.is_execution_alive,
-            workspace_key=lease.workspace_key,
-            **bind_reconciler(adapter, cfg.project.branch),
-        )
-    except Exception:
-        lease.release_and_close()
-        raise
+def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
+    """Continue normal run work after the shared safety-critical boundary."""
+    lease = startup.lease
+    log = startup.log
+    engine = startup.engine
+    adapter = startup.adapter
+    artifacts_dir = startup.artifacts_dir
+    proj = startup.proj
+    report = startup.report
+    run_id = "run-" + datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y%m%dT%H%M%SZ")
     if report.orphans_crashed:
         print(f"[recovery] crashed orphans: {report.orphans_crashed}")
-    for r in report.workspace_repairs:
-        print(f"[recovery] {r}")
+    for repair in report.workspace_repairs:
+        print(f"[recovery] {repair}")
 
-    # 7b. enforce checked-out branch BEFORE baseline/ingest (ADR-20 Amendment 1,
-    # 2026-07-26, re-sequenced by Amendment 2, 2026-07-27): the baseline health
-    # check and ingest both act against the physical tree and are meaningless if
-    # the wrong branch is on disk. Now runs AFTER recovery, which has already
-    # guaranteed a clean tree (see step 7 above) — the guard itself is
-    # unchanged/unweakened. Reuses the existing adapter method (no create_from:
-    # we must never force-reset the target repo's long-lived branch, only switch
-    # to it).
+    # Recovery intentionally precedes checkout: its bound seams repair the
+    # current crash residue before checkout's dirty-workspace guard runs.
     try:
         adapter.checkout_branch(cfg.project.branch)
     except RepoError as e:
-        lease.release_and_close()
         print(f"CHECKOUT FAILED: {e}", file=sys.stderr)
         return 1
     print(f"[startup] checked out {cfg.project.branch}")
 
-    # 8. health checks
     ok, detail = _reviewer_reachable(cfg)
     print(f"[health] reviewer: {detail}")
     if not ok:
-        lease.release_and_close()
-        print("[health] reviewer endpoint unreachable — refusing to start "
+        print("[health] reviewer endpoint unreachable â€” refusing to start "
               "(the first review would halt the run)", file=sys.stderr)
         return 1
     if report.replayed_events == 0 and not args.skip_baseline:
         validator = Validator(cfg.project.validation.commands,
                               timeout_seconds=cfg.project.validation.timeout_seconds,
                               artifacts_dir=artifacts_dir,
-                              env=cfg.project.validation.env)  # ADR-23: same hygiene as the loop's validator
+                              env=cfg.project.validation.env)
         head = adapter.head_of(cfg.project.branch) or adapter.current_commit()
-        res = validator.validate(cfg.project.repository, head, "baseline")
-        if not res.passed:
-            lease.release_and_close()
-            print(f"[health] BASELINE RED on {cfg.project.branch} — refusing to "
+        result = validator.validate(cfg.project.repository, head, "baseline")
+        if not result.passed:
+            print(f"[health] BASELINE RED on {cfg.project.branch} â€” refusing to "
                   f"start (ADR-20 requires baseline green). See "
                   f"{artifacts_dir / 'baseline' / 'validation'}", file=sys.stderr)
             return 1
         print("[health] baseline green")
 
-    # 9. ingest issues (idempotent)
     try:
-        n = _ingest_issues(cfg, log, proj, run_id)
+        ingested = _ingest_issues(cfg, log, proj, run_id)
     except (IssuesParseError, FileNotFoundError) as e:
-        lease.release_and_close()
         print(f"INGEST FAILED: {e}", file=sys.stderr)
         return 1
-    print(f"[ingest] {n} new issue(s); {len(proj.issues)} total in queue")
+    print(f"[ingest] {ingested} new issue(s); {len(proj.issues)} total in queue")
 
-    # 10. the loop
     orch = Orchestrator(
         cfg=cfg, log=log, proj=proj, adapter=adapter, engine=engine,
         validator=Validator(cfg.project.validation.commands,
                             timeout_seconds=cfg.project.validation.timeout_seconds,
                             artifacts_dir=artifacts_dir,
-                            env=cfg.project.validation.env),  # ADR-23: same hygiene as the baseline check
+                            env=cfg.project.validation.env),
         reviewer=_make_reviewer(cfg),
         budget=BudgetManager(cfg.budget.max_executions_per_run,
-                            cfg.budget.hard_stop_proxy_cost_per_run_usd),
+                             cfg.budget.hard_stop_proxy_cost_per_run_usd),
         artifacts_dir=artifacts_dir, run_id=run_id,
     )
     exit_code = 0
     try:
         reason = orch.run()
-        m = orch.budget.metrics()
+        metrics = orch.budget.metrics()
         print(f"[done] {reason}")
-        print(f"[metrics] executions_this_run={m.executions_this_run} "
-              f"proxy_dollars_this_run=${m.proxy_dollars_this_run:.4f}")
+        print(f"[metrics] executions_this_run={metrics.executions_this_run} "
+              f"proxy_dollars_this_run=${metrics.proxy_dollars_this_run:.4f}")
     except (OrchestratorHalt, ReviewerError) as e:
         print(f"[halt] run stopped abnormally: {e}", file=sys.stderr)
         exit_code = 2
     except KeyboardInterrupt:
-        print("\n[stop] interrupted — current step finished; recovery owns the rest")
-        exit_code = 0
+        print("\n[stop] interrupted â€” current step finished; recovery owns the rest")
     finally:
-        # ADR-20-class fix: restore cfg.project.branch on every exit path so
-        # the workspace is never left checked out on the last issue/N attempt
-        # branch. Self-guarded: a restore failure must not supersede the
-        # primary exit_code/exception from the try/except above.
         if proj.is_workspace_blocked(lease.workspace_key):
-            print("[shutdown] containment remains unreleased; workspace and lease stay fail-closed", file=sys.stderr)
+            print("[shutdown] containment remains unreleased; no branch restore attempted",
+                  file=sys.stderr)
         else:
             try:
                 adapter.checkout_branch(cfg.project.branch)
@@ -322,19 +358,49 @@ def cmd_run(args) -> int:
             except RepoError as e:
                 print(f"[shutdown] WARNING: failed to restore {cfg.project.branch}: {e}",
                       file=sys.stderr)
-            lease.release_and_close()
     return exit_code
+
+
+def cmd_run(args) -> int:
+    cfg = _load_runtime_config(args.config)
+    if cfg is None:
+        return 1
+
+    # Workspace authority comes before anything which could inspect, repair, or
+    # launch work in that workspace.  The mutex is exclusion only; containment
+    # is separately replayed and resolved below.
+    try:
+        startup = _open_startup_recovery(cfg)
+    except WorkspaceOwnershipUnavailable as e:
+        print(f"WORKSPACE OWNERSHIP UNAVAILABLE: {e}", file=sys.stderr)
+        return 1
+    except EventLogUnavailable as e:
+        print(f"AUTHORITATIVE LOG WRITER UNAVAILABLE: {e}", file=sys.stderr)
+        return 1
+    except WorkspaceContainmentBlocked as e:
+        print(f"CONTAINMENT BLOCKED: {e}", file=sys.stderr)
+        return 1
+    except EngineError as e:
+        print(f"ENGINE INIT FAILED: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        return _run_after_startup(args, cfg, startup)
+    finally:
+        startup.close()
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="runtime")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, fn in [("verify-log", cmd_verify_log),
-                     ("show-state", cmd_show_state),
-                     ("recover", cmd_recover)]:
+                     ("show-state", cmd_show_state)]:
         s = sub.add_parser(name)
         s.add_argument("--log", default="state/events.jsonl")
         s.set_defaults(fn=fn)
+    s = sub.add_parser("recover")
+    s.add_argument("--config", required=True)
+    s.set_defaults(fn=cmd_recover)
     s = sub.add_parser("check-config")
     s.add_argument("config")
     s.set_defaults(fn=cmd_check_config)
