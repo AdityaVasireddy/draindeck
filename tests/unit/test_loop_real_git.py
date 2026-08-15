@@ -55,7 +55,11 @@ class _WritingEngine:
     def __init__(self, artifacts_dir):
         self.artifacts_dir = Path(artifacts_dir)
 
-    def run(self, xid, prompt_file, workspace):
+    def run(self, xid, prompt_file, workspace, *, containment=None):
+        # The Windows orchestrator supplies authoritative containment context
+        # to every engine implementation.  This fake does not launch a child,
+        # so it accepts but deliberately does not emulate those event writes.
+        self.containment = containment
         (Path(workspace) / f"work-{xid}.txt").write_text(f"done by {xid}\n")
         return EngineResult(exit_status=0, timed_out=False, duration_s=0.1,
                             usage={"dollars": 0.01}, num_turns=2,

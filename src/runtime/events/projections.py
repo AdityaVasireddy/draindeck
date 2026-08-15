@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Iterable, Optional
 
 from ..state.model import EXECUTION_TERMINAL, ExecutionState, IssueState
@@ -42,6 +43,29 @@ class ExecutionView:
     feedback: list = field(default_factory=list)  # ReviewRejected.feedback[]
 
 
+class ContainmentState(str, Enum):
+    """Durable containment boundary state, orthogonal to issue/execution state."""
+
+    PREPARED = "PREPARED"
+    ESTABLISHED = "ESTABLISHED"
+    UNCONFIRMED = "UNCONFIRMED"
+    RELEASED = "RELEASED"
+
+
+@dataclass
+class ContainmentView:
+    """One append-once containment generation for an execution."""
+
+    execution_id: str
+    workspace_key: str
+    generation: str
+    state: ContainmentState
+    prepared: dict
+    established: Optional[dict] = None
+    unconfirmed: Optional[dict] = None
+    released: Optional[dict] = None
+
+
 @dataclass
 class StateProjection:
     issues: dict[str, IssueState] = field(default_factory=dict)
@@ -52,6 +76,7 @@ class StateProjection:
     # Static issue reference text (IssueCreated) for the context pack. Excluded
     # from digest() — it is deterministic reference data, not state identity.
     issue_meta: dict[str, dict] = field(default_factory=dict)
+    containments: dict[tuple[str, str], ContainmentView] = field(default_factory=dict)
     last_event_id: int = 0
     counts: dict[str, int] = field(default_factory=dict)
 
@@ -77,6 +102,17 @@ class StateProjection:
         Reconciler check-1 input (doc 03: abandonable, never resumed)."""
         return [x for x in self.executions.values()
                 if x.state == ExecutionState.EXECUTING]
+
+    def unreleased_containments(
+        self, workspace_key: Optional[str] = None,
+    ) -> list[ContainmentView]:
+        """Containment generations that still block their workspace."""
+        return [view for view in self.containments.values()
+                if view.state is not ContainmentState.RELEASED
+                and (workspace_key is None or view.workspace_key == workspace_key)]
+
+    def is_workspace_blocked(self, workspace_key: str) -> bool:
+        return bool(self.unreleased_containments(workspace_key))
 
     def attempts(self, issue_id: str) -> int:
         return len(self.issue_executions.get(issue_id) or [])
@@ -119,6 +155,15 @@ class StateProjection:
             "last_event_id": self.last_event_id,
             "counts": dict(sorted(self.counts.items())),
         }
+        # Preserve historical digest bytes when the log predates containment.
+        if self.containments:
+            canon["containments"] = {
+                f"{xid}:{generation}": [
+                    view.workspace_key, view.state.value, view.prepared,
+                    view.established, view.unconfirmed, view.released,
+                ]
+                for (xid, generation), view in sorted(self.containments.items())
+            }
         raw = json.dumps(canon, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -183,6 +228,176 @@ def _execution_spawned(p: StateProjection, ev: Event) -> None:
         base_commit=p.issue_base_commit.get(iid),
     )
     p.issue_executions.setdefault(iid, []).append(xid)
+
+
+def _containment_execution(p: StateProjection, ev: Event) -> ExecutionView:
+    xid, iid = _need(ev, "execution_id"), _need(ev, "issue_id")
+    view = p.executions.get(xid)
+    if view is None:
+        raise TransitionError(
+            f"{ev.type.value} for unknown execution {xid} (event {ev.event_id})")
+    if view.issue_id != iid:
+        raise TransitionError(
+            f"{ev.type.value} issue mismatch for {xid} (event {ev.event_id})")
+    if view.state is not ExecutionState.EXECUTING:
+        raise TransitionError(
+            f"{ev.type.value} illegal in {view.state.value} for {xid} "
+            f"(event {ev.event_id})")
+    return view
+
+
+def _field(payload: dict, name: str, ev: Event) -> object:
+    if name not in payload:
+        raise TransitionError(
+            f"{ev.type.value} missing payload.{name} (event {ev.event_id})")
+    return payload[name]
+
+
+def _string(payload: dict, name: str, ev: Event) -> str:
+    value = _field(payload, name, ev)
+    if not isinstance(value, str) or not value:
+        raise TransitionError(
+            f"{ev.type.value} invalid payload.{name} (event {ev.event_id})")
+    return value
+
+
+def _mapping(payload: dict, name: str, ev: Event) -> dict:
+    value = _field(payload, name, ev)
+    if not isinstance(value, dict):
+        raise TransitionError(
+            f"{ev.type.value} invalid payload.{name} (event {ev.event_id})")
+    return value
+
+
+def _nonempty_mapping(payload: dict, name: str, ev: Event) -> dict:
+    value = _mapping(payload, name, ev)
+    if not value:
+        raise TransitionError(
+            f"{ev.type.value} empty payload.{name} (event {ev.event_id})")
+    return value
+
+
+def _positive_int(payload: dict, name: str, ev: Event) -> int:
+    value = _field(payload, name, ev)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise TransitionError(
+            f"{ev.type.value} invalid payload.{name} (event {ev.event_id})")
+    return value
+
+
+def _containment_key(ev: Event) -> tuple[str, str, str]:
+    xid = _need(ev, "execution_id")
+    workspace_key = _string(ev.payload, "workspace_key", ev)
+    generation = _string(ev.payload, "containment_generation", ev)
+    return xid, workspace_key, generation
+
+
+def _required_identity(payload: dict, name: str, ev: Event) -> dict:
+    identity = _mapping(payload, name, ev)
+    _positive_int(identity, "pid", ev)
+    _string(identity, "creation_time", ev)
+    return identity
+
+
+def _containment_prepared(p: StateProjection, ev: Event) -> None:
+    _containment_execution(p, ev)
+    xid, workspace_key, generation = _containment_key(ev)
+    key = (xid, generation)
+    if key in p.containments:
+        raise TransitionError(
+            f"duplicate ExecutionContainmentPrepared for {xid}/{generation} "
+            f"(event {ev.event_id})")
+    if any(existing.execution_id == xid
+           and existing.state is not ContainmentState.RELEASED
+           for existing in p.containments.values()):
+        raise TransitionError(
+            f"ExecutionContainmentPrepared for {xid} while a containment "
+            f"generation is unreleased (event {ev.event_id})")
+    _string(ev.payload, "protocol_version", ev)
+    _string(ev.payload, "launch_mode", ev)
+    _required_identity(ev.payload, "controller", ev)
+    lease = _mapping(ev.payload, "lease", ev)
+    _string(lease, "scope", ev)
+    _string(lease, "version", ev)
+    p.containments[key] = ContainmentView(
+        execution_id=xid,
+        workspace_key=workspace_key,
+        generation=generation,
+        state=ContainmentState.PREPARED,
+        prepared=dict(ev.payload),
+    )
+
+
+def _matching_containment(
+    p: StateProjection, ev: Event,
+) -> ContainmentView:
+    _containment_execution(p, ev)
+    xid, workspace_key, generation = _containment_key(ev)
+    view = p.containments.get((xid, generation))
+    if view is None:
+        raise TransitionError(
+            f"{ev.type.value} without matching Prepared for {xid}/{generation} "
+            f"(event {ev.event_id})")
+    if view.workspace_key != workspace_key:
+        raise TransitionError(
+            f"{ev.type.value} workspace mismatch for {xid}/{generation} "
+            f"(event {ev.event_id})")
+    return view
+
+
+def _containment_established(p: StateProjection, ev: Event) -> None:
+    view = _matching_containment(p, ev)
+    if view.state is not ContainmentState.PREPARED:
+        raise TransitionError(
+            f"ExecutionContainmentEstablished illegal after {view.state.value} "
+            f"for {view.execution_id}/{view.generation} (event {ev.event_id})")
+    root_suspended = _field(ev.payload, "root_suspended", ev)
+    if root_suspended is not True:
+        raise TransitionError(
+            f"ExecutionContainmentEstablished requires root_suspended=true "
+            f"(event {ev.event_id})")
+    _required_identity(ev.payload, "root", ev)
+    job = _mapping(ev.payload, "job", ev)
+    if (job.get("kill_on_job_close") is not True
+            or job.get("breakaway_ok") is not False
+            or job.get("silent_breakaway_ok") is not False):
+        raise TransitionError(
+            f"ExecutionContainmentEstablished has invalid job witness "
+            f"(event {ev.event_id})")
+    membership = _mapping(ev.payload, "membership", ev)
+    if membership.get("root_member") is not True:
+        raise TransitionError(
+            f"ExecutionContainmentEstablished requires root membership witness "
+            f"(event {ev.event_id})")
+    _positive_int(membership, "member_count", ev)
+    view.state = ContainmentState.ESTABLISHED
+    view.established = dict(ev.payload)
+
+
+def _termination_unconfirmed(p: StateProjection, ev: Event) -> None:
+    view = _matching_containment(p, ev)
+    if view.state is not ContainmentState.ESTABLISHED:
+        raise TransitionError(
+            f"ExecutionTerminationUnconfirmed illegal after {view.state.value} "
+            f"for {view.execution_id}/{view.generation} (event {ev.event_id})")
+    _string(ev.payload, "stage", ev)
+    _string(ev.payload, "category", ev)
+    _nonempty_mapping(ev.payload, "diagnostic", ev)
+    view.state = ContainmentState.UNCONFIRMED
+    view.unconfirmed = dict(ev.payload)
+
+
+def _containment_released(p: StateProjection, ev: Event) -> None:
+    view = _matching_containment(p, ev)
+    if view.state is ContainmentState.RELEASED:
+        raise TransitionError(
+            f"duplicate ExecutionContainmentReleased for "
+            f"{view.execution_id}/{view.generation} (event {ev.event_id})")
+    _string(ev.payload, "proof_kind", ev)
+    _nonempty_mapping(ev.payload, "proof", ev)
+    _string(ev.payload, "proof_ts", ev)
+    view.state = ContainmentState.RELEASED
+    view.released = dict(ev.payload)
 
 
 def _execution_transition(p: StateProjection, ev: Event) -> None:
@@ -255,6 +470,10 @@ _HANDLERS = {
     EventType.ISSUE_COMPLETED: _issue_transition,
     EventType.ISSUE_ESCALATED: _issue_transition,
     EventType.EXECUTION_SPAWNED: _execution_spawned,
+    EventType.EXECUTION_CONTAINMENT_PREPARED: _containment_prepared,
+    EventType.EXECUTION_CONTAINMENT_ESTABLISHED: _containment_established,
+    EventType.EXECUTION_TERMINATION_UNCONFIRMED: _termination_unconfirmed,
+    EventType.EXECUTION_CONTAINMENT_RELEASED: _containment_released,
     EventType.EXECUTION_FINISHED: _execution_transition,
     EventType.EXECUTION_CRASHED: _execution_transition,
     EventType.VALIDATION_PASSED: _execution_transition,

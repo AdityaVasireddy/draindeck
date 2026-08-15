@@ -24,6 +24,7 @@ from typing import Callable, Optional
 from ..events.log import EventLog
 from ..events.projections import ExecutionView, StateProjection
 from ..events.schema import Event, EventType
+from .containment import WorkspaceContainmentBlocked
 
 # Seam signatures (bound to RepositoryAdapter via recovery/bindings.py):
 #   is_execution_alive(execution_id) -> bool
@@ -62,6 +63,7 @@ def recover(
     recover_workspace: Optional[Callable[[], list[str]]] = None,
     check_unwitnessed_commit=None,
     check_dirty_workspace=None,
+    workspace_key: Optional[str] = None,
 ) -> tuple[StateProjection, RecoveryReport]:
     """Replay, reconcile, return a projection consistent with the world.
 
@@ -75,6 +77,13 @@ def recover(
     for ev in log.replay():
         proj.apply(ev)
         report.replayed_events += 1
+
+    # This is the recovery-side defense in depth.  ``cmd_run`` resolves
+    # qualifying prior-controller death first; any remaining boundary is an
+    # authoritative stop before *any* injected repository seam can mutate.
+    if workspace_key is not None and proj.is_workspace_blocked(workspace_key):
+        raise WorkspaceContainmentBlocked(
+            f"workspace {workspace_key} has unreleased execution containment")
 
     # ── workspace repair: clear killed-git debris before any git op ──
     if recover_workspace is not None:

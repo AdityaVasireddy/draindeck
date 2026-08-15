@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from runtime.budget.manager import BudgetManager                     # noqa: E402
 from runtime.config import Config                                    # noqa: E402
-from runtime.engine.claude_headless import EngineResult             # noqa: E402
+from runtime.engine.claude_headless import (                        # noqa: E402
+    EngineContainmentError, EngineResult,
+)
 from runtime.events.log import EventLog                              # noqa: E402
 from runtime.events.projections import StateProjection              # noqa: E402
 from runtime.events.schema import Event, EventType                  # noqa: E402
@@ -88,7 +90,8 @@ class FakeEngine:
         self.result_fn = result_fn or (lambda xid: _ok_result())
         self.artifacts_dir = Path(artifacts_dir)
 
-    def run(self, xid, prompt_file, workspace):
+    def run(self, xid, prompt_file, workspace, *, containment=None):
+        self.containment = containment
         return self.result_fn(xid)
 
 
@@ -257,6 +260,19 @@ def test_timeout_rejects_and_retries(tmp_path):
     assert orch.proj.issues["001"] is IssueState.DONE
     assert orch.proj.executions["001-e1"].taxonomy_category == "timeout"
     assert orch.proj.attempts("001") == 2
+
+
+def test_containment_failure_halts_before_snapshot_or_retry(tmp_path):
+    def fail(_xid):
+        raise EngineContainmentError("synthetic termination unconfirmed")
+    engine = FakeEngine(fail, artifacts_dir=tmp_path / "art")
+    orch = _build(tmp_path, issues=[("001", [])], engine=engine)
+    with pytest.raises(OrchestratorHalt, match="containment unresolved"):
+        orch.run()
+    execution = orch.proj.latest_execution("001")
+    assert execution.state is ExecutionState.EXECUTING
+    assert orch.proj.counts.get("ExecutionFinished") is None
+    assert orch.adapter._refs == {}
 
 
 def test_budget_hard_stop_ends_run(tmp_path):

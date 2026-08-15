@@ -37,12 +37,12 @@ def _cfg(repo: Path) -> Config:
     })
 
 
-def _drive(tmp_path, run_side_effect, checkout_side_effect=None):
+def _drive(run_side_effect, checkout_side_effect=None):
     """Run cmd_run with every collaborator mocked except the try/except/finally
     under test. Returns (exit_code, adapter_mock, capsys_text_placeholder)."""
     from runtime import main as main_mod
 
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(Path("C:/issue-runtime-unit-workspace"))
     args = SimpleNamespace(config="unused.yaml", skip_baseline=True)
 
     adapter = mock.MagicMock(name="adapter")
@@ -53,16 +53,23 @@ def _drive(tmp_path, run_side_effect, checkout_side_effect=None):
     orch.run.side_effect = run_side_effect
     orch.budget.metrics.return_value = SimpleNamespace(
         executions_this_run=0, proxy_dollars_this_run=0.0)
+    lease = mock.MagicMock(name="lease", acquired=True, workspace_key="ws-test")
+    lease.state.value = "ACQUIRED"
+    lease.detail = "acquired"
 
     with mock.patch.object(main_mod, "load_config", return_value=cfg), \
          mock.patch.object(main_mod, "validate_environment", return_value=[]), \
          mock.patch.object(main_mod, "EventLog"), \
+         mock.patch.object(main_mod.Path, "mkdir"), \
+         mock.patch.object(main_mod.WorkspaceLease, "acquire", return_value=lease), \
+         mock.patch.object(main_mod, "resolve_startup_containment",
+                           return_value=mock.MagicMock()), \
          mock.patch.object(main_mod, "ClaudeHeadlessEngine",
                             return_value=mock.MagicMock(reap_orphans=lambda: [])), \
          mock.patch.object(main_mod, "GitCliAdapter", return_value=adapter), \
          mock.patch.object(main_mod, "bind_reconciler", return_value={}), \
          mock.patch.object(main_mod, "recover",
-                            return_value=(mock.MagicMock(),
+                            return_value=(mock.MagicMock(is_workspace_blocked=mock.Mock(return_value=False)),
                                           SimpleNamespace(orphans_crashed=[],
                                                           workspace_repairs=[],
                                                           replayed_events=1))), \
@@ -74,40 +81,39 @@ def _drive(tmp_path, run_side_effect, checkout_side_effect=None):
     return exit_code, adapter
 
 
-def test_clean_drain_restores_branch(tmp_path):
-    exit_code, adapter = _drive(tmp_path, run_side_effect=lambda: "queue drained")
+def test_clean_drain_restores_branch():
+    exit_code, adapter = _drive(run_side_effect=lambda: "queue drained")
     assert exit_code == 0
     calls = [c.args for c in adapter.checkout_branch.call_args_list]
     assert calls[-1] == ("agent-work",)  # shutdown restore is the LAST call
     assert calls.count(("agent-work",)) == 2  # startup (5b) + shutdown (finally)
 
 
-def test_orchestrator_halt_restores_branch_and_exit_code_2(tmp_path):
+def test_orchestrator_halt_restores_branch_and_exit_code_2():
     exit_code, adapter = _drive(
-        tmp_path, run_side_effect=OrchestratorHalt("tamper detected"))
+        run_side_effect=OrchestratorHalt("tamper detected"))
     assert exit_code == 2
     assert adapter.checkout_branch.call_args_list[-1].args == ("agent-work",)
 
 
-def test_reviewer_error_restores_branch_and_exit_code_2(tmp_path):
+def test_reviewer_error_restores_branch_and_exit_code_2():
     exit_code, adapter = _drive(
-        tmp_path, run_side_effect=ReviewerError("reviewer unreachable"))
+        run_side_effect=ReviewerError("reviewer unreachable"))
     assert exit_code == 2
     assert adapter.checkout_branch.call_args_list[-1].args == ("agent-work",)
 
 
-def test_keyboard_interrupt_restores_branch_and_exit_code_0(tmp_path):
-    exit_code, adapter = _drive(tmp_path, run_side_effect=KeyboardInterrupt())
+def test_keyboard_interrupt_restores_branch_and_exit_code_0():
+    exit_code, adapter = _drive(run_side_effect=KeyboardInterrupt())
     assert exit_code == 0
     assert adapter.checkout_branch.call_args_list[-1].args == ("agent-work",)
 
 
-def test_restore_failure_does_not_supersede_inflight_halt(tmp_path, capsys):
+def test_restore_failure_does_not_supersede_inflight_halt(capsys):
     """The inner except RepoError in the finally must log-and-continue, not
     re-raise — a shutdown git failure must never mask a real OrchestratorHalt
     exit code."""
     exit_code, adapter = _drive(
-        tmp_path,
         run_side_effect=OrchestratorHalt("tamper detected"),
         checkout_side_effect=[None, RepoError("simulated shutdown checkout failure")],
     )

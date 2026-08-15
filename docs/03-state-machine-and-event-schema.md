@@ -107,6 +107,32 @@ Note: **no diff field.** Diffs are derived: `git diff start_commit end_commit`. 
 
 **Issue (queue record, projection):** `{schema_version, issue_id, source_ref, status, depends_on[], executions[], execution_count, cap, accumulated_feedback[], total_dollars}`
 
+## Amendment — execution containment protocol (accepted 2026-08-15)
+
+This amendment adds a durable execution/workspace containment projection. It
+does not add an issue transition or alter the execution lifecycle. The Windows
+runtime now enforces this protocol with a contained Job root, controlled stdio
+inheritance, and a per-workspace ownership lease; the 2026-08-15 T7 witness
+validated the configured batch launcher as `cmd.exe` → `claude.exe` inside the
+Job. Historical logs with no containment facts remain valid and acquire no
+containment guarantee.
+The new event types are additive under schema version 1; historical logs with
+none of these events remain valid and acquire no containment guarantee.
+
+| Type | Kind | Required relation |
+|---|---|---|
+| ExecutionContainmentPrepared | intent | Before any contained-root launch attempt; opens a workspace blocker. |
+| ExecutionContainmentEstablished | fact | Matching Prepared; suspended root membership/configuration witnessed before resume. |
+| ExecutionTerminationUnconfirmed | fact | Matching unreleased Established; latches fail-closed cleanup uncertainty. |
+| ExecutionContainmentReleased | fact | Matching unreleased generation; requires a release proof witness. |
+
+Each carries `workspace_key` and `containment_generation`; the append-once
+identity is `(execution_id, containment_generation, event_type)`. Replay
+blocks a workspace whenever a generation is PREPARED, ESTABLISHED, or
+UNCONFIRMED without a matching RELEASED event. Startup/recovery enforce that
+blocker before any conflicting workspace operation. T5 worker identity and
+human authorization are never release proof.
+
 ## 5. Transition table (orchestrator's inner loop, exhaustive)
 
 | From | Guard | Action | Events |

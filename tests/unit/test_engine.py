@@ -17,13 +17,23 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from runtime.engine import claude_headless as engine_module  # noqa: E402
 
 from runtime.config import EngineCfg                       # noqa: E402
 from runtime.engine.claude_headless import (               # noqa: E402
     _DENY_TOOLS,
     ClaudeHeadlessEngine,
+    ContainmentExecutionContext,
+    EngineContainmentError,
     EngineEnvError,
     _pid_image,
+)
+from runtime.engine.windows_job import (                    # noqa: E402
+    EmptyMembershipResult,
+    EmptyMembershipStatus,
+    MembershipObservation,
+    TerminationRequestError,
+    WindowsJobError,
 )
 
 _SLEEP = "import time; time.sleep(300)"
@@ -42,6 +52,18 @@ class _DummyEngine(ClaudeHeadlessEngine):
 
     def _command(self, prompt_file):
         return [sys.executable, "-c", self._dummy_src]
+
+    def run(self, execution_id, prompt_file, workspace, *, containment=None):
+        if containment is None and engine_module._IS_WINDOWS:
+            self.containment_events = []
+            containment = ContainmentExecutionContext(
+                issue_id="042", workspace_key="unit-workspace",
+                containment_generation="g1",
+                controller={"pid": 1, "creation_time": "unit-controller"},
+                lease={"scope": "Global", "version": "v1"},
+                append_event=self.containment_events.append,
+            )
+        return super().run(execution_id, prompt_file, workspace, containment=containment)
 
 
 def _cfg(auth_mode: str = "subscription", timeout_seconds: int = 30) -> EngineCfg:
@@ -128,6 +150,12 @@ def test_timeout_kills_process_tree(tmp_path):
         time.sleep(0.1)
     assert _pid_image(gpid) is None, f"grandchild {gpid} survived tree-kill"
     assert not (tmp_path / "art" / "042-e1" / "pid").exists()
+    if engine_module._IS_WINDOWS:
+        assert [event.type.value for event in eng.containment_events] == [
+            "ExecutionContainmentPrepared",
+            "ExecutionContainmentEstablished",
+            "ExecutionContainmentReleased",
+        ]
 
 
 def test_timeout_arms_when_child_never_reads_stdin(tmp_path):
@@ -141,6 +169,8 @@ def test_timeout_arms_when_child_never_reads_stdin(tmp_path):
     elapsed = time.monotonic() - t0
     assert res.timed_out is True
     assert elapsed < 60, f"stdin write blocked the timeout: {elapsed:.1f}s"
+    if engine_module._IS_WINDOWS:
+        assert eng.containment_events[-1].type.value == "ExecutionContainmentReleased"
 
 
 def test_transcript_survives_kill(tmp_path):
@@ -162,6 +192,254 @@ def test_transcript_survives_kill(tmp_path):
     assert len(lines) >= 2
     for ln in lines:
         json.loads(ln)  # valid JSON despite the mid-run kill
+
+
+def _engine_batch_fixture(tmp_path, *, hold_seconds: float) -> Path:
+    launcher_dir = tmp_path / "engine batch launcher"
+    launcher_dir.mkdir()
+    (launcher_dir / "child.py").write_text(
+        "import json, os, sys, time\n"
+        "print(json.dumps({'type':'system','subtype':'init','apiKeySource':'none'}), flush=True)\n"
+        "time.sleep(float(os.environ['T7_ENGINE_BATCH_HOLD']))\n",
+        encoding="utf-8",
+    )
+    batch = launcher_dir / "engine synthetic.CMD"
+    batch.write_text(
+        "@echo off\r\n"
+        "\"%T7_ENGINE_BATCH_PYTHON%\" \"%~dp0child.py\"\r\n",
+        encoding="utf-8",
+    )
+    return batch
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_engine_batch_launcher_preserves_containment_event_order(tmp_path):
+    batch = _engine_batch_fixture(tmp_path, hold_seconds=.05)
+    cfg = EngineCfg(
+        provider="claude-headless", auth_mode="subscription", timeout_seconds=2,
+        child_env={"T7_ENGINE_BATCH_PYTHON": sys.executable,
+                   "T7_ENGINE_BATCH_HOLD": ".05"},
+    )
+    eng = _DummyEngine(cfg, tmp_path / "art", "unused")
+    eng._command = lambda _prompt: [str(batch)]
+    result = eng.run("042-e1", _prompt(tmp_path), tmp_path)
+    assert result.timed_out is False
+    assert [event.type.value for event in eng.containment_events] == [
+        "ExecutionContainmentPrepared",
+        "ExecutionContainmentEstablished",
+        "ExecutionContainmentReleased",
+    ]
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_engine_batch_launcher_timeout_releases_only_after_job_empty_proof(tmp_path):
+    batch = _engine_batch_fixture(tmp_path, hold_seconds=10)
+    cfg = EngineCfg(
+        provider="claude-headless", auth_mode="subscription", timeout_seconds=1,
+        child_env={"T7_ENGINE_BATCH_PYTHON": sys.executable,
+                   "T7_ENGINE_BATCH_HOLD": "10"},
+    )
+    eng = _DummyEngine(cfg, tmp_path / "art", "unused")
+    eng._command = lambda _prompt: [str(batch)]
+    result = eng.run("042-e1", _prompt(tmp_path), tmp_path)
+    assert result.timed_out is True
+    assert [event.type.value for event in eng.containment_events] == [
+        "ExecutionContainmentPrepared",
+        "ExecutionContainmentEstablished",
+        "ExecutionContainmentReleased",
+    ]
+
+
+def test_kill_tree_reports_windows_nonzero_result(monkeypatch):
+    """The T5 orphan-reaper diagnostic retains taskkill result detail."""
+    completed = subprocess.CompletedProcess(
+        ["taskkill"], 5, stdout="not found", stderr="access denied",
+    )
+    monkeypatch.setattr(engine_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        engine_module.subprocess, "run", lambda *args, **kwargs: completed,
+    )
+    detail = engine_module._kill_tree(123)
+    assert detail == (
+        "taskkill rc=5 for pid 123; stdout='not found'; stderr='access denied'"
+    )
+
+
+# -- Windows containment ordering / fail-closed contract -------------------
+class _FakePrepared:
+    def __init__(self, *, root_status="SIGNALED", empty=None, resume_error=None,
+                 terminate_error=None):
+        self.pid = 321
+        self.initial_membership = MembershipObservation((321,))
+        self.root_status = root_status
+        self.empty = empty or EmptyMembershipResult(
+            EmptyMembershipStatus.EMPTY_CONFIRMED, MembershipObservation(()))
+        self.resume_error = resume_error
+        self.terminate_error = terminate_error
+        self.resumed = False
+        self.closed = False
+
+    def diagnostic_identity(self):
+        return {"pid": self.pid, "creation_time": "fake-root"}
+
+    def resume(self):
+        if self.resume_error:
+            raise self.resume_error
+        self.resumed = True
+
+    def root_wait_status(self):
+        return self.root_status
+
+    def exit_status(self):
+        return 0
+
+    def terminate_job(self):
+        if self.terminate_error:
+            raise self.terminate_error
+
+    def wait_until_empty(self, _deadline):
+        return self.empty
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeJobController:
+    prepared = None
+    create_error = None
+    root_error = None
+    instances = []
+
+    def __init__(self):
+        self.closed = False
+        self.create_calls = 0
+        type(self).instances.append(self)
+
+    @classmethod
+    def reset(cls, prepared=None, create_error=None, root_error=None):
+        cls.prepared = prepared or _FakePrepared()
+        cls.create_error = create_error
+        cls.root_error = root_error
+        cls.instances = []
+
+    @classmethod
+    def create(cls):
+        if cls.create_error:
+            raise cls.create_error
+        return cls()
+
+    def create_suspended_root(self, *_args, **_kwargs):
+        self.create_calls += 1
+        if type(self).root_error:
+            raise type(self).root_error
+        return type(self).prepared
+
+    def close(self):
+        self.closed = True
+
+
+def _contained_context(events, *, fail_on=None):
+    def append(event):
+        if event.type is fail_on:
+            raise OSError(f"append failed for {event.type.value}")
+        events.append(event)
+    return ContainmentExecutionContext(
+        issue_id="042", workspace_key="unit-workspace", containment_generation="g1",
+        controller={"pid": 1, "creation_time": "unit-controller"},
+        lease={"scope": "Global", "version": "v1"}, append_event=append,
+    )
+
+
+def _fake_contained_engine(tmp_path, monkeypatch, prepared=None, *,
+                           create_error=None, root_error=None, timeout=1):
+    _FakeJobController.reset(prepared, create_error, root_error)
+    monkeypatch.setattr(engine_module, "WindowsJobController", _FakeJobController)
+    return _DummyEngine(_cfg("subscription", timeout), tmp_path / "art", "import sys")
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_prepared_append_failure_creates_no_root(tmp_path, monkeypatch):
+    eng = _fake_contained_engine(tmp_path, monkeypatch)
+    events = []
+    with pytest.raises(EngineContainmentError):
+        eng.run("042-e1", _prompt(tmp_path), tmp_path,
+                containment=_contained_context(events, fail_on=engine_module.EventType.EXECUTION_CONTAINMENT_PREPARED))
+    assert events == []
+    assert _FakeJobController.instances == []
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_root_creation_failure_leaves_only_prepared_blocker(tmp_path, monkeypatch):
+    eng = _fake_contained_engine(tmp_path, monkeypatch,
+                                 root_error=WindowsJobError("synthetic root failure"))
+    events = []
+    with pytest.raises(EngineContainmentError):
+        eng.run("042-e1", _prompt(tmp_path), tmp_path,
+                containment=_contained_context(events))
+    assert [event.type for event in events] == [engine_module.EventType.EXECUTION_CONTAINMENT_PREPARED]
+    assert _FakeJobController.instances[0].create_calls == 1
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_established_append_failure_never_resumes_root(tmp_path, monkeypatch):
+    prepared = _FakePrepared()
+    eng = _fake_contained_engine(tmp_path, monkeypatch, prepared)
+    events = []
+    with pytest.raises(EngineContainmentError):
+        eng.run("042-e1", _prompt(tmp_path), tmp_path,
+                containment=_contained_context(events, fail_on=engine_module.EventType.EXECUTION_CONTAINMENT_ESTABLISHED))
+    assert prepared.resumed is False
+    assert [event.type for event in events] == [engine_module.EventType.EXECUTION_CONTAINMENT_PREPARED]
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_resume_failure_latches_unconfirmed_without_release(tmp_path, monkeypatch):
+    prepared = _FakePrepared(resume_error=WindowsJobError("synthetic resume failure"))
+    eng = _fake_contained_engine(tmp_path, monkeypatch, prepared)
+    events = []
+    with pytest.raises(EngineContainmentError):
+        eng.run("042-e1", _prompt(tmp_path), tmp_path, containment=_contained_context(events))
+    assert [event.type for event in events] == [
+        engine_module.EventType.EXECUTION_CONTAINMENT_PREPARED,
+        engine_module.EventType.EXECUTION_CONTAINMENT_ESTABLISHED,
+        engine_module.EventType.EXECUTION_TERMINATION_UNCONFIRMED,
+    ]
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+@pytest.mark.parametrize("result", [
+    EmptyMembershipResult(EmptyMembershipStatus.STILL_NONEMPTY, MembershipObservation((321,))),
+    EmptyMembershipResult(EmptyMembershipStatus.QUERY_UNKNOWN, None,
+                          WindowsJobError("synthetic query failure")),
+])
+def test_normal_completion_without_positive_empty_latches_unconfirmed(tmp_path, monkeypatch, result):
+    eng = _fake_contained_engine(tmp_path, monkeypatch, _FakePrepared(empty=result))
+    events = []
+    with pytest.raises(EngineContainmentError):
+        eng.run("042-e1", _prompt(tmp_path), tmp_path, containment=_contained_context(events))
+    assert events[-1].type is engine_module.EventType.EXECUTION_TERMINATION_UNCONFIRMED
+    assert all(event.type is not engine_module.EventType.EXECUTION_CONTAINMENT_RELEASED for event in events)
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_timeout_termination_failure_latches_unconfirmed(tmp_path, monkeypatch):
+    prepared = _FakePrepared(root_status="RUNNING",
+                              terminate_error=TerminationRequestError("synthetic terminate failure"))
+    eng = _fake_contained_engine(tmp_path, monkeypatch, prepared, timeout=1)
+    events = []
+    with pytest.raises(EngineContainmentError):
+        eng.run("042-e1", _prompt(tmp_path), tmp_path, containment=_contained_context(events))
+    assert events[-1].type is engine_module.EventType.EXECUTION_TERMINATION_UNCONFIRMED
+
+
+@pytest.mark.skipif(not engine_module._IS_WINDOWS, reason="Windows containment path")
+def test_released_append_failure_never_returns_ordinary_result(tmp_path, monkeypatch):
+    eng = _fake_contained_engine(tmp_path, monkeypatch)
+    events = []
+    with pytest.raises(EngineContainmentError):
+        eng.run("042-e1", _prompt(tmp_path), tmp_path,
+                containment=_contained_context(events, fail_on=engine_module.EventType.EXECUTION_CONTAINMENT_RELEASED))
+    assert events[-1].type is engine_module.EventType.EXECUTION_TERMINATION_UNCONFIRMED
 
 
 # ── advisory result parsing ──────────────────────────────────────────
@@ -266,17 +544,189 @@ def test_is_execution_alive_false_for_unknown_execution(tmp_path):
     assert eng.is_execution_alive("never-spawned") is False
 
 
-def test_is_execution_alive_false_after_stale_pid_reused(tmp_path):
-    """A pidfile recording a pid that has since exited (and whose image no
-    longer matches, simulating reuse by an unrelated process) must read as
-    dead, and the stale pidfile must be cleaned up by the check itself."""
+def _identity(pid, image="worker.exe", created="2026-08-14T10:00:00Z"):
+    return {"pid": pid, "image": image, "creation_time": created}
+
+
+def _resolved_record(shim_pid=10, worker_pid=20):
+    shim = _identity(shim_pid, "claude.cmd")
+    worker = _identity(worker_pid)
+    return {
+        "version": 2,
+        "state": "resolved",
+        "shim": shim,
+        "worker": worker,
+        "ancestry": {"chain": [shim, worker]},
+    }
+
+
+def _write_record(eng, record):
+    pidfile = eng._pidfile("042-e1")
+    engine_module._write_identity_record(pidfile, record)
+    return pidfile
+
+
+def test_is_execution_alive_when_shim_is_dead_and_worker_is_alive(tmp_path, monkeypatch):
     eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
-    finished = subprocess.Popen([sys.executable, "-c", "pass"])
-    finished.wait(timeout=10)
-    eng._xdir("042-e1").mkdir(parents=True)
-    eng._write_pidfile(eng._pidfile("042-e1"), finished.pid)
+    _write_record(eng, _resolved_record())
+    monkeypatch.setattr(engine_module, "_identity_liveness", lambda identity: "alive")
+    assert eng.is_execution_alive("042-e1") is True
+
+
+def test_is_execution_alive_false_after_worker_death(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = _write_record(eng, _resolved_record())
+    monkeypatch.setattr(engine_module, "_identity_liveness", lambda identity: "dead")
     assert eng.is_execution_alive("042-e1") is False
-    assert not eng._pidfile("042-e1").exists()
+    assert not pidfile.exists()
+
+
+def test_is_execution_alive_false_after_stale_pid_reused(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = _write_record(eng, _resolved_record())
+    monkeypatch.setattr(engine_module, "_pid_image", lambda pid: "worker.exe")
+    monkeypatch.setattr(
+        engine_module, "_pid_creation_time", lambda pid: "2026-08-14T10:01:00Z",
+    )
+    assert eng.is_execution_alive("042-e1") is False
+    assert not pidfile.exists()
+
+
+def test_is_execution_alive_rejects_worker_image_mismatch(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = _write_record(eng, _resolved_record())
+    monkeypatch.setattr(engine_module, "_pid_image", lambda pid: "other.exe")
+    assert eng.is_execution_alive("042-e1") is False
+    assert not pidfile.exists()
+
+
+def test_probe_failure_is_unknown_and_never_reaped(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = _write_record(eng, _resolved_record())
+    killed = []
+    monkeypatch.setattr(engine_module, "_identity_liveness", lambda identity: "unknown")
+    monkeypatch.setattr(engine_module, "_kill_tree", killed.append)
+    assert eng.is_execution_alive("042-e1") is False
+    assert eng.reap_orphans() == []
+    assert pidfile.exists()
+    assert killed == []
+
+
+def test_unresolved_and_malformed_records_are_unknown_and_preserved(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    unresolved = _write_record(eng, {"version": 2, "state": "resolving", "shim": _identity(10)})
+    killed = []
+    monkeypatch.setattr(engine_module, "_kill_tree", killed.append)
+    assert eng.is_execution_alive("042-e1") is False
+    assert eng.reap_orphans() == []
+    assert unresolved.exists()
+
+    malformed = eng._pidfile("bad")
+    engine_module._write_identity_record(malformed, {"version": 2, "state": "resolved"})
+    assert eng.is_execution_alive("bad") is False
+    assert malformed.exists()
+
+    assert killed == []
+
+
+def test_live_legacy_record_is_unknown_but_stale_legacy_record_is_removed(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    live_legacy = eng._pidfile("legacy-live")
+    engine_module._write_identity_record(live_legacy, {"pid": 10, "image": "claude.cmd"})
+    monkeypatch.setattr(engine_module, "_pid_image", lambda pid: "claude.cmd")
+    assert eng.is_execution_alive("legacy-live") is False
+    assert live_legacy.exists()
+
+    stale_legacy = eng._pidfile("legacy-stale")
+    engine_module._write_identity_record(stale_legacy, {"pid": 11, "image": "claude.cmd"})
+    monkeypatch.setattr(engine_module, "_pid_image", lambda pid: None)
+    monkeypatch.setattr(engine_module, "_pid_exists", lambda pid: False)
+    assert eng.is_execution_alive("legacy-stale") is False
+    assert not stale_legacy.exists()
+
+
+def test_reap_orphans_kills_only_owned_resolved_worker(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = _write_record(eng, _resolved_record())
+    killed = []
+    monkeypatch.setattr(engine_module, "_identity_liveness", lambda identity: "alive")
+    monkeypatch.setattr(engine_module, "_kill_tree", killed.append)
+    repairs = eng.reap_orphans()
+    assert killed == [20]
+    assert any("042-e1" in repair for repair in repairs)
+    assert not pidfile.exists()
+
+
+def test_reap_orphans_never_kills_pid_reuse_or_image_mismatch(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = _write_record(eng, _resolved_record())
+    killed = []
+    monkeypatch.setattr(engine_module, "_identity_liveness", lambda identity: "dead")
+    monkeypatch.setattr(engine_module, "_kill_tree", killed.append)
+    assert eng.reap_orphans() == []
+    assert killed == []
+    assert not pidfile.exists()
+
+
+def test_atomic_identity_record_replacement_keeps_old_record_and_cleans_temp_on_failure(tmp_path, monkeypatch):
+    pidfile = tmp_path / "art" / "042-e1" / "pid"
+    old_record = {"version": 2, "state": "resolving", "shim": _identity(10)}
+    engine_module._write_identity_record(pidfile, old_record)
+    monkeypatch.setattr(engine_module.os, "replace", lambda source, target: (_ for _ in ()).throw(OSError("replace failed")))
+    with pytest.raises(OSError, match="replace failed"):
+        engine_module._write_identity_record(pidfile, _resolved_record())
+    assert json.loads(pidfile.read_text(encoding="utf-8")) == old_record
+    assert list(pidfile.parent.glob(".pid.*.tmp")) == []
+
+
+def test_worker_identity_is_atomically_upgraded_after_resolution(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = eng._pidfile("042-e1")
+    identities = {10: _identity(10, "claude.cmd"), 20: _identity(20)}
+    monkeypatch.setattr(engine_module, "_pid_identity", lambda pid, **kwargs: identities.get(pid))
+    monkeypatch.setattr(engine_module, "_resolve_leaf_worker", lambda pid, **kwargs: ([20], 20, [], None))
+    monkeypatch.setattr(engine_module, "_ancestry_chain", lambda root, worker, **kwargs: [10, 20])
+    eng._write_pidfile(pidfile, 10)
+    assert json.loads(pidfile.read_text(encoding="utf-8"))["state"] == "resolving"
+    eng._resolve_and_persist_worker(pidfile, 10)
+    resolved = json.loads(pidfile.read_text(encoding="utf-8"))
+    assert {key: value for key, value in resolved.items() if key != "started_at"} == _resolved_record()
+    assert isinstance(resolved["started_at"], str)
+
+
+def test_worker_resolution_failure_leaves_resolving_record(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    pidfile = eng._pidfile("042-e1")
+    monkeypatch.setattr(engine_module, "_pid_identity", lambda pid: _identity(pid, "claude.cmd"))
+    monkeypatch.setattr(engine_module, "_resolve_leaf_worker", lambda pid, **kwargs: ([], None, [], "root exited"))
+    eng._write_pidfile(pidfile, 10)
+    eng._resolve_and_persist_worker(pidfile, 10)
+    assert json.loads(pidfile.read_text(encoding="utf-8"))["state"] == "resolving"
+
+
+def test_worker_resolution_uses_only_the_remaining_execution_budget(tmp_path, monkeypatch):
+    eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
+    captured = {}
+
+    def resolve(pid, **kwargs):
+        captured.update(kwargs)
+        return [], None, [], "deadline exhausted"
+
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(engine_module, "_resolve_leaf_worker", resolve)
+    eng._resolve_and_persist_worker(eng._pidfile("042-e1"), 10, deadline=102.0)
+    assert captured["max_seconds"] == 2.0
+
+
+def test_worker_resolution_stops_when_popen_has_reaped_the_shim(monkeypatch):
+    monkeypatch.setattr(engine_module, "_walk_descendants", lambda pid, **kwargs: ([], {}))
+    descendants, worker, poll_log, reason = engine_module._resolve_leaf_worker(
+        10, max_polls=20, max_seconds=10, poll_interval=1, root_alive=lambda: False,
+    )
+    assert descendants == []
+    assert worker is None
+    assert len(poll_log) == 1
+    assert reason == "root exited before worker resolution"
 
 
 # ── ADR-21 fence (the only working engine restriction) ───────────────
@@ -337,24 +787,11 @@ def test_command_permission_mode_is_bypass_permissions(tmp_path):
 
 
 # ── recovery integration (unit-level M3 proof) ───────────────────────
-def test_reap_orphans_kills_survivor(tmp_path):
-    """A real survivor with a production-written pidfile is detected as alive,
-    then reaped: killed, reported, and its pidfile removed (gut reap_orphans =>
-    survivor alive + empty repairs => red)."""
+def test_reap_orphans_retains_production_resolving_record(tmp_path, monkeypatch):
+    """A crash before worker resolution is never reaped from a shim PID."""
     eng = _DummyEngine(_cfg("subscription"), tmp_path / "art", "import sys")
-    sleeper = subprocess.Popen([sys.executable, "-c", _SLEEP])
-    try:
-        eng._xdir("042-e1").mkdir(parents=True)
-        eng._write_pidfile(eng._pidfile("042-e1"), sleeper.pid)
-        assert eng.is_execution_alive("042-e1") is True
-
-        repairs = eng.reap_orphans()
-        assert any("042-e1" in r for r in repairs), repairs
-        sleeper.wait(timeout=10)
-        assert sleeper.returncode is not None, "survivor not killed"
-        assert eng.is_execution_alive("042-e1") is False
-        assert not eng._pidfile("042-e1").exists()
-    finally:
-        if sleeper.poll() is None:
-            sleeper.kill()
-            sleeper.wait(timeout=10)
+    monkeypatch.setattr(engine_module, "_pid_identity", lambda pid: _identity(pid, "claude.cmd"))
+    eng._write_pidfile(eng._pidfile("042-e1"), 10)
+    assert eng.is_execution_alive("042-e1") is False
+    assert eng.reap_orphans() == []
+    assert eng._pidfile("042-e1").exists()

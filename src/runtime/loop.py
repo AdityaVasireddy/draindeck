@@ -33,10 +33,12 @@ from .events.log import EventLog
 from .events.projections import ExecutionView, StateProjection
 from .events.schema import Event, EventType
 from .engine.claude_headless import ClaudeHeadlessEngine
+from .engine.claude_headless import ContainmentExecutionContext, EngineContainmentError
 from .repo.adapter import RepositoryAdapter
 from .reviewer.base import ReviewPack, ReviewerProvider
 from .state.model import ExecutionState, IssueState
 from .validation.runner import Validator
+from .workspace_lease import current_process_identity, workspace_key
 
 _TERMINAL_ISSUE = (
     IssueState.DONE, IssueState.NEEDS_HUMAN, IssueState.NEEDS_DECOMPOSITION,
@@ -210,7 +212,23 @@ class Orchestrator:
             prompt_file.parent.mkdir(parents=True, exist_ok=True)
             prompt_file.write_text(prompt, encoding="utf-8")
 
-        result = self.engine.run(ex.execution_id, prompt_file, self.workspace)
+        containment = None
+        if os.name == "nt":
+            containment = ContainmentExecutionContext(
+                issue_id=issue,
+                workspace_key=workspace_key(self.workspace),
+                containment_generation="g1",
+                controller=current_process_identity(),
+                lease={"scope": "Global", "version": "v1"},
+                append_event=self._emit,
+            )
+        try:
+            result = self.engine.run(ex.execution_id, prompt_file, self.workspace,
+                                     containment=containment)
+        except EngineContainmentError as exc:
+            # The containment facts are already durable (or the engine refused
+            # before launch); no snapshot/reset/retry may follow this path.
+            raise OrchestratorHalt(f"execution containment unresolved: {exc}") from exc
 
         # residue → attempt ref BEFORE the fact event (I-i: end_commit == ref)
         end = self.adapter.snapshot_commit(f"work {ex.execution_id}") \

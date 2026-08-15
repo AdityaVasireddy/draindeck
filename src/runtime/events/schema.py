@@ -32,6 +32,10 @@ class EventType(str, Enum):
     ISSUE_CREATED = "IssueCreated"
     ISSUE_ACTIVATED = "IssueActivated"
     EXECUTION_SPAWNED = "ExecutionSpawned"          # intent
+    EXECUTION_CONTAINMENT_PREPARED = "ExecutionContainmentPrepared"  # intent
+    EXECUTION_CONTAINMENT_ESTABLISHED = "ExecutionContainmentEstablished"
+    EXECUTION_TERMINATION_UNCONFIRMED = "ExecutionTerminationUnconfirmed"
+    EXECUTION_CONTAINMENT_RELEASED = "ExecutionContainmentReleased"
     EXECUTION_FINISHED = "ExecutionFinished"
     EXECUTION_CRASHED = "ExecutionCrashed"          # reconciler-assigned
     VALIDATION_PASSED = "ValidationPassed"
@@ -50,12 +54,17 @@ KIND_OF: dict[EventType, Kind] = {
     t: Kind.FACT for t in EventType
 }
 KIND_OF[EventType.EXECUTION_SPAWNED] = Kind.INTENT
+KIND_OF[EventType.EXECUTION_CONTAINMENT_PREPARED] = Kind.INTENT
 KIND_OF[EventType.COMMIT_INTENT] = Kind.INTENT
 
 # Intents and the facts that resolve them (recovery + harness use this).
 RESOLUTION_OF: dict[EventType, frozenset[EventType]] = {
     EventType.EXECUTION_SPAWNED: frozenset(
         {EventType.EXECUTION_FINISHED, EventType.EXECUTION_CRASHED}
+    ),
+    EventType.EXECUTION_CONTAINMENT_PREPARED: frozenset(
+        {EventType.EXECUTION_CONTAINMENT_ESTABLISHED,
+         EventType.EXECUTION_CONTAINMENT_RELEASED}
     ),
     EventType.COMMIT_INTENT: frozenset({EventType.COMMIT_CREATED}),
 }

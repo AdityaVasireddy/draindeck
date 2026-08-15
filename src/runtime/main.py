@@ -29,12 +29,14 @@ from .events.schema import Event, EventType
 from .loop import Orchestrator, OrchestratorHalt
 from .queue.issues_md import IssuesParseError, parse as parse_issues
 from .recovery.bindings import bind_reconciler
+from .recovery.containment import WorkspaceContainmentBlocked, resolve_startup_containment
 from .recovery.reconciler import recover
 from .repo.adapter import RepoError
 from .repo.git_adapter import GitCliAdapter
 from .reviewer.base import ReviewerError, ReviewerProvider
 from .reviewer.qwen_ollama import QwenOllamaReviewer
 from .validation.runner import Validator
+from .workspace_lease import WorkspaceLease, probe_controller_identity
 
 
 def _load(path: str) -> EventLog:
@@ -163,26 +165,52 @@ def cmd_run(args) -> int:
             print(f"  - {p}", file=sys.stderr)
         return 1
 
-    state_dir = Path(cfg.event_log.path).parent
-    artifacts_dir = state_dir / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    run_id = "run-" + datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y%m%dT%H%M%SZ")
+    # Workspace authority comes before anything which could inspect, repair, or
+    # launch work in that workspace.  The mutex is exclusion only; containment
+    # is separately replayed and resolved below.
+    lease = WorkspaceLease.acquire(cfg.project.repository)
+    if not lease.acquired:
+        print(f"WORKSPACE OWNERSHIP UNAVAILABLE ({lease.state.value}): {lease.detail}", file=sys.stderr)
+        return 1
 
-    # 3. log
-    log = EventLog(Path(cfg.event_log.path))
-    # 4. engine (fails fast if `claude` not on PATH)
+    try:
+        state_dir = Path(cfg.event_log.path).parent
+        artifacts_dir = state_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        run_id = "run-" + datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ")
+        # 3. log
+        log = EventLog(Path(cfg.event_log.path))
+    except Exception:
+        lease.release_and_close()
+        raise
+    try:
+        resolve_startup_containment(
+            log, lease.workspace_key, controller_probe=probe_controller_identity)
+    except WorkspaceContainmentBlocked as e:
+        # No work was launched by this owner; relinquishing the mutex is not a
+        # release of containment and lets a later evidence-bearing owner retry.
+        lease.release_and_close()
+        print(f"CONTAINMENT BLOCKED: {e}", file=sys.stderr)
+        return 1
+    except Exception:
+        lease.release_and_close()
+        raise
+
+    # 4. engine (fails fast if `claude` not on PATH), after containment gate.
     try:
         engine = ClaudeHeadlessEngine(cfg.engine, artifacts_dir)
     except EngineError as e:
+        lease.release_and_close()
         print(f"ENGINE INIT FAILED: {e}", file=sys.stderr)
         return 1
     # 5. adapter
     adapter = GitCliAdapter(cfg.project.repository, cfg.attempts.ref_namespace)
 
     # 6. reap engine orphans BEFORE recovery (doc 12 §1.6)
-    for r in engine.reap_orphans():
-        print(f"[startup] {r}")
+    try:
+        for r in engine.reap_orphans():
+            print(f"[startup] {r}")
     # 7. recovery — the full production seam binding proven by harness f4. Runs
     # BEFORE checkout (ADR-20 Amendment 2, 2026-07-27): recovery's seams act via
     # explicit-ref git plumbing (rev-parse/merge-base/for-each-ref) and mutate
@@ -193,11 +221,15 @@ def cmd_run(args) -> int:
     # tree clean BEFORE checkout_branch's dirty-tree guard is reached, instead
     # of deadlocking against it (Amendment 1's placement did the opposite and
     # could never resolve real crash residue — see NEXT.md item 13).
-    proj, report = recover(
-        log,
-        is_execution_alive=engine.is_execution_alive,
-        **bind_reconciler(adapter, cfg.project.branch),
-    )
+        proj, report = recover(
+            log,
+            is_execution_alive=engine.is_execution_alive,
+            workspace_key=lease.workspace_key,
+            **bind_reconciler(adapter, cfg.project.branch),
+        )
+    except Exception:
+        lease.release_and_close()
+        raise
     if report.orphans_crashed:
         print(f"[recovery] crashed orphans: {report.orphans_crashed}")
     for r in report.workspace_repairs:
@@ -214,6 +246,7 @@ def cmd_run(args) -> int:
     try:
         adapter.checkout_branch(cfg.project.branch)
     except RepoError as e:
+        lease.release_and_close()
         print(f"CHECKOUT FAILED: {e}", file=sys.stderr)
         return 1
     print(f"[startup] checked out {cfg.project.branch}")
@@ -222,6 +255,7 @@ def cmd_run(args) -> int:
     ok, detail = _reviewer_reachable(cfg)
     print(f"[health] reviewer: {detail}")
     if not ok:
+        lease.release_and_close()
         print("[health] reviewer endpoint unreachable — refusing to start "
               "(the first review would halt the run)", file=sys.stderr)
         return 1
@@ -233,6 +267,7 @@ def cmd_run(args) -> int:
         head = adapter.head_of(cfg.project.branch) or adapter.current_commit()
         res = validator.validate(cfg.project.repository, head, "baseline")
         if not res.passed:
+            lease.release_and_close()
             print(f"[health] BASELINE RED on {cfg.project.branch} — refusing to "
                   f"start (ADR-20 requires baseline green). See "
                   f"{artifacts_dir / 'baseline' / 'validation'}", file=sys.stderr)
@@ -243,6 +278,7 @@ def cmd_run(args) -> int:
     try:
         n = _ingest_issues(cfg, log, proj, run_id)
     except (IssuesParseError, FileNotFoundError) as e:
+        lease.release_and_close()
         print(f"INGEST FAILED: {e}", file=sys.stderr)
         return 1
     print(f"[ingest] {n} new issue(s); {len(proj.issues)} total in queue")
@@ -277,12 +313,16 @@ def cmd_run(args) -> int:
         # the workspace is never left checked out on the last issue/N attempt
         # branch. Self-guarded: a restore failure must not supersede the
         # primary exit_code/exception from the try/except above.
-        try:
-            adapter.checkout_branch(cfg.project.branch)
-            print(f"[shutdown] restored {cfg.project.branch}")
-        except RepoError as e:
-            print(f"[shutdown] WARNING: failed to restore {cfg.project.branch}: {e}",
-                  file=sys.stderr)
+        if proj.is_workspace_blocked(lease.workspace_key):
+            print("[shutdown] containment remains unreleased; workspace and lease stay fail-closed", file=sys.stderr)
+        else:
+            try:
+                adapter.checkout_branch(cfg.project.branch)
+                print(f"[shutdown] restored {cfg.project.branch}")
+            except RepoError as e:
+                print(f"[shutdown] WARNING: failed to restore {cfg.project.branch}: {e}",
+                      file=sys.stderr)
+            lease.release_and_close()
     return exit_code
 
 
