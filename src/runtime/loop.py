@@ -15,10 +15,12 @@ between them leaves an orphan that reconciler check 1 crashes. ``CommitIntent``
 (intent) is emitted before the merge in the ACCEPTED sequence.
 
 Two failures HALT the run rather than emit a verdict (doc 03 §2): a reviewer
-transport/parse failure (execution parks in REVIEWING; recovery re-calls) and an
+transport/unavailability failure (execution parks in REVIEWING; recovery re-calls) and an
 I3 pin-gate break (log/world tamper — fabricating a reject would violate the
 honesty rule and doc 03 has no reject edge from ACCEPTED). A budget hard stop
-ends the run cleanly.
+ends the run cleanly. A reviewer parse failure receives its provider's bounded
+parse retry; exhaustion escalates through IssueEscalated without fabricating a
+reviewer verdict.
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from .events.schema import Event, EventType
 from .engine.claude_headless import ClaudeHeadlessEngine
 from .engine.claude_headless import ContainmentExecutionContext, EngineContainmentError
 from .repo.adapter import RepositoryAdapter
-from .reviewer.base import ReviewPack, ReviewerProvider
+from .reviewer.base import ReviewPack, ReviewParseError, ReviewerProvider
 from .state.model import ExecutionState, IssueState
 from .validation.runner import Validator
 from .workspace_lease import current_process_identity, workspace_key
@@ -310,7 +312,7 @@ class Orchestrator:
                                execution_id=ex.execution_id))
         self.adapter.reset_hard(ex.base_commit)
 
-    # ── row: REVIEWING (reviewer failure HALTS, never a verdict) ──────
+    # ── row: REVIEWING (transport halts; exhausted parse retry escalates) ──────
     def _review(self, issue: str, ex: ExecutionView) -> None:
         diff = self.adapter.diff(ex.base_commit, ex.end_commit)
         meta = self.proj.issue_meta.get(issue, {})
@@ -319,7 +321,17 @@ class Orchestrator:
             issue_text=f"{meta.get('title', '')}\n\n{meta.get('body', '')}".strip(),
             diff=diff,
         )
-        verdict = self.reviewer.review(pack)  # ReviewerError propagates → halt
+        try:
+            verdict = self.reviewer.review(pack)
+        except ReviewParseError as error:
+            # The provider already performed its one bounded parse retry.
+            # This is not model feedback, so never forge ReviewRejected.
+            self._emit(self._event(EventType.ISSUE_ESCALATED, issue,
+                                   {"reason": "reviewer-protocol-violation",
+                                    "taxonomy_category": "needs-human",
+                                    "evidence_refs": [f"review-parse-error:{type(error).__name__}"]},
+                                   execution_id=ex.execution_id))
+            return
         if verdict.approved:
             self._emit(self._event(EventType.REVIEW_APPROVED, issue,
                                    {"reviewed_commit": ex.end_commit,

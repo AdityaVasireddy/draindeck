@@ -58,6 +58,15 @@ class ValidationCfg(_Frozen):
     new_test_pattern: str | None = None
     new_test_command_prefix: str | None = None
 
+    @field_validator("commands")
+    @classmethod
+    def _powershell_safe_commands(cls, value: list[str]) -> list[str]:
+        if any(not command.strip() for command in value):
+            raise ValueError("validation.commands entries must be non-empty")
+        if any("$" in command for command in value):
+            raise ValueError("validation.commands may not contain '$'; use a .ps1 file with -File")
+        return value
+
 
 class ProjectCfg(_Frozen):
     name: str
@@ -86,14 +95,9 @@ class QwenCfg(_Frozen):
     model: str
 
 
-class ClaudeReviewerCfg(_Frozen):
-    auth_mode: Literal["subscription", "api_key"] = "subscription"
-
-
 class ReviewerCfg(_Frozen):
-    provider: Literal["qwen", "claude"]  # ADR-05
+    provider: Literal["qwen"]
     qwen: Optional[QwenCfg] = None
-    claude: Optional[ClaudeReviewerCfg] = None
 
 
 class BudgetCfg(_Frozen):  # ADR-09
@@ -139,8 +143,6 @@ class Config(_Frozen):
     def _reviewer_subsection(cls, v: ReviewerCfg) -> ReviewerCfg:
         if v.provider == "qwen" and v.qwen is None:
             raise ValueError("reviewer.provider=qwen requires reviewer.qwen")
-        if v.provider == "claude" and v.claude is None:
-            raise ValueError("reviewer.provider=claude requires reviewer.claude")
         return v
 
 

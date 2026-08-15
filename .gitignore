@@ -1,4 +1,5 @@
 state/
+config.local.yaml
 __pycache__/
 *.torn.*
 
@@ -10,4 +11,3 @@ run.out
 run.err
 scratch/*
 !scratch/events_prebackup_*.jsonl
-

@@ -27,6 +27,9 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from unittest.mock import Mock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -94,3 +97,21 @@ def test_empty_overlay_equals_parent_env(tmp_path, monkeypatch):
     built = _validator({}, tmp_path)._child_env()
     assert built == dict(os.environ)
     assert built["ADR23_SENTINEL"] == "present"  # the seeded key rode through
+
+
+def test_validation_command_uses_explicit_powershell(tmp_path):
+    completed = Mock(returncode=0)
+    validator = _validator({}, tmp_path)
+    with patch("runtime.validation.runner.subprocess.run", return_value=completed) as run:
+        result = validator.validate(tmp_path, "deadbeef", "powershell")
+    assert result.passed is True
+    assert run.call_args.args[0] == [
+        "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "exit 0"
+    ]
+    assert run.call_args.kwargs["shell"] is False
+
+
+def test_extra_command_with_powershell_variable_is_rejected(tmp_path):
+    validator = _validator({}, tmp_path)
+    with pytest.raises(ValueError, match="must use a .ps1"):
+        validator.validate(tmp_path, "deadbeef", "variables", extra_commands=["Write-Output $env:PATH"])

@@ -40,10 +40,10 @@ def test_extra_commands_passing_included_in_gate_results(tmp_path):
     sees exactly which auto-appended file ran, with no new event field."""
     v = _validator(["exit 0"], tmp_path)
     result = v.validate(tmp_path, "deadbeef", "x2",
-                         extra_commands=["exit 0 & rem new-file-check"])
+                         extra_commands=["exit 0; # new-file-check"])
     assert result.passed is True
     names = [g["gate"] for g in result.gate_results()]
-    assert names == ["exit 0", "exit 0 & rem new-file-check"]
+    assert names == ["exit 0", "exit 0; # new-file-check"]
 
 
 def test_extra_commands_never_mutates_self_commands(tmp_path):

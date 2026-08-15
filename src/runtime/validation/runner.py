@@ -22,6 +22,7 @@ from pathlib import Path
 # validation-test. The finer lint/type/build/e2e split (doc 02 §6) lands when
 # config gains labeled gates — noted, not invented here.
 _DEFAULT_FAIL_TAXONOMY = "validation-test"
+_POWERSHELL = "powershell.exe"
 
 
 @dataclass
@@ -52,6 +53,8 @@ class Validator:
     ) -> None:
         if not commands:
             raise ValueError("Validator requires at least one command")
+        if any("$" in command for command in commands):
+            raise ValueError("validation commands containing '$' must use a .ps1 file with -File")
         self.commands = list(commands)
         self.timeout = timeout_seconds
         self.artifacts_dir = Path(artifacts_dir)
@@ -79,6 +82,8 @@ class Validator:
         result = ValidationResult(passed=True, validated_commit=validated_commit)
 
         commands = self.commands + list(extra_commands or [])
+        if any("$" in command for command in commands):
+            raise ValueError("validation commands containing '$' must use a .ps1 file with -File")
         for i, cmd in enumerate(commands):
             log_path = logdir / f"{i}.log"
             ok, dur = self._run_once(cmd, workspace, log_path)
@@ -135,7 +140,8 @@ class Validator:
                 log.write(b"\n--- flake-retry ---\n")
             try:
                 proc = subprocess.run(
-                    cmd, cwd=str(workspace), shell=True,
+                    [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", cmd],
+                    cwd=str(workspace), shell=False,
                     stdout=log, stderr=subprocess.STDOUT,
                     env=self._child_env(),  # ADR-23: explicit child env, not inherited
                     timeout=self.timeout,

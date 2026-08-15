@@ -1,13 +1,12 @@
-# v1 reference config (doc 08 §6). Copy to config.yaml and fill in the
-# StockPhotoAgent validation command below.
+# Portable reference config. Copy to config.local.yaml and replace placeholders.
 project:
-  name: StockPhotoAgent
-  repository: 'C:\Projects\StockPhotoAgent'
-  branch: agent-work
+  name: example-project
+  repository: 'C:\path\to\target-repository'
+  branch: main
   issues_file: Issues.md
   validation:
     commands:
-      - '<StockAgent test command - REQUIRED before first run>'
+      - 'powershell.exe -NoProfile -File .\scripts\validate.ps1'
     timeout_seconds: 600
 engine:
   provider: claude-headless
@@ -16,7 +15,7 @@ engine:
   max_turns: 30
   timeout_seconds: 1800
 reviewer:
-  provider: qwen                 # ADR-05: qwen | claude
+  provider: qwen                 # the only supported v1 reviewer
   qwen:
     endpoint: 'http://localhost:11434'
     model: qwen2.5-coder

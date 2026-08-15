@@ -24,7 +24,7 @@ from runtime.events.projections import StateProjection              # noqa: E402
 from runtime.events.schema import Event, EventType                  # noqa: E402
 from runtime.loop import Orchestrator, OrchestratorHalt             # noqa: E402
 from runtime.reviewer.base import (                                  # noqa: E402
-    ReviewerUnavailableError, ReviewVerdict,
+    ReviewParseError, ReviewerUnavailableError, ReviewVerdict,
 )
 from runtime.state.model import ExecutionState, IssueState          # noqa: E402
 
@@ -292,6 +292,16 @@ def test_reviewer_unavailable_halts_without_verdict(tmp_path):
     # execution parked in REVIEWING; NO review verdict event emitted
     assert orch.proj.latest_execution("001").state is ExecutionState.REVIEWING
     assert orch.proj.counts.get("ReviewApproved") is None
+    assert orch.proj.counts.get("ReviewRejected") is None
+
+
+def test_exhausted_reviewer_parse_error_escalates_without_forging_verdict(tmp_path):
+    def malformed(_pack):
+        raise ReviewParseError("not JSON after bounded retry")
+    orch = _build(tmp_path, issues=[("001", [])], reviewer=FakeReviewer(malformed))
+    orch.run()
+    assert orch.proj.issues["001"] is IssueState.NEEDS_HUMAN
+    assert orch.proj.counts.get("IssueEscalated") == 1
     assert orch.proj.counts.get("ReviewRejected") is None
 
 
