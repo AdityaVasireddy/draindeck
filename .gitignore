@@ -6,3 +6,8 @@ __pycache__/
 
 scratch/_gs_synth_*/
 
+run.out
+run.err
+scratch/*
+!scratch/events_prebackup_*.jsonl
+
