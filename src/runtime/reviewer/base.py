@@ -4,19 +4,29 @@ A verdict approves *tree `reviewed_commit` for issue X*, not "the issue" — tha
 makes verdicts cacheable and replay-safe (doc 03 §4). The reviewer is a pure
 function of its ReviewPack; it never touches git, the log, or the repo.
 
-Failure taxonomy (doc 09 §6.3, reconciled with doc 03 §2 by Session 5):
+Failure taxonomy (doc 09 §6.3, reconciled with doc 03 §2 by Session 5; the
+malformed-output path further reconciled by the reviewer-protocol-violation
+fix after the event-733 incident):
   * A transport failure (endpoint down / HTTP error / timeout) raises
-    ``ReviewerUnavailableError``.
+    ``ReviewerUnavailableError``. This propagates out of the orchestrator's
+    review step and halts the run — doc 03 §2's REVIEWING row is authoritative
+    here: the state is *re-callable* ("verdicts cacheable by (issue, tree
+    hash)"), so the next startup simply re-calls the reviewer against the same
+    pinned tree. Nothing about the endpoint being unreachable is evidence
+    against the diff, so no verdict is fabricated.
   * A verdict that cannot be parsed into this contract after one parse-retry
-    raises ``ReviewParseError``.
-  * NEITHER maps to ReviewApproved OR ReviewRejected. Doc 03 §2's REVIEWING row
-    is authoritative — the state is *re-callable* ("verdicts cacheable by
-    (issue, tree hash)"), so the orchestrator halts and the next startup
-    re-calls the reviewer, rather than fabricating a rejection. (This overrides
-    doc 09 §6.3's "malformed ⇒ reject": a ReviewRejected requires a
-    ``feedback[{category,...}]`` list that would have to be invented, poisoning
-    the duplicate-category escalation rule and ADR-19 metrics. The halt still
-    honors §6.3's real intent: never retry-until-approve.)
+    raises ``ReviewParseError``. Unlike a transport failure, this is NOT
+    treated as retryable/re-callable: the orchestrator (``loop.py``'s
+    ``_review``) catches it and escalates the affected issue via
+    ``IssueEscalated(reason="reviewer-protocol-violation")`` — the existing
+    ACTIVE→NEEDS_HUMAN transition (doc 03 §1), not a new one. The run itself
+    does not halt; other independent issues keep draining. NEITHER failure
+    ever maps to ReviewApproved OR ReviewRejected: a ReviewRejected requires a
+    ``feedback[{category,...}]`` list that would have to be invented,
+    poisoning the duplicate-category escalation rule and ADR-19 metrics. This
+    overrides doc 09 §6.3's "malformed ⇒ reject" while honoring its real
+    intent: never retry-until-approve, and never let malformed output read as
+    approval.
 """
 from __future__ import annotations
 

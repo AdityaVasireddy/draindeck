@@ -305,6 +305,27 @@ def test_exhausted_reviewer_parse_error_escalates_without_forging_verdict(tmp_pa
     assert orch.proj.counts.get("ReviewRejected") is None
 
 
+def test_reviewer_parse_error_on_one_issue_does_not_halt_the_run(tmp_path):
+    """Historical incident (event 733, 2026-08-14): a malformed reviewer
+    verdict on one issue hard-halted the entire orchestrator run (exit 2, no
+    further events at all) instead of only affecting that issue. Proves the
+    fix: 001's malformed verdict escalates it to NEEDS_HUMAN while 002 — an
+    independent issue with no dependency on 001 — still ships in the same
+    run() call."""
+    def verdict(pack):
+        if pack.execution_id.startswith("001-"):
+            raise ReviewParseError("not JSON after bounded retry")
+        return _approve(pack)
+    orch = _build(tmp_path, issues=[("001", []), ("002", [])],
+                  reviewer=FakeReviewer(verdict))
+    reason = orch.run()  # must return normally: no exception, no abnormal halt
+    assert "drained" in reason.lower()
+    assert orch.proj.issues["001"] is IssueState.NEEDS_HUMAN
+    assert orch.proj.issues["002"] is IssueState.DONE
+    assert orch.proj.counts.get("IssueEscalated") == 1
+    assert orch.proj.counts.get("CommitCreated") == 1
+
+
 def test_pin_gate_break_halts(tmp_path):
     """A tampered ACCEPTED view (validated != end) must halt, never commit."""
     orch = _build(tmp_path, issues=[("001", [])])
