@@ -300,7 +300,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
     ok, detail = _reviewer_reachable(cfg)
     print(f"[health] reviewer: {detail}")
     if not ok:
-        print("[health] reviewer endpoint unreachable â€” refusing to start "
+        print("[health] reviewer endpoint unreachable — refusing to start "
               "(the first review would halt the run)", file=sys.stderr)
         return 1
     if report.replayed_events == 0 and not args.skip_baseline:
@@ -311,7 +311,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         head = adapter.head_of(cfg.project.branch) or adapter.current_commit()
         result = validator.validate(cfg.project.repository, head, "baseline")
         if not result.passed:
-            print(f"[health] BASELINE RED on {cfg.project.branch} â€” refusing to "
+            print(f"[health] BASELINE RED on {cfg.project.branch} — refusing to "
                   f"start (ADR-20 requires baseline green). See "
                   f"{artifacts_dir / 'baseline' / 'validation'}", file=sys.stderr)
             return 1
@@ -346,7 +346,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         print(f"[halt] run stopped abnormally: {e}", file=sys.stderr)
         exit_code = 2
     except KeyboardInterrupt:
-        print("\n[stop] interrupted â€” current step finished; recovery owns the rest")
+        print("\n[stop] interrupted — current step finished; recovery owns the rest")
     finally:
         if proj.is_workspace_blocked(lease.workspace_key):
             print("[shutdown] containment remains unreleased; no branch restore attempted",
