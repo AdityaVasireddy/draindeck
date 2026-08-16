@@ -11,3 +11,7 @@ run.out
 run.err
 scratch/*
 !scratch/events_prebackup_*.jsonl
+
+.claude/*
+!.claude/commands/
+!.claude/commands/**
