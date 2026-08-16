@@ -23,7 +23,25 @@ configured repository at a time, run from a local Windows machine.
 - Windows with Windows PowerShell (`powershell.exe`)
 - Python 3.12 or later and Git on `PATH`
 - For review execution only: a reachable Ollama endpoint hosting the configured
-  Qwen model. Unit tests and configuration checks make no provider call.
+  Qwen model, host/port/model set via `config.local.yaml` — no Ollama endpoint,
+  container name, or model name is hardcoded in source. Unit tests and
+  configuration checks make no provider call.
+
+### Platform constraint (intentional, not incidental)
+
+Windows is a hard requirement, not a stale assumption: engine child processes
+are contained via a native Windows Job Object boundary
+(`src/runtime/engine/windows_job.py`) that backs the fail-closed containment
+guarantee described under Authorization and safety below, and validation
+commands run through `powershell.exe` because the `$`-rejection injection
+defense (`validation.commands` / `.ps1 -File`, see below) is specifically
+shaped around PowerShell's syntax. Both mechanisms are already isolated to
+their own modules and fail with a clear, typed error off Windows
+(`WindowsJobUnsupported` before any native call is attempted) rather than
+silently misbehaving. Supporting Linux/macOS would mean replacing both
+safety-critical mechanisms — a validation/containment contract change that
+needs its own ADR, not a portability patch. There is currently no
+Linux/macOS support, and none should be assumed.
 
 ## Install and configure
 
