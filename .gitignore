@@ -25,3 +25,4 @@ scratch/
 .pytest_cache/
 .pytest-*
 Tempissue-*
+docs/scratch/
