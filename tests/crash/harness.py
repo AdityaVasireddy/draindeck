@@ -392,9 +392,26 @@ def run_engine_orphan_fixture(root: Path) -> int:
             time.sleep(0.1)
         assert scratch.exists(), "f4: dummy never dirtied the workspace"
 
+        # Adversarial (proves the stale_after_seconds comparison direction,
+        # not just that 0.0 reaps): a LARGE threshold must NOT treat this
+        # fresh, genuinely-running resolving record as reapable.
+        repairs_noop = engine.reap_orphans(stale_after_seconds=9999)
+        assert not any(xid in r for r in repairs_noop), (
+            f"f4: reap_orphans reaped {xid} under a large stale_after_seconds "
+            f"(timeout comparison direction inverted?): {repairs_noop}"
+        )
+        assert engine._pidfile(xid).exists(), (
+            f"f4: pidfile for {xid} was removed despite a large "
+            f"stale_after_seconds"
+        )
+        assert dummy.poll() is None, (
+            f"f4: dummy (pid {dummy.pid}) was killed despite a large "
+            f"stale_after_seconds"
+        )
+
         # PRODUCTION startup order: reap_orphans BEFORE recover.
         adapter = GitCliAdapter(repo)
-        repairs = engine.reap_orphans()
+        repairs = engine.reap_orphans(stale_after_seconds=0.0)
         proj, _report = recover(
             log,
             is_execution_alive=engine.is_execution_alive,

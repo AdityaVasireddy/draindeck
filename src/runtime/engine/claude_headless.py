@@ -620,7 +620,22 @@ class ClaudeHeadlessEngine:
             raise EngineContainmentError("termination remains unconfirmed and its durable latch could not be appended") from append_error
 
     # ── recovery integration ─────────────────────────────────────────
-    def reap_orphans(self) -> list[str]:
+    # Margin above the execution's own wall-clock budget before a still-
+    # "resolving" record is even considered for staleness — the true upper
+    # bound of how long a legitimate execution (POSIX or Windows) may
+    # legitimately hold a pidfile is its own timeout plus the containment
+    # confirmation window; this absorbs startup/poll overhead and clock skew
+    # on top of that, never used to shrink the real bound.
+    _STALE_RESOLVING_MARGIN_SECONDS = 60
+
+    def _default_stale_after_seconds(self) -> float:
+        return (
+            self.cfg.timeout_seconds
+            + self.cfg.containment_confirmation_seconds
+            + self._STALE_RESOLVING_MARGIN_SECONDS
+        )
+
+    def reap_orphans(self, *, stale_after_seconds: Optional[float] = None) -> list[str]:
         """Startup pre-step, run BEFORE ``recover()``: tree-kill any engine
         child that outlived an orchestrator crash, so ``is_execution_alive`` is
         False for every open execution when reconciler check 1 runs. Doc 03's
@@ -629,18 +644,34 @@ class ClaudeHeadlessEngine:
         adopt it. This also restores the ADR-04 single-writer precondition that
         ``recover_workspace``'s stale-lock clear already presumes. Emits no
         event (doc 03 has no vocabulary for it); returns repair strings, the
-        same evidence pattern as check 3's ``workspace_repairs``."""
+        same evidence pattern as check 3's ``workspace_repairs``.
+
+        ``stale_after_seconds`` (None → cfg-derived, see
+        ``_default_stale_after_seconds``) is the age past which a still-
+        "resolving" record (the crash window between ``_write_pidfile`` and
+        worker resolution completing) is no longer given the benefit of the
+        doubt and is classified by probing its ``shim`` identity, the same
+        way a "resolved" record is classified by probing ``worker``. Exposed
+        as a param solely so tests can inject a small value against a real
+        record without waiting out the real cfg-derived bound."""
         repairs: list[str] = []
         if not self.artifacts_dir.exists():
             return repairs
+        stale_after = (
+            stale_after_seconds if stale_after_seconds is not None
+            else self._default_stale_after_seconds()
+        )
+        now = datetime.now(timezone.utc)
         for pidfile in sorted(self.artifacts_dir.glob("*/pid")):
             rec = _read_pidfile(pidfile)
-            state = _worker_liveness(rec)
+            state = _worker_liveness(rec, now=now, stale_after_seconds=stale_after)
             if state == "alive":
-                _kill_tree(rec["worker"]["pid"])
+                pid_key = "worker" if rec.get("state") == "resolved" else "shim"
+                pid = rec[pid_key]["pid"]
+                _kill_tree(pid)
                 repairs.append(
                     f"reaped orphan engine {pidfile.parent.name} "
-                    f"(pid {rec['worker']['pid']})"
+                    f"(pid {pid})"
                 )
                 pidfile.unlink(missing_ok=True)
             elif state == "dead":
@@ -648,16 +679,26 @@ class ClaudeHeadlessEngine:
             # Unknown records are retained: they do not prove ownership.
         return repairs
 
-    def is_execution_alive(self, execution_id: str) -> bool:
+    def is_execution_alive(
+        self, execution_id: str, *, stale_after_seconds: Optional[float] = None,
+    ) -> bool:
         """Reconciler seam using the same conservative policy as reaping.
 
-        Only a current match for a fully resolved worker identity is alive.
-        A positively stale identity is removed; unresolved, malformed, or
-        probe-ambiguous records are retained and report False.
+        A current match for a fully resolved worker identity is alive. A
+        "resolving" record past ``stale_after_seconds`` (None → cfg-derived)
+        is no longer merely retained — it is classified by probing its
+        ``shim`` identity, same as ``reap_orphans``. A positively stale
+        identity (resolved-and-dead, or resolving-past-timeout-and-dead) is
+        removed; unresolved, malformed, fresh-resolving, or probe-ambiguous
+        records are retained and report False.
         """
+        stale_after = (
+            stale_after_seconds if stale_after_seconds is not None
+            else self._default_stale_after_seconds()
+        )
         pidfile = self._pidfile(execution_id)
         rec = _read_pidfile(pidfile)
-        state = _worker_liveness(rec)
+        state = _worker_liveness(rec, stale_after_seconds=stale_after)
         if state == "dead":
             pidfile.unlink(missing_ok=True)
         return state == "alive"
@@ -1185,15 +1226,55 @@ def _write_identity_record(pidfile: Path, record: dict) -> None:
                 pass
 
 
-def _worker_liveness(rec: object) -> str:
+def _stale_resolving(rec: dict, *, now: datetime, stale_after_seconds: float) -> Optional[bool]:
+    """True if a v2 ``resolving`` record's ``started_at`` is older than
+    ``stale_after_seconds`` relative to ``now``. None if ``started_at`` is
+    missing or unparseable — malformed timestamps must not be treated as
+    infinitely stale (that would invert the conservative-on-ambiguity policy
+    every other branch here follows)."""
+    started_at = rec.get("started_at")
+    if not isinstance(started_at, str):
+        return None
+    try:
+        started = datetime.fromisoformat(started_at)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        return None
+    return (now - started).total_seconds() > stale_after_seconds
+
+
+def _worker_liveness(
+    rec: object, *, now: Optional[datetime] = None, stale_after_seconds: float = 0.0,
+) -> str:
     """Return alive, dead, or unknown under the shared ownership policy.
 
-    Unknown is intentionally non-destructive: a resolving, malformed, or
-    legacy-live record cannot prove which process is the owned worker.
+    Unknown is intentionally non-destructive: a fresh resolving, malformed,
+    or legacy-live record cannot prove which process is the owned worker.
+
+    A ``resolving`` record past ``stale_after_seconds`` (age measured from
+    ``started_at``) is no longer given that benefit: the crash window between
+    ``_write_pidfile`` and worker resolution completing (or, on Windows, the
+    entire legitimate run — see ``_run_windows_contained``) is classified by
+    probing the one identity such a record has, ``shim``, exactly as a
+    ``resolved`` record is classified by probing ``worker``. ``now`` defaults
+    to the current UTC time; callers pass it explicitly only in tests that
+    need a fixed instant.
     """
     if not isinstance(rec, dict):
         return "unknown"
     if rec.get("version") == 2:
+        if rec.get("state") == "resolving":
+            stale = _stale_resolving(
+                rec, now=now or datetime.now(timezone.utc),
+                stale_after_seconds=stale_after_seconds,
+            )
+            if not stale:  # fresh (False) or unparseable (None) — unchanged
+                return "unknown"
+            shim = rec.get("shim")
+            if not _valid_identity(shim):
+                return "unknown"
+            return _identity_liveness(shim)
         if rec.get("state") != "resolved":
             return "unknown"
         worker = rec.get("worker")
