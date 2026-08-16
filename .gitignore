@@ -1,5 +1,6 @@
 state/
 config.local.yaml
+knowledge/
 __pycache__/
 *.torn.*
 
