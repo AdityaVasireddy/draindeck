@@ -82,6 +82,41 @@ Carried non-blocking: reviewer raw-response not persisted; reviewer model-string
 
 Backlog: decompose 39, 43, 36.
 
+**Clarification (2026-08-15) — relationship to the later full-backlog drain.**
+Sessions 43–44 (2026-08-14, per `docs/handoffs/HANDOFF_2026-08-14_session43-first-live-drain.md` and `HANDOFF_2026-08-14_session44-backlog-drained.md`) subsequently ran the StockPhotoAgent backlog
+to full terminal state — 0 PENDING, 0 ACTIVE, 74 DONE, 7 NEEDS_HUMAN, 21
+NEEDS_DECOMPOSITION (`state/events.jsonl` last_event_id 843; see
+`docs/handoffs/HANDOFF_2026-08-14_session44-backlog-drained.md`). That drain
+is **not** additional ADR-19 sampling and does not itself need to satisfy
+this ADR's sample-size/attempt-1/cost thresholds.
+
+**Evidence hierarchy (binding, for any future reader of this section).**
+**Sample 1 (n=20) alone already satisfies ADR-19's binding validation
+requirement and both thresholds** — 20 completed issues (the ADR's exact
+sample-size requirement), 85% attempt-1 (≥30% bar), ~$0.36/shipped (≤$3.00
+bar) — with no dependency on Sample 2 to reach n=20 or to clear either
+threshold. **Sample 2 (n=19) is additional corroborating evidence, not a
+second required leg of the PASS verdict**: it independently reproduces the
+same result on a different, later issue population, which strengthens
+confidence in the verdict, but ADR-19's own text requires exactly one
+20-issue sample, and Sample 1 is that sample on its own. Both samples were
+closed and committed (`e9f5d5b`) before the session 43–44 drain began.
+**Because Sample 1 alone already satisfies ADR-19, dedicated ADR-19 sampling
+is not still owed** — the 74-DONE drain is not needed to, and does not,
+independently satisfy this ADR; it is not evidence this ADR still needs.
+
+The 74-DONE count is cumulative production history (it
+necessarily includes the same issues counted in Sample 1 and Sample 2, plus
+issues completed afterward); it was never run under a fresh pre-committed
+experiment frame, and no attempt-1-success-rate or cost-per-shipped-issue
+figures have been computed for that population in any committed document —
+only terminal-state issue counts are recorded. **The 74-DONE drain does not
+itself satisfy ADR-19** — it is not a substitute for, or additional leg of,
+the sample-based verdict above. Recorded here so a future
+session does not conflate "74 DONE" with a third ADR-19 sample or treat the
+drain as evidence this ADR still needs to satisfy; it does not, and the
+verdict above stands on its own two-sample evidence.
+
 ---
 
 ## 5. ADR-20 — Initial target repository: StockAgent; repository is configuration only
