@@ -1,5 +1,5 @@
 [project]
-name = "issue-runtime"
+name = "draindeck"
 version = "0.1.0"
 description = "Autonomous issue-resolution runtime - durability foundation"
 requires-python = ">=3.12"

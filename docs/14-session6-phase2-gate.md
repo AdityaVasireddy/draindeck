@@ -1291,7 +1291,7 @@ implements it. Filed as NEXT.md §2 item 8.
    path; only a deliberate fault-injection witness can close it (NEXT.md §2 item 9).
 4. This does not establish re-run safety under event-log loss. Ingest idempotency was
    confirmed (statically — see the addendum below, NEXT.md §2 item 10) only for the
-   log-intact case: `state/events.jsonl` (issue-runtime-side) surviving between runs. If
+   log-intact case: `state/events.jsonl` (Draindeck-side) surviving between runs. If
    that log is deleted, moved, or repointed while `Issues.md` still lists issues as
    available text, ingest re-emits every issue as new, producing real duplicate
    executions and duplicate commits on `agent-work`. This dependency is named, not
@@ -1324,7 +1324,7 @@ def _issue_created(p: StateProjection, ev: Event) -> None:
 ```
 No code path removes a key from `proj.issues` afterward — later events only change its
 *value* (`PENDING`→`ACTIVE`→`DONE`), never delete the key. `proj` is rebuilt at every
-startup from the **persistent** event log (`state/events.jsonl`, issue-runtime-side) via
+startup from the **persistent** event log (`state/events.jsonl`, Draindeck-side) via
 `recover()` — the same file across invocations, not reset between runs. Issues 1-5's
 `IssueCreated` events (event_ids 1-5) are already durably recorded there from this
 session's run.
@@ -1347,5 +1347,5 @@ event log's integrity and availability). Neither gates Phase-2.
 Scope discipline preserved: no `src/`, `config.yaml`, or `schema.py` change this session —
 this was a read-only-except-for-the-runtime's-own-designed-mutation live smoke (the 5
 commits on `agent-work` are the runtime's own commit-on-approval behavior under test, not a
-manual action). No commit made in `issue-runtime` this session pending explicit
+manual action). No commit made in `Draindeck` this session pending explicit
 authorization.

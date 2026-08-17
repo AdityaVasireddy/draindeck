@@ -42,7 +42,7 @@ def _drive(run_side_effect, checkout_side_effect=None):
     under test. Returns (exit_code, adapter_mock, capsys_text_placeholder)."""
     from runtime import main as main_mod
 
-    cfg = _cfg(Path("C:/issue-runtime-unit-workspace"))
+    cfg = _cfg(Path("C:/draindeck-unit-workspace"))
     args = SimpleNamespace(config="unused.yaml", skip_baseline=True)
 
     adapter = mock.MagicMock(name="adapter")

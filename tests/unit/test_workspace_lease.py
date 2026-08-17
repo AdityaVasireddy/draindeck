@@ -69,7 +69,7 @@ class FakeProcessApi:
     def probe(self, pid): return self.result
 
 
-_WORKSPACE = Path("C:/issue-runtime-unit-workspace")
+_WORKSPACE = Path("C:/draindeck-unit-workspace")
 
 
 def test_workspace_identity_and_mutex_name_are_deterministic_and_distinct():
@@ -77,7 +77,7 @@ def test_workspace_identity_and_mutex_name_are_deterministic_and_distinct():
     assert workspace_key(same) == workspace_key(str(same))
     assert mutex_name_for_workspace(same) == mutex_name_for_workspace(same)
     assert mutex_name_for_workspace(same) != mutex_name_for_workspace(_WORKSPACE / "other")
-    assert mutex_name_for_workspace(same).startswith("Global\\issue-runtime-workspace-v1-")
+    assert mutex_name_for_workspace(same).startswith("Global\\draindeck-workspace-v1-")
 
 
 def test_lease_acquisition_states_and_balanced_close():
@@ -212,7 +212,7 @@ def test_recovery_guard_prevents_all_workspace_seams_before_mutation():
 def test_main_ownership_and_containment_gate_precedes_engine_and_recovery():
     from runtime import main as main_mod
     cfg = mock.MagicMock(project=mock.MagicMock(repository=str(_WORKSPACE), branch="main", validation=mock.MagicMock()),
-                         event_log=mock.MagicMock(path="C:/issue-runtime-unit-state/events.jsonl"),
+                         event_log=mock.MagicMock(path="C:/draindeck-unit-state/events.jsonl"),
                          engine=mock.MagicMock(), attempts=mock.MagicMock(ref_namespace="refs/a"))
     args = SimpleNamespace(config="x", skip_baseline=True)
     calls = []

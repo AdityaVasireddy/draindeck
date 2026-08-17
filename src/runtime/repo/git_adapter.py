@@ -21,7 +21,7 @@ _MIN_GIT = (2, 38)
 # Identity injected per-invocation so commits never depend on the target
 # repo's user.name/user.email config (which may be unset).
 _IDENTITY = [
-    "-c", "user.name=issue-runtime",
+    "-c", "user.name=draindeck",
     "-c", "user.email=runtime@local",
 ]
 

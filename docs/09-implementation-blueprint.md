@@ -12,7 +12,7 @@
 ## 1. Project folder structure
 
 ```
-issue-runtime/
+Draindeck/
 ├── config.yaml                    # the ONLY repo-specific knowledge (ADR-20)
 ├── NEXT.md                        # solo-builder resume pointer (user constraint)
 ├── README.md

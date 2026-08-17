@@ -47,7 +47,7 @@ def test_inherited_key_nulled_is_absent_from_child(tmp_path, monkeypatch):
     None in the overlay must be ABSENT (membership) from the built dict — not
     empty, not None-valued. Reverting to pop-from-overlay leaves the inherited
     copy in place and turns this red; that is exactly what it guards."""
-    monkeypatch.setenv("VIRTUAL_ENV", "C:/Projects/issue-runtime/.venv")
+    monkeypatch.setenv("VIRTUAL_ENV", "C:/Projects/draindeck/.venv")
     built = _validator({"VIRTUAL_ENV": None}, tmp_path)._child_env()
     assert "VIRTUAL_ENV" in os.environ            # precondition: it WAS inherited
     assert "VIRTUAL_ENV" not in built             # the only assertion that discriminates

@@ -1,4 +1,4 @@
-# issue-runtime
+# Draindeck
 
 An autonomous issue-resolution orchestrator. It drains a backlog of issues by
 spawning a fresh `claude -p` (Claude Code headless) session per issue, gates

@@ -64,7 +64,7 @@ def canonical_event_log_identity(path: Path | str) -> str:
 def writer_mutex_name_for_log(path: Path | str) -> str:
     identity = canonical_event_log_identity(path)
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    return "Global\\issue-runtime-event-log-v1-" + digest
+    return "Global\\draindeck-event-log-v1-" + digest
 
 
 class _WriterLease:

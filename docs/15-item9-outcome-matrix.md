@@ -3,7 +3,7 @@
 **Status: DESIGN GATE. Pre-committed BEFORE any fault injection. No crash has been run
 against this matrix yet — every cell below is a mechanical projection from source, not
 an observation.** Produced per CLAUDE.md's high-blast-radius discipline (real
-repository mutation / recovery behavior) — this doc is issue-runtime-side only; nothing
+repository mutation / recovery behavior) — this doc is Draindeck-side only; nothing
 in this commit touches `C:\Projects\StockPhotoAgent`.
 
 Builds on the prior turn's source trace (reap-path confirmed, not re-litigated here):
@@ -63,7 +63,7 @@ that specific sub-claim**, even where the rest of the row's prediction is source
 - Start state (previous turn, re-verified mechanically): StockPhotoAgent `agent-work` /
   clean / `45e545acb3ef15c9970b1668731ca710e3a50381`; `Issues.md` = issues 7/8/9;
   `refs/attempts` empty; reviewer `localhost:11434` serving `qwen2.5-coder:14b`;
-  issue-runtime `state/events.jsonl` at 45 events, last event `IssueCompleted` for issue 5.
+  Draindeck `state/events.jsonl` at 45 events, last event `IssueCompleted` for issue 5.
 - **The real run reuses this same event log.** `config.yaml:70` — `event_log.path:
   state/events.jsonl` — is not scoped per target repo. Any real item-9 run appends to
   the SAME file already at 45 events; new records are expected starting at `event_id 46`.

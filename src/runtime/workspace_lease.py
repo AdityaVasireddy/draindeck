@@ -65,7 +65,7 @@ def workspace_key(workspace: Path | str) -> str:
 def mutex_name_for_workspace(workspace: Path | str) -> str:
     # Do not fall back to Local\\: session-wide exclusion is an architectural
     # change, not an availability workaround for Global\\.
-    return "Global\\issue-runtime-workspace-v1-" + workspace_key(workspace)
+    return "Global\\draindeck-workspace-v1-" + workspace_key(workspace)
 
 
 class WindowsMutexApi:
@@ -141,7 +141,7 @@ class WorkspaceLease:
     def acquire(cls, workspace: Path | str, *, api: MutexApi | None = None) -> "WorkspaceLease":
         identity = canonical_workspace_identity(workspace)
         key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        name = "Global\\issue-runtime-workspace-v1-" + key
+        name = "Global\\draindeck-workspace-v1-" + key
         with _held_mutex_names_lock:
             if name in _held_mutex_names:
                 return cls(identity, key, name, LeaseState.ERROR,
