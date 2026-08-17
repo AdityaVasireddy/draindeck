@@ -1165,12 +1165,12 @@ confirmed unset.
 
 **Real invocation, confirmed from `src/runtime/main.py`'s own argparse wiring** (not
 guessed): `python -m runtime.main run --config config.yaml`, run from repo root
-(`C:\Projects\issue-runtime`). Note: `event_log.path` (`state/events.jsonl`) resolves via
+(`C:\Projects\Draindeck`). Note: `event_log.path` (`state/events.jsonl`) resolves via
 bare `Path(cfg.event_log.path)` in `cmd_run` — cwd-relative, NOT joined with
 `cfg.project.repository` — so the event log lands at
-`C:\Projects\issue-runtime\state\events.jsonl`, not under the target repo. This was
+`C:\Projects\Draindeck\state\events.jsonl`, not under the target repo. This was
 confirmed by checking both candidate paths before reading (`ls` on the target-repo
-candidate: "No such file or directory"; the issue-runtime-root candidate: present, 16526
+candidate: "No such file or directory"; the Draindeck-root candidate: present, 16526
 bytes).
 
 **Raw stdout (background task, exit code 0):**
