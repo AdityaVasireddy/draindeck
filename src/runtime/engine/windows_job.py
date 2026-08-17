@@ -2,6 +2,13 @@
 
 This module owns native handles and process containment mechanics only.  It
 does not write events, choose timeouts, or decide workspace/retry policy.
+
+INTENTIONALLY WINDOWS-ONLY: Win32 Job Objects have no POSIX equivalent, so
+this module is not a candidate for cross-platform abstraction — it is a
+platform-specific containment backend, selected only from
+``claude_headless.ClaudeHeadlessEngine.run()``'s ``_IS_WINDOWS`` branch. The
+POSIX containment backend (a plain process-group boundary, weaker than the
+Job-Object witnessing here) lives in ``claude_headless._run_posix``.
 """
 from __future__ import annotations
 

@@ -115,3 +115,19 @@ def test_extra_command_with_powershell_variable_is_rejected(tmp_path):
     validator = _validator({}, tmp_path)
     with pytest.raises(ValueError, match="must use a .ps1"):
         validator.validate(tmp_path, "deadbeef", "variables", extra_commands=["Write-Output $env:PATH"])
+
+
+def test_validation_command_uses_sh_on_posix(tmp_path, monkeypatch):
+    """Item: cross-platform coupling removal — runner.py previously shelled
+    out to powershell.exe unconditionally, which does not exist on POSIX.
+    Locks in the new /bin/sh -c branch without touching the Windows argv
+    (see test_validation_command_uses_explicit_powershell above)."""
+    import runtime.validation.runner as runner_module
+    monkeypatch.setattr(runner_module, "_IS_WINDOWS", False)
+    completed = Mock(returncode=0)
+    validator = _validator({}, tmp_path)
+    with patch("runtime.validation.runner.subprocess.run", return_value=completed) as run:
+        result = validator.validate(tmp_path, "deadbeef", "posix-shell")
+    assert result.passed is True
+    assert run.call_args.args[0] == ["/bin/sh", "-c", "exit 0"]
+    assert run.call_args.kwargs["shell"] is False

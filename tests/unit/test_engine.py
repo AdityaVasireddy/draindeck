@@ -729,6 +729,57 @@ def test_worker_resolution_stops_when_popen_has_reaped_the_shim(monkeypatch):
     assert reason == "root exited before worker resolution"
 
 
+# ── _all_pid_ppid_pairs cross-platform snapshot ─────────────────────────
+def test_all_pid_ppid_pairs_posix_parses_ps_output(monkeypatch):
+    """POSIX branch (Item: cross-platform coupling removal) — previously
+    unconditionally shelled out to powershell.exe here regardless of
+    platform, which would silently return {} on POSIX (caught by the
+    except) and permanently strand every non-Windows pidfile in "resolving"
+    state. Locks in the ps -eo pid=,ppid= parse."""
+    monkeypatch.setattr(engine_module, "_IS_WINDOWS", False)
+    completed = subprocess.CompletedProcess(
+        args=["ps"], returncode=0, stdout="  123   1\n  456   123\n789 456\n",
+    )
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        return completed
+
+    monkeypatch.setattr(engine_module.subprocess, "run", fake_run)
+    pairs = engine_module._all_pid_ppid_pairs()
+    assert captured["argv"] == ["ps", "-eo", "pid=,ppid="]
+    assert pairs == {123: 1, 456: 123, 789: 456}
+
+
+def test_all_pid_ppid_pairs_posix_tolerates_malformed_lines(monkeypatch):
+    monkeypatch.setattr(engine_module, "_IS_WINDOWS", False)
+    completed = subprocess.CompletedProcess(
+        args=["ps"], returncode=0, stdout="garbage line\n\n  123   1\n",
+    )
+    monkeypatch.setattr(engine_module.subprocess, "run", lambda *a, **k: completed)
+    assert engine_module._all_pid_ppid_pairs() == {123: 1}
+
+
+def test_all_pid_ppid_pairs_windows_parses_cim_csv_output(monkeypatch):
+    """Windows branch, unchanged behavior — re-pinned after the refactor that
+    added the POSIX branch alongside it."""
+    monkeypatch.setattr(engine_module, "_IS_WINDOWS", True)
+    completed = subprocess.CompletedProcess(
+        args=["powershell.exe"], returncode=0, stdout="123,1\n456,123\n",
+    )
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        return completed
+
+    monkeypatch.setattr(engine_module.subprocess, "run", fake_run)
+    pairs = engine_module._all_pid_ppid_pairs()
+    assert captured["argv"][0] == "powershell.exe"
+    assert pairs == {123: 1, 456: 123}
+
+
 # ── ADR-21 fence (the only working engine restriction) ───────────────
 def test_command_carries_the_adr21_fence(tmp_path):
     """PROBE-VERIFIED: --allowedTools does NOT restrict in -p mode; only

@@ -3,6 +3,16 @@
 This module deliberately owns only *cooperating runtime* exclusion.  A mutex
 is not execution-containment evidence: callers must separately replay the
 authoritative containment events before touching the workspace.
+
+INTENTIONALLY WINDOWS-ONLY: there is no POSIX implementation of the
+workspace-exclusivity mutex. ``WorkspaceLease.acquire()`` fails closed on
+non-Windows today (``WindowsMutexApi()`` raises ``OSError``, caught and
+surfaced as ``LeaseState.ERROR`` -> the caller's ``WorkspaceOwnershipUnavailable``
+in ``main.py``) rather than silently proceeding unlocked. Building a real
+POSIX-equivalent lock (e.g. ``fcntl``/``flock``-based) is a genuine new
+safety-critical mechanism, not a de-hardcoding — out of scope here; see the
+project's cross-platform scoping decision for why this was deliberately left
+Windows-only rather than extended.
 """
 from __future__ import annotations
 

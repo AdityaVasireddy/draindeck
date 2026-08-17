@@ -312,6 +312,11 @@ class ClaudeHeadlessEngine:
         self, execution_id: str, prompt_file: Path | str, workspace: Path | str,
         *, containment: ContainmentExecutionContext | None = None,
     ) -> EngineResult:
+        """Platform dispatch. Windows uses Job-Object containment (see
+        ``_run_windows_contained``); POSIX uses a plain process-group boundary
+        (see ``_run_posix``) — the two backends are deliberately separate
+        methods, never interleaved branches, so each platform's path can be
+        read and changed independently."""
         if _IS_WINDOWS:
             if containment is None:
                 raise EngineContainmentError(
@@ -319,6 +324,14 @@ class ClaudeHeadlessEngine:
             return self._run_windows_contained(
                 execution_id, prompt_file, workspace, containment,
             )
+        return self._run_posix(execution_id, prompt_file, workspace)
+
+    def _run_posix(
+        self, execution_id: str, prompt_file: Path | str, workspace: Path | str,
+    ) -> EngineResult:
+        """POSIX execution: no Job-Object equivalent — the process-group
+        boundary (``start_new_session`` + ``os.killpg``) is the containment.
+        """
         env = self._hygienic_env()  # api_key mode fails fast here, pre-spawn
         prompt_file = Path(prompt_file)
         workspace = Path(workspace)
@@ -789,32 +802,54 @@ _LEAF_STABLE_COUNT = 3
 
 
 def _all_pid_ppid_pairs(timeout_seconds: float = 15) -> dict[int, int]:
-    """pid -> parent pid for every process currently running (Windows only,
-    one CIM query per call). No psutil (deps frozen) — same constraint
-    _pid_image already lives under; tasklist alone doesn't expose PPID, so
-    this uses the same Win32_Process CIM class Windows itself uses to answer
-    "who is whose parent", via powershell.exe (already an OS-provided tool,
-    not a new dependency)."""
+    """pid -> parent pid for every process currently running, one process-
+    table snapshot per call. No psutil (deps frozen) — same constraint
+    _pid_image already lives under.
+
+    Windows: tasklist alone doesn't expose PPID, so this uses the same
+    Win32_Process CIM class Windows itself uses to answer "who is whose
+    parent", via powershell.exe (already an OS-provided tool, not a new
+    dependency). POSIX: ``ps -eo pid=,ppid=`` is the portable equivalent —
+    this branch is exercised by ``_resolve_and_persist_worker`` on every
+    non-Windows ``run()``, not merely a hypothetical path, so an unguarded
+    powershell.exe call here would silently strand every POSIX pidfile in
+    "resolving" state forever (caught by the except below, but never
+    resolving to a real leaf worker)."""
     try:
+        if _IS_WINDOWS:
+            out = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process | "
+                 "ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }"],
+                capture_output=True, text=True, timeout=max(0.01, timeout_seconds),
+            ).stdout
+            pairs: dict[int, int] = {}
+            for line in out.splitlines():
+                line = line.strip()
+                if not line or "," not in line:
+                    continue
+                pid_s, _, ppid_s = line.partition(",")
+                try:
+                    pairs[int(pid_s)] = int(ppid_s)
+                except ValueError:
+                    continue
+            return pairs
         out = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process | "
-             "ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }"],
+            ["ps", "-eo", "pid=,ppid="],
             capture_output=True, text=True, timeout=max(0.01, timeout_seconds),
         ).stdout
+        pairs = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            try:
+                pairs[int(parts[0])] = int(parts[1])
+            except ValueError:
+                continue
+        return pairs
     except (OSError, subprocess.SubprocessError):
         return {}
-    pairs: dict[int, int] = {}
-    for line in out.splitlines():
-        line = line.strip()
-        if not line or "," not in line:
-            continue
-        pid_s, _, ppid_s = line.partition(",")
-        try:
-            pairs[int(pid_s)] = int(ppid_s)
-        except ValueError:
-            continue
-    return pairs
 
 
 def _walk_descendants(

@@ -23,6 +23,21 @@ from pathlib import Path
 # config gains labeled gates — noted, not invented here.
 _DEFAULT_FAIL_TAXONOMY = "validation-test"
 _POWERSHELL = "powershell.exe"
+_IS_WINDOWS = os.name == "nt"
+
+
+def _shell_argv(cmd: str) -> list[str]:
+    """The platform shell invocation for one validation command string.
+
+    Windows: unchanged from the pre-existing PowerShell invocation (config's
+    ``project.validation.commands`` are authored as PowerShell today; this
+    repo's production runs are Windows-only). POSIX: ``/bin/sh -c``, the
+    portable shell entrypoint — never exercised in production yet, so this is
+    new capability, not a behavior change to any existing path.
+    """
+    if _IS_WINDOWS:
+        return [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", cmd]
+    return ["/bin/sh", "-c", cmd]
 
 
 @dataclass
@@ -140,7 +155,7 @@ class Validator:
                 log.write(b"\n--- flake-retry ---\n")
             try:
                 proc = subprocess.run(
-                    [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", cmd],
+                    _shell_argv(cmd),
                     cwd=str(workspace), shell=False,
                     stdout=log, stderr=subprocess.STDOUT,
                     env=self._child_env(),  # ADR-23: explicit child env, not inherited
