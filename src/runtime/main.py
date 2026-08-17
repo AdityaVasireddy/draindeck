@@ -5,6 +5,8 @@
   python -m runtime.main recover     --config CONFIG  run configured recovery
   python -m runtime.main check-config CONFIG        structural + env validation
   python -m runtime.main run         --config CONFIG  the orchestrator loop
+  python -m runtime.main init        REPO_PATH [--branch NAME] [--yes] [--force]
+                                                     onboard a target repo (doc 16)
 
 ``run`` is the Session-5 orchestrator: startup order (config → log → engine →
 adapter → reap_orphans → recover → health → ingest) then the doc 09 §8.2 loop.
@@ -34,6 +36,7 @@ from .events.log import (
 )
 from .events.projections import StateProjection
 from .events.schema import Event, EventType
+from .init.command import cmd_init
 from .loop import Orchestrator, OrchestratorHalt
 from .queue.issues_md import IssuesParseError, parse as parse_issues
 from .recovery.bindings import bind_reconciler
@@ -423,6 +426,12 @@ def main(argv=None) -> int:
     s.add_argument("--skip-baseline", action="store_true",
                    help="skip the first-run baseline-green health check")
     s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("init")
+    s.add_argument("repo_path")
+    s.add_argument("--branch", default="agent-work")
+    s.add_argument("--yes", action="store_true")
+    s.add_argument("--force", action="store_true")
+    s.set_defaults(fn=cmd_init)
     args = ap.parse_args(argv)
     return args.fn(args)
 
