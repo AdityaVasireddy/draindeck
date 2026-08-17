@@ -95,9 +95,25 @@ class QwenCfg(_Frozen):
     model: str
 
 
+# Known reviewer providers. A new provider is added here (and given a
+# factory in main.py's _REVIEWER_FACTORIES) rather than by widening a
+# Literal type — the two registries are the whole abstraction.
+KNOWN_REVIEWER_PROVIDERS: frozenset[str] = frozenset({"qwen"})
+
+
 class ReviewerCfg(_Frozen):
-    provider: Literal["qwen"]
+    provider: str
     qwen: Optional[QwenCfg] = None
+
+    @field_validator("provider")
+    @classmethod
+    def _known_provider(cls, v: str) -> str:
+        if v not in KNOWN_REVIEWER_PROVIDERS:
+            raise ValueError(
+                f"reviewer.provider {v!r} is not a known provider "
+                f"(known: {sorted(KNOWN_REVIEWER_PROVIDERS)})"
+            )
+        return v
 
 
 class BudgetCfg(_Frozen):  # ADR-09

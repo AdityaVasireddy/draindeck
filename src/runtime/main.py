@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .budget.manager import BudgetManager
 from .config import Config, ConfigError, load_config, validate_environment
@@ -226,14 +227,27 @@ def cmd_check_config(args) -> int:
 
 
 # ── orchestrator ──────────────────────────────────────────────────────
+def _make_qwen_reviewer(cfg: Config) -> ReviewerProvider:
+    q = cfg.reviewer.qwen
+    return QwenOllamaReviewer(q.endpoint, q.model)
+
+
+# Provider abstraction: config.py's KNOWN_REVIEWER_PROVIDERS gates what
+# reaches here at all; a new provider is added by registering a factory
+# below, not by editing this function's control flow.
+_REVIEWER_FACTORIES: dict[str, Callable[[Config], ReviewerProvider]] = {
+    "qwen": _make_qwen_reviewer,
+}
+
+
 def _make_reviewer(cfg: Config) -> ReviewerProvider:
-    if cfg.reviewer.provider == "qwen":
-        q = cfg.reviewer.qwen
-        return QwenOllamaReviewer(q.endpoint, q.model)
-    raise NotImplementedError(
-        "reviewer.provider=claude (ClaudeReviewer) is deferred to Session 7; "
-        "v1 ships the qwen provider only"
-    )
+    try:
+        factory = _REVIEWER_FACTORIES[cfg.reviewer.provider]
+    except KeyError:
+        raise NotImplementedError(
+            f"no reviewer factory registered for provider {cfg.reviewer.provider!r}"
+        ) from None
+    return factory(cfg)
 
 
 def _reviewer_reachable(cfg: Config) -> tuple[bool, str]:
