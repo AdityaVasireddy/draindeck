@@ -513,6 +513,316 @@ residue commit is not dangling in `git fsck`.
 
 ---
 
+## 5f. ADR-24 — Explicit no-validation contract: `acknowledged_no_gate`
+
+**Status:** ACCEPTED · **Date:** 2026-08-17. Drafted from `docs/17-issue-
+b-no-validation-contract-spec.md` (approved) and `tasks/plan.md`'s Phase 1
+evidence package, per the workflow CLAUDE.md and doc 17 require: ADR
+review precedes any Issue B `src/` change, not the reverse. This ADR
+authorizes the *architecture*; it does not itself authorize `/build` —
+implementation still proceeds through Issue B's own five-gate +
+60/60-both-seeds floor (doc 17 §5, `tasks/plan.md` Phase 7), and a second,
+later compliance check against the *landed* diff is required before Issue
+B may be called done (`tasks/plan.md` Unit 7).
+
+**Problem.** `ValidationCfg.commands` (`config.py:32`) currently requires
+`Field(min_length=1)`, and `Validator.__init__` (`validation/
+runner.py:69-70`) independently raises on an empty command list — two
+enforcement points, no escape hatch. Some target repositories (or some
+phases of onboarding a repository, before a real check exists) have no
+meaningful automated validation command to configure. Today this means
+`draindeck init` refuses to write a config at all for such a repository
+(doc 16 §2 "Issue A" subsection), and no config can ever represent "this
+repository is intentionally running without a validation gate" — only
+"validation configuration is incomplete." The gap is real: an operator
+who wants to run Draindeck against such a repository has no path other
+than inventing a fake command that either always passes (worse than no
+gate — it fabricates false assurance) or always fails (blocks every
+issue). This ADR decides whether, and how, to add a genuine no-gate path
+without ever letting an empty command list mean "no gate" *by accident*.
+
+**Evidence (VERIFIED this session, against HEAD `ba447e1`, before any
+Issue B `src/` change exists).**
+
+*Evidence 1 — state-transition consumers depend on event TYPE and
+`validated_commit`, never on `gate_results` length.*
+- `state/transitions.py:58-59`: `(ExecutionState.VALIDATING,
+  EventType.VALIDATION_PASSED): lambda p: ExecutionState.REVIEWING` — the
+  transition function is a constant lambda; it receives the event payload
+  (`p`) and **ignores it entirely**. The state reached depends only on
+  which event type fired, never on the payload's contents.
+- `events/projections.py:421-422`
+  (`_execution_transition`'s `EventType.VALIDATION_PASSED` branch):
+  `view.validated_commit = ev.payload.get("validated_commit")` — the only
+  field read off this event anywhere in the projection layer.
+  `gate_results` is never accessed by `_execution_transition`
+  (`events/projections.py:403-429`, read in full this session) or by
+  `StateProjection.digest()` (`events/projections.py:141-168`) — the
+  digest's execution tuple (lines 144-149) includes `validated_commit`
+  but not `gate_results`.
+- `ValidationReport`'s documented shape (doc 03:104,
+  `{schema_version, execution_id, validated_commit, gates:[...],
+  flake_retries, passed}`) places no minimum length on `gates`; `doc
+  03:41-43` states `REVIEWING`'s precondition as
+  "`ValidationReport(passed)` for same hash" — a boolean plus a hash, not
+  a claim about how many gates ran.
+
+*Evidence 2 — recovery/reconciliation does not inspect validation-result
+content.* `src/runtime/recovery/` (all three files —
+`bindings.py`, `containment.py`, `reconciler.py`) grepped this session for
+`gate_results`, `ValidationPassed`, `ValidationFailed`, and
+`validated_commit`: **zero matches in any file.** No reconciler seam
+(`preserve_residue`, `check_unwitnessed_commit`, `check_dirty_workspace`)
+branches on, counts, or otherwise depends on the length or content of a
+`ValidationPassed` event's `gate_results`.
+
+*Evidence 3 — replay experiment (pre-implementation architectural
+evidence; no `src/`/`tests/` change persisted).* Using a scratchpad-only
+script (`adr24_replay_probe.py`, uncommitted — same convention as ADR-23's
+`witness_synth_control.py`/`witness_repin_2_1_215.py` witnesses, doc 08
+§5d), a legal event sequence was hand-built with TODAY's unmodified
+`events/schema.py`/`events/projections.py` (`IssueCreated` →
+`IssueActivated` → `ExecutionSpawned` → `ExecutionFinished(outcome="OK")`
+→ `ValidationPassed(validated_commit=..., gate_results=[],
+flake_retries=0)`) and replayed through `StateProjection().rebuild(...)`.
+**Observed result:** no exception raised; the execution reached
+`ExecutionState.REVIEWING` (matching the transition table's
+`VALIDATING`→`REVIEWING` edge exactly); `validated_commit` was set
+correctly on the resulting `ExecutionView`; `StateProjection.digest()`
+computed successfully. A contrasting run with the same sequence but a
+**non-empty** `gate_results` list produced the **identical** downstream
+execution state (`REVIEWING`) — direct, observed confirmation that
+today's state machine does not distinguish an empty from a populated
+`gate_results` list in any way. This is evidence the premise holds against
+the codebase *as it exists right now*, independent of whether `Validator`/
+`Config` can yet produce such an event (they cannot, until Units 1-2 of
+`tasks/plan.md` land) — the consumption path already exists; only the
+production path is new.
+
+*Evidence 4 — no config-fingerprint/identity mechanism exists.* All
+`hashlib`/`sha256` usage in `src/` (three sites) was inspected this
+session: `workspace_lease.py:72,153` hashes a workspace *path string* into
+a mutex name; `engine/claude_headless.py:1054-1067`
+(`capture_work_liveness`) hashes a work-target *file's bytes* for
+containment-kill liveness witnessing; `events/projections.py:141-168`
+(`StateProjection.digest`) hashes the event-log-derived state projection,
+explicitly excluding even static issue metadata as "not state identity."
+`Config`/`load_config` (`config.py:165-179`) returns a fresh object on
+every call; nothing pins, hashes, or compares configs across runs
+anywhere in `src/`. No reconciliation is required with any existing
+fingerprint mechanism, because none exists.
+
+**Decision — the architecture in doc 17 is ACCEPTED, on this evidence,
+with no changes to its central premise.**
+
+1. **Explicit no-gate authorization.** A configuration MAY contain
+   `validation: {commands: [], acknowledged_no_gate: true}`. An empty
+   `commands` list without `acknowledged_no_gate: true` remains invalid
+   configuration, rejected at structural load (`ConfigError`), before any
+   workspace/log/engine involvement — this is unchanged from doc 17 §2a/
+   §2g and is not weakened by this ADR.
+2. **Defense in depth is intentional, not a smell.** Two independent
+   enforcement sites remain: `ValidationCfg`'s cross-field model
+   validator (schema layer) and `Validator.__init__`'s own guard
+   (construction layer). A directly constructed `Validator` — outside any
+   `Config` object, e.g. from a test or a future caller — still requires
+   `acknowledged_no_gate=True` explicitly; the config layer alone is not
+   trusted to be the only gate a hand-built `Validator` passes through.
+   This mirrors this repo's own existing precedent
+   (`_powershell_safe_commands`'s `$`-check duplicated independently in
+   both `config.py:66-67` and `runner.py:71-72`) and is not collapsed
+   into a single check.
+3. **Vacuous validation is a real, first-class outcome.** An
+   acknowledged-empty `Validator` runs zero configured commands, returns
+   `passed=True`, and `gate_results() == []`. Gap-2 `extra_commands`
+   (doc 08 Amendment, Session 35) remain fully active and can still fail
+   validation — the no-gate acknowledgement covers only the
+   config-sourced baseline, never the per-execution new-test-file
+   mechanism.
+4. **`ValidationPassed(gate_results=[])` is judged a semantically valid,
+   frozen-contract-compatible `ValidationPassed` for the same
+   `validated_commit`/tree hash, and satisfies `REVIEWING`'s doc-03 entry
+   precondition identically to a populated result.** This is the central
+   decision (see "Frozen-contract conclusion," restated in the report
+   below) and it is grounded in Evidence 1-3 above, not asserted by
+   analogy: the transition table's own lambda ignores payload content:
+   there is no `len(gate_results)` branch anywhere in `src/` for this ADR
+   to be inconsistent with.
+5. **No event-schema expansion.** No new event type (e.g. no
+   `ValidationWaived`), no new event field, and no new state-machine
+   branch are introduced solely to represent acknowledged no-gate
+   execution. `ValidationPassed` now legitimately represents two distinct
+   real-world situations — a real configured check ran and passed, or an
+   explicitly acknowledged configured-check-free pass — and downstream
+   consumers are decided, by this ADR, to intentionally NOT distinguish
+   them by event shape. The distinguishing fact (whether a gate was
+   configured at all) lives in the *config* that produced the run, and in
+   the human-readable `gate_results` length within the event itself — not
+   in a second event type.
+6. **Baseline-green behavior is unchanged in structure.** The ADR-20
+   baseline-green check (`main.py:323-335`) continues to construct and
+   invoke `Validator` exactly as today; an acknowledged-empty baseline is
+   vacuously green (zero subprocess spawned, nothing to time out) but
+   MUST remain operator-visible — the startup log line is required to say
+   so explicitly (doc 17 §2d), not simply print the unqualified
+   `"baseline green"` a real pass would.
+7. **CLI trust boundary.** `--yes` alone MUST NOT authorize the
+   no-validation decision under any flag combination. The only paths to
+   an acknowledged-empty generated config are: `--no-validation` plus
+   interactive confirmation of a dedicated, separate prompt, or
+   `--no-validation --yes-no-validation` as the explicit non-interactive
+   acknowledgement (doc 17 §2h — locked flag names, not placeholders).
+   `--force` retains only its existing Issue A config-overwrite meaning
+   and is not reused or overloaded for this purpose.
+
+**Future architectural invariant (binding on later work, not just this
+feature).** `ValidationPassed.gate_results` MUST NOT be assumed non-empty
+by any future consumer. Any later code that reads `gate_results` — a new
+reviewer heuristic, a reporting tool, a future reconciler seam — must
+treat `[]` as a valid, meaningful value (a real, acknowledged no-gate
+pass), not as a malformed or unexpected shape. This is a direct consequence
+of decision 5 above, recorded explicitly so it is not silently violated by
+a future change that assumes otherwise.
+
+**What this ADR claims, and what it does not.** This ADR establishes that
+the no-gate architecture is compatible with the frozen contracts *as
+those contracts and their actual consumers exist today*, evidenced by
+direct inspection and a live replay experiment. It does **not** claim
+that the *landed Issue B implementation* will conform to this decision
+without its own verification — `tasks/plan.md`'s Unit 6 (post-
+implementation integration evidence) and the final acceptance gate's ADR-24
+compliance re-check exist specifically because an approved architecture
+and a correctly shipped implementation are two different claims, verified
+at two different times, against two different kinds of evidence (a
+hand-built event today vs. the actual `Config`→`Validator`→
+`Orchestrator._validate`→emitted-event chain once it exists).
+
+**Options considered.**
+- **A — the doc-17 architecture (explicit `acknowledged_no_gate` flag,
+  vacuous `ValidationPassed`, no schema change). ADOPTED.** Evidence 1-3
+  show the existing consumers are indifferent to `gate_results` content;
+  this is the smallest change that closes the gap without touching a
+  frozen contract, and it keeps the auditability property (the
+  acknowledgement is explicit, config-visible, and operator-reported at
+  every surface: check-config, baseline, `_print_report`).
+- **B — skip `Validator` construction entirely when no gate is
+  configured, replacing it with a distinct no-op code path in the
+  orchestrator/baseline check. REJECTED.** Doc 17 §2c/§2d already reasoned
+  through this: it requires a second control-flow branch whose only job
+  is "don't call this," for zero behavioral difference once `Validator`
+  itself vacuously passes on an empty acknowledged list — unnecessary
+  complexity for an outcome the simpler option already produces
+  correctly, and it would mean the baseline-check code path is no longer
+  uniform across configs, doubling the surface a future bug could hide
+  in.
+- **C — add a new event type (`ValidationWaived` or similar) to
+  distinguish a real pass from an acknowledged vacuous one. REJECTED.**
+  This is the one alternative that would have required touching THE
+  FROZEN CONTRACT (doc 03's event vocabulary) for a distinction Evidence
+  1-2 show no current consumer needs. It would also require every future
+  consumer of validation results to learn a second event type
+  permanently, in exchange for a distinction already fully recoverable
+  from `gate_results`'s length within the existing `ValidationPassed`
+  event — strictly worse: more surface, no consumer benefits from it
+  today, and it is exactly the kind of ad hoc frozen-contract change
+  CLAUDE.md requires an ADR to justify, which this ADR does not find
+  justification for.
+- **D — treat an empty `commands` list as implicitly valid (no
+  acknowledgement field at all; empty just means "no gate," silently).
+  REJECTED.** This is precisely the failure mode the whole feature exists
+  to prevent — an operator (or a config generated by a future tool, or a
+  typo that drops the last list entry) could end up running unattended
+  with zero validation and no visible signal anywhere that this was
+  intentional. Rejected outright, not seriously weighed against the
+  adopted option.
+- **E — enforce the acknowledgement only in `Config` (schema layer),
+  drop the `Validator`-level guard. REJECTED.** A directly constructed
+  `Validator` (bypassing `Config` entirely — tests do this today, and any
+  future caller could) would then silently vacuous-pass on an empty list
+  with no acknowledgement anywhere in that call. This is the same class
+  of gap ADR-23's own `_powershell_safe_commands`/`Validator` `$`-check
+  duplication already exists to close; collapsing to one layer reopens
+  it for this feature specifically.
+- **F — enforce the acknowledgement only in `Validator` (construction
+  layer), drop the `Config`-level guard. REJECTED.** Would let an
+  unacknowledged `commands: []` config load successfully and only fail
+  much later, deep inside orchestrator startup, instead of failing at the
+  earliest possible point (`load_config`, before workspace/log/engine
+  ownership — doc 17 §2g). Later failure is strictly worse operator
+  experience for an error that is knowable at parse time, and it
+  contradicts this repo's own established preference for the earliest
+  possible refusal point (the recovery-before-checkout ordering rationale
+  in ADR-20 Amendment 2 is the same instinct applied here).
+- **G — let `--yes` alone authorize no-validation, no second flag.
+  REJECTED.** `--yes` today means "accept the detected configuration
+  default" — there is no detected default to accept in the no-gate case,
+  so overloading it would silently expand what an existing, already-
+  understood flag means. This is exactly the class of decision the
+  existing dependency-install trust boundary (`confirm_and_run_install`,
+  doc 16 §4 step 4) already established needs its own explicit gate
+  independent of `--yes` — the no-validation decision is at least as
+  consequential and gets the same treatment, not a lesser one.
+- **H — overload `--force` for the no-validation acknowledgement instead
+  of a new flag. REJECTED.** `--force` has one existing, well-understood
+  meaning (config-overwrite authorization, Issue A). Reusing it for an
+  unrelated authorization (running without a validation gate) would make
+  a single flag's presence ambiguous between two different consequences,
+  which is strictly worse for an operator reading a command line than two
+  named flags each doing one thing.
+- **I — reject `acknowledged_no_gate: true` when `commands` is non-empty
+  (mutual exclusion). REJECTED, in favor of accepting it.** Doc 17 §2a's
+  reasoning stands: forcing mutual exclusivity would require an operator
+  who adds a real check later to remember to flip the flag back off, and
+  a stale `true` alongside real commands is harmless — the commands still
+  run, the flag is simply unused. Rejecting it would add a rejection path
+  that protects against nothing (no unsafe state results from the
+  combination) at the cost of a config that could otherwise be written
+  once and edited incrementally.
+
+**Consequences.**
+- **Less automated execution assurance for acknowledged-no-gate drains.**
+  This is the accepted, load-bearing tradeoff, not a side effect —
+  auditability is provided entirely by the explicit config
+  acknowledgement and its visibility at every operator-facing surface
+  (check-config's NOTE line, the baseline-check log line, `init`'s
+  `_print_report`), not by any automated check.
+- **`ValidationPassed` now represents two distinct real-world
+  situations** — a real configured validation pass, and an explicitly
+  acknowledged configured-validation-free pass — **without distinguishing
+  them by event type.** This is decision 5 above, and it is the specific
+  fact the "future architectural invariant" note exists to keep visible
+  to later engineers.
+- **Gap-2 `extra_commands` remain fully meaningful** even under
+  `acknowledged_no_gate=True` — a repository with no baseline check
+  configured can still have child-authored new test files gated, which is
+  strictly better than "no gate at all, ever" for that repository.
+- **Old configs are unaffected.** `acknowledged_no_gate` defaults to
+  `False`; any config that loaded successfully before this ADR's
+  implementation lands continues to load with identical parsed values and
+  identical downstream behavior (doc 17 §2i).
+- **Defense-in-depth duplication (`Config` + `Validator`) is deliberate
+  and is not to be "simplified" into one check later** without a new ADR
+  revisiting this decision specifically.
+- **This ADR does not authorize implementation.** Issue B's `src/`
+  implementation (`tasks/plan.md` Units 1-6) proceeds only after this ADR
+  is independently reviewed and approved by the external reviewer this
+  ADR is now handed to, exactly as doc 17/`tasks/plan.md` specify.
+
+**Gate chain before Issue B's `src/` mechanism lands.** ADR-24 drafted
+(done, above, this session) → **external review and approval** (not yet
+done — this ADR is Proposed-then-Accepted only in the sense that it
+records the drafting session's own conclusion; it is held for the same
+external-review step doc 17 itself went through before this session began
+drafting it) → Issue B `tasks/plan.md` Units 1-6 (`ValidationCfg`
+schema, `Validator` guard, `main.py` wiring, `init` flags, generated YAML,
+integration evidence) → unit suite green → durability harness 60/60 on
+BOTH seed 42 and seed 1337 → a SECOND, later ADR-24 compliance check
+against the landed diff (not this drafting session's prediction of it) →
+Issue B complete. `src/` changes are legitimate only as the implementation
+of an Accepted-and-reviewed ADR, per this repo's standing rule.
+
+---
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml
