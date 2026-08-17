@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 460" font-family="Consolas, monospace" font-size="13">
+  <rect x="0" y="0" width="900" height="460" fill="#ffffff"/>
+
+  <rect x="20" y="20" width="860" height="300" rx="6" fill="none" stroke="#222" stroke-width="2"/>
+  <text x="36" y="44" font-weight="bold">ORCHESTRATOR (single Python process, no LLM, single writer)</text>
+
+  <g stroke="#222" stroke-width="1.5" fill="none">
+    <rect x="40" y="64" width="180" height="70" rx="4"/>
+    <rect x="250" y="64" width="180" height="70" rx="4"/>
+    <rect x="460" y="64" width="200" height="70" rx="4"/>
+
+    <rect x="40" y="160" width="180" height="70" rx="4"/>
+    <rect x="250" y="160" width="180" height="70" rx="4"/>
+    <rect x="460" y="160" width="200" height="70" rx="4"/>
+
+    <rect x="130" y="256" width="270" height="46" rx="4"/>
+    <rect x="460" y="256" width="270" height="46" rx="4"/>
+  </g>
+
+  <g fill="#111">
+    <text x="60" y="88" font-weight="bold">Task Ingest</text>
+    <text x="60" y="106">Issues.md sync</text>
+
+    <text x="270" y="88" font-weight="bold">Event Log</text>
+    <text x="270" y="106">append-only JSONL</text>
+    <text x="270" y="122">fsync'd, truth</text>
+
+    <text x="480" y="88" font-weight="bold">Reconciler</text>
+    <text x="480" y="106">startup boundary</text>
+    <text x="480" y="122">healing checks</text>
+
+    <text x="60" y="184" font-weight="bold">Workspace Manager</text>
+    <text x="60" y="202">git ops, attempt refs</text>
+
+    <text x="270" y="184" font-weight="bold">Validator</text>
+    <text x="270" y="202">deterministic gate</text>
+    <text x="270" y="218">chain, flake retry</text>
+
+    <text x="480" y="184" font-weight="bold">Projections</text>
+    <text x="480" y="202">queue view, metrics</text>
+    <text x="480" y="218">rebuildable</text>
+
+    <text x="150" y="284" font-weight="bold">Engine seam</text>
+    <text x="480" y="284" font-weight="bold">Reviewer seam</text>
+  </g>
+
+  <line x1="230" y1="279" x2="230" y2="340" stroke="#222" stroke-width="1.5"/>
+  <line x1="620" y1="279" x2="620" y2="340" stroke="#222" stroke-width="1.5"/>
+  <polygon points="230,346 224,336 236,336" fill="#222"/>
+  <polygon points="620,346 614,336 626,336" fill="#222"/>
+  <text x="236" y="336" font-size="11" fill="#444">subprocess</text>
+  <text x="626" y="336" font-size="11" fill="#444">single-shot call</text>
+
+  <g stroke="#222" stroke-width="1.5" fill="none">
+    <rect x="110" y="350" width="240" height="90" rx="4"/>
+    <rect x="500" y="350" width="240" height="90" rx="4"/>
+  </g>
+  <g fill="#111">
+    <text x="130" y="374" font-weight="bold">Claude Code headless</text>
+    <text x="130" y="392">claude -p</text>
+    <text x="130" y="408">JSON output = advisory only</text>
+
+    <text x="520" y="374" font-weight="bold">Qwen (Ollama)</text>
+    <text x="520" y="392">config-selected provider</text>
+    <text x="520" y="408">never sees the repo</text>
+  </g>
+</svg>

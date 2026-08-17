@@ -18,6 +18,14 @@ file only — its `STATUS` text is never parsed or treated as runtime state.
 This is a solo/small-scale tool, not a multi-tenant service: it targets one
 configured repository at a time, run from a local Windows machine.
 
+## Architecture
+
+![Draindeck orchestrator architecture](docs/architecture.svg)
+
+Full component responsibilities and the happy-path sequence diagram live in
+`docs/02-architecture-specification.md` — the diagram above is a summary, not
+a replacement for that frozen contract.
+
 ## Requirements
 
 - Windows with Windows PowerShell (`powershell.exe`)
