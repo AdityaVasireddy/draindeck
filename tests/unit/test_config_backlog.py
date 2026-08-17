@@ -13,14 +13,16 @@ from runtime.main import _REVIEWER_FACTORIES, _make_reviewer  # noqa: E402
 from runtime.reviewer.qwen_ollama import QwenOllamaReviewer  # noqa: E402
 
 
-def _write_config(path: Path, provider: str = "qwen", command: str = "exit 0") -> None:
+def _write_config(path: Path, provider: str = "qwen", command: str = "exit 0",
+                   validation_extra: str = "") -> None:
+    commands_line = "commands: []" if command is None else f"commands: ['{command}']"
     path.write_text(f"""project:
   name: example
   repository: C:\\target
   branch: main
   validation:
-    commands: ['{command}']
-engine:
+    {commands_line}
+{validation_extra}engine:
   provider: claude-headless
   auth_mode: subscription
 reviewer:
@@ -73,3 +75,69 @@ def test_reviewer_factory_registry_matches_known_providers():
     and vice versa — otherwise a config-valid provider would blow up at
     reviewer construction instead of at load time."""
     assert set(_REVIEWER_FACTORIES) == KNOWN_REVIEWER_PROVIDERS
+
+
+# ── ADR-24: explicit no-validation contract (acknowledged_no_gate) ────────
+
+def test_empty_commands_without_acknowledgement_is_rejected(tmp_path):
+    path = tmp_path / "config.yaml"
+    _write_config(path, command=None)
+    with pytest.raises(ConfigError, match="acknowledged_no_gate"):
+        load_config(path)
+
+
+def test_empty_commands_with_acknowledgement_false_is_rejected(tmp_path):
+    path = tmp_path / "config.yaml"
+    _write_config(path, command=None,
+                   validation_extra="    acknowledged_no_gate: false\n")
+    with pytest.raises(ConfigError, match="acknowledged_no_gate"):
+        load_config(path)
+
+
+def test_empty_commands_with_acknowledgement_true_is_accepted(tmp_path):
+    path = tmp_path / "config.yaml"
+    _write_config(path, command=None,
+                   validation_extra="    acknowledged_no_gate: true\n")
+    cfg = load_config(path)
+    assert cfg.project.validation.commands == []
+    assert cfg.project.validation.acknowledged_no_gate is True
+
+
+def test_nonempty_commands_with_acknowledgement_false_is_accepted(tmp_path):
+    path = tmp_path / "config.yaml"
+    _write_config(path, command="exit 0")
+    cfg = load_config(path)
+    assert cfg.project.validation.commands == ["exit 0"]
+    assert cfg.project.validation.acknowledged_no_gate is False
+
+
+def test_nonempty_commands_with_acknowledgement_true_is_accepted(tmp_path):
+    """ADR-24: no mutual exclusion -- a stale acknowledgement alongside
+    real commands is accepted, not rejected (doc 17 Sec2a)."""
+    path = tmp_path / "config.yaml"
+    _write_config(path, command="exit 0",
+                   validation_extra="    acknowledged_no_gate: true\n")
+    cfg = load_config(path)
+    assert cfg.project.validation.commands == ["exit 0"]
+    assert cfg.project.validation.acknowledged_no_gate is True
+
+
+def test_old_style_config_without_the_field_still_loads_and_defaults_false(tmp_path):
+    """Compatibility regression guard (doc 17 Sec2i): a config written
+    before acknowledged_no_gate existed still loads, with every other
+    parsed value unchanged."""
+    path = tmp_path / "config.yaml"
+    _write_config(path, command="exit 0")
+    cfg = load_config(path)
+    assert cfg.project.validation.acknowledged_no_gate is False
+    assert cfg.project.validation.commands == ["exit 0"]
+    assert cfg.project.validation.timeout_seconds == 600
+
+
+def test_powershell_safe_commands_check_still_active_with_new_validator(tmp_path):
+    """Regression guard: adding the ValidationCfg model_validator must not
+    disturb the existing field_validator's `$`-rejection."""
+    path = tmp_path / "config.yaml"
+    _write_config(path, command="Write-Output $env:PATH")
+    with pytest.raises(ConfigError, match="may not contain"):
+        load_config(path)

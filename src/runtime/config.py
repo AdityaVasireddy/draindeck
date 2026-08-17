@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ConfigError(ValueError):
@@ -29,8 +29,16 @@ class _Frozen(BaseModel):
 
 
 class ValidationCfg(_Frozen):
-    commands: list[str] = Field(min_length=1)
+    commands: list[str] = Field()
     timeout_seconds: int = Field(gt=0, default=600)
+    # ADR-24 (doc 08 §5f): explicit no-validation acknowledgement. commands
+    # may be empty ONLY when this is True -- enforced below by
+    # _no_gate_requires_acknowledgement, not by Field(min_length=1), so the
+    # two conditions can be checked together. Defaults False: every config
+    # written before this field existed parses with acknowledged_no_gate
+    # unset -> False -> its non-empty commands list (the only way it could
+    # have loaded under the old min_length=1 rule) still validates.
+    acknowledged_no_gate: bool = False
     # ADR-23 rule 3 (doc 08 §5d): extra vars merged into the VALIDATION child
     # env by Validator._run_once. ADR-18/ADR-22 hygiene governs the engine
     # child only — this is the validator child's equivalent, and it is not the
@@ -66,6 +74,21 @@ class ValidationCfg(_Frozen):
         if any("$" in command for command in value):
             raise ValueError("validation.commands may not contain '$'; use a .ps1 file with -File")
         return value
+
+    @model_validator(mode="after")
+    def _no_gate_requires_acknowledgement(self) -> "ValidationCfg":
+        # ADR-24: an empty commands list is invalid UNLESS the operator has
+        # explicitly acknowledged running without a validation gate. Non-empty
+        # commands are always valid regardless of acknowledged_no_gate --
+        # ADR-24 deliberately does not enforce mutual exclusion (a stale
+        # `true` alongside real commands is harmless; commands still run).
+        if not self.commands and not self.acknowledged_no_gate:
+            raise ValueError(
+                "validation.commands is empty; set "
+                "validation.acknowledged_no_gate: true to intentionally run "
+                "without a validation gate, or supply at least one command"
+            )
+        return self
 
 
 class ProjectCfg(_Frozen):

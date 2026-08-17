@@ -160,8 +160,8 @@ def _config(max_attempts=3):
 
 
 def _build(tmp_path, *, issues, engine=None, validator=None, reviewer=None,
-           max_attempts=3, budget=None):
-    cfg = _config(max_attempts)
+           max_attempts=3, budget=None, cfg=None):
+    cfg = cfg or _config(max_attempts)
     log = EventLog(tmp_path / "events.jsonl")
     proj = StateProjection()
     for iid, deps in issues:
@@ -356,3 +356,104 @@ def _last_payload(orch, etype):
         if ev.type is etype:
             last = ev.payload
     return last
+
+
+# ── ADR-24 (doc 08 §5f): post-implementation conformity verification.
+# This does NOT authorize the architecture -- ADR-24 already did that,
+# grounded in pre-implementation evidence (a hand-built event replayed
+# through today's already-existing events/projections.py, see the
+# scratchpad probe cited in ADR-24). This proves the LANDED
+# Config -> Validator -> Orchestrator._validate -> emitted-event chain
+# actually produces the event ADR-24's premise was evaluated against. ──
+
+def _config_no_gate(max_attempts=3, **validation_extra):
+    return Config.model_validate({
+        "project": {"name": "T", "repository": ".", "branch": "agent-work",
+                    "validation": {"commands": [], "acknowledged_no_gate": True,
+                                   **validation_extra}},
+        "engine": {"provider": "claude-headless", "auth_mode": "subscription"},
+        "reviewer": {"provider": "qwen",
+                     "qwen": {"endpoint": "http://x", "model": "q"}},
+        "budget": {"max_attempts_per_issue": max_attempts,
+                   "max_executions_per_run": 50,
+                   "hard_stop_proxy_cost_per_run_usd": 100.0},
+        "experiment": {"sample_size": 20, "attempt1_success_min": 0.3,
+                       "cost_per_shipped_issue_max_usd": 3.0},
+        "billing": {"posture": "p", "headless_split_status": "paused",
+                    "verified_on": "2026-07-10", "reverify_at": "x"},
+    })
+
+
+def test_acknowledged_no_gate_full_drain_ships_issue_with_empty_gate_results(tmp_path):
+    """The real Config->Validator->Orchestrator._validate chain: an
+    acknowledged-empty baseline still drives a full drain to ACCEPTED,
+    emitting ValidationPassed with gate_results: [] and the correct
+    validated_commit -- exactly the event ADR-24 approved."""
+    from runtime.validation.runner import Validator
+
+    cfg = _config_no_gate()
+    validator = Validator([], timeout_seconds=30, artifacts_dir=tmp_path / "art",
+                          acknowledged_no_gate=True)
+    orch = _build(tmp_path, issues=[("001", [])], cfg=cfg, validator=validator)
+    orch.run()
+
+    assert orch.proj.issues["001"] is IssueState.DONE
+    ex = orch.proj.latest_execution("001")
+    assert ex.state is ExecutionState.ACCEPTED and ex.commit_created
+
+    payload = _last_payload(orch, EventType.VALIDATION_PASSED)
+    assert payload is not None
+    assert payload["gate_results"] == []
+    assert payload["validated_commit"] == ex.end_commit
+    assert ex.validated_commit == ex.end_commit
+
+    # replay/recovery: a FRESH projection rebuilt purely from the logged
+    # events reaches the identical state -- the landed-code counterpart of
+    # ADR-24's pre-implementation replay evidence.
+    fresh = StateProjection().rebuild(orch.log.replay())
+    fresh_ex = fresh.latest_execution("001")
+    assert fresh_ex.state is ExecutionState.ACCEPTED
+    assert fresh_ex.validated_commit == ex.validated_commit
+
+
+def test_acknowledged_no_gate_with_gap2_extra_passes_and_is_recorded(tmp_path):
+    """Gap-2 extra_commands remain active and appear in gate_results even
+    when the configured baseline is acknowledged-empty."""
+    from runtime.validation.runner import Validator
+
+    cfg = _config_no_gate(new_test_pattern="*.py",
+                          new_test_command_prefix="exit 0 #")
+    validator = Validator([], timeout_seconds=30, artifacts_dir=tmp_path / "art",
+                          acknowledged_no_gate=True)
+    orch = _build(tmp_path, issues=[("001", [])], cfg=cfg, validator=validator)
+    orch.adapter.added_files = lambda base, end: ["new_test.py"]
+    orch.run()
+
+    assert orch.proj.issues["001"] is IssueState.DONE
+    payload = _last_payload(orch, EventType.VALIDATION_PASSED)
+    names = [g["gate"] for g in payload["gate_results"]]
+    assert names == ["exit 0 # new_test.py"]
+    assert all(g["passed"] for g in payload["gate_results"])
+
+
+def test_acknowledged_no_gate_with_failing_gap2_extra_fails_validation(tmp_path):
+    """A failing Gap-2 extra still fails validation under an
+    acknowledged-empty baseline -- the no-gate acknowledgement is not a
+    bypass for child-authored new test files."""
+    from runtime.validation.runner import Validator
+
+    cfg = _config_no_gate(max_attempts=1, new_test_pattern="*.py",
+                          new_test_command_prefix="exit 1 #")
+    validator = Validator([], timeout_seconds=30, artifacts_dir=tmp_path / "art",
+                          acknowledged_no_gate=True)
+    orch = _build(tmp_path, issues=[("001", [])], cfg=cfg, validator=validator,
+                  max_attempts=1)
+    orch.adapter.added_files = lambda base, end: ["new_test.py"]
+    orch.run()
+
+    assert orch.proj.issues["001"] is IssueState.NEEDS_HUMAN  # cap-hit after 1 attempt
+    payload = _last_payload(orch, EventType.VALIDATION_FAILED)
+    assert payload is not None
+    names = [g["gate"] for g in payload["gate_results"]]
+    assert names == ["exit 1 # new_test.py"]
+    assert all(not g["passed"] for g in payload["gate_results"])

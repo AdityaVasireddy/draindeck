@@ -12,11 +12,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from runtime.config import load_config  # noqa: E402
+from runtime.init import command as command_module  # noqa: E402
 from runtime.init.command import (  # noqa: E402
     InitAbort,
     cmd_init,
     confirm_and_run_install,
     confirm_detected_command,
+    confirm_no_validation,
     resolve_validation_command,
     run_preflight,
     setup_branch,
@@ -316,11 +318,14 @@ def test_install_confirm_invokes_exactly_the_proposed_command(tmp_path: Path):
 
 # ── Unit 8: cmd_init end-to-end ──────────────────────────────────────
 class _Args:
-    def __init__(self, repo_path, branch="agent-work", yes=False, force=False):
+    def __init__(self, repo_path, branch="agent-work", yes=False, force=False,
+                 no_validation=False, yes_no_validation=False):
         self.repo_path = str(repo_path)
         self.branch = branch
         self.yes = yes
         self.force = force
+        self.no_validation = no_validation
+        self.yes_no_validation = yes_no_validation
 
 
 def test_cmd_init_end_to_end_rust_yes(tmp_path: Path, monkeypatch, repo: Path):
@@ -540,3 +545,249 @@ def test_cmd_init_interactive_install_launch_failure_still_completes(
     cfg = load_config(dest)
     assert cfg.project.validation.commands == ["cargo test"]
     assert any("WARNING" in m for m in messages)
+
+
+# ── ADR-24 (doc 08 §5f): confirm_no_validation ──────────────────────────
+
+def test_confirm_no_validation_yes_no_validation_true_never_prompts():
+    calls = {"input": 0}
+    result = confirm_no_validation(
+        yes_no_validation=True,
+        input_fn=lambda p: calls.__setitem__("input", calls["input"] + 1) or "y",
+    )
+    assert result is True
+    assert calls == {"input": 0}
+
+
+def test_confirm_no_validation_interactive_confirm():
+    result = confirm_no_validation(yes_no_validation=False, input_fn=lambda p: "y")
+    assert result is True
+
+
+def test_confirm_no_validation_interactive_decline():
+    result = confirm_no_validation(yes_no_validation=False, input_fn=lambda p: "n")
+    assert result is False
+
+
+def test_confirm_no_validation_interactive_blank_declines():
+    result = confirm_no_validation(yes_no_validation=False, input_fn=lambda p: "")
+    assert result is False
+
+
+# ── ADR-24: cmd_init full --no-validation / --yes / --yes-no-validation
+# truth table (doc 17 §2h) ──────────────────────────────────────────────
+
+def test_yes_no_validation_without_no_validation_is_invalid_usage(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Row 6: invalid CLI usage, refused BEFORE any preflight/detection
+    work — zero calls to run_preflight/detect_stacks."""
+    workdir = tmp_path / "cwd-invalid"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    preflight_calls = []
+    detect_calls = []
+    monkeypatch.setattr(command_module, "run_preflight",
+                         lambda *a, **k: preflight_calls.append((a, k)))
+    monkeypatch.setattr(command_module, "detect_stacks",
+                         lambda *a, **k: detect_calls.append((a, k)))
+
+    messages = []
+    rc = cmd_init(_Args(repo, yes_no_validation=True, no_validation=False),
+                   print_fn=messages.append)
+    assert rc == 1
+    assert preflight_calls == []
+    assert detect_calls == []
+    assert not (workdir / "config.local.yaml").exists()
+
+
+def test_no_validation_alone_prompts_and_decline_writes_nothing(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Row 3 decline: dedicated prompt fires; declining aborts non-zero,
+    nothing written."""
+    workdir = tmp_path / "cwd-decline"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    rc = cmd_init(_Args(repo, yes=False, no_validation=True),
+                   input_fn=lambda p: "n")
+    assert rc == 1
+    assert not (workdir / "config.local.yaml").exists()
+
+
+def test_no_validation_alone_confirm_writes_commands_empty(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Row 3 confirm: commands: [] path taken."""
+    workdir = tmp_path / "cwd-confirm"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    rc = cmd_init(_Args(repo, yes=False, no_validation=True),
+                   input_fn=lambda p: "y")
+    assert rc == 0
+    cfg = load_config(workdir / "config.local.yaml")
+    assert cfg.project.validation.commands == []
+    assert cfg.project.validation.acknowledged_no_gate is True
+
+
+def test_yes_and_no_validation_still_prompts(tmp_path: Path, monkeypatch, repo: Path):
+    """Row 4: --yes does NOT satisfy the dedicated acknowledgement --
+    input_fn IS called."""
+    workdir = tmp_path / "cwd-yes-no-validation"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    calls = {"input": 0}
+
+    def input_fn(p):
+        calls["input"] += 1
+        return "y"
+
+    rc = cmd_init(_Args(repo, yes=True, no_validation=True), input_fn=input_fn)
+    assert rc == 0
+    assert calls["input"] >= 1
+    cfg = load_config(workdir / "config.local.yaml")
+    assert cfg.project.validation.commands == []
+
+
+def test_no_validation_and_yes_no_validation_bypasses_prompt(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Row 5: dedicated acknowledgement satisfied non-interactively --
+    input_fn never called."""
+    workdir = tmp_path / "cwd-bypass"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    calls = {"input": 0}
+
+    def input_fn(p):
+        calls["input"] += 1
+        return "y"
+
+    rc = cmd_init(_Args(repo, yes=False, no_validation=True, yes_no_validation=True),
+                   input_fn=input_fn)
+    assert rc == 0
+    assert calls == {"input": 0}
+    cfg = load_config(workdir / "config.local.yaml")
+    assert cfg.project.validation.commands == []
+    assert cfg.project.validation.acknowledged_no_gate is True
+
+
+def test_all_three_flags_fully_noninteractive_and_install_still_gated(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Row 6 (fully non-interactive): validation selection is
+    non-interactive AND --yes still never authorizes the install (Rust
+    row proposes `cargo fetch`; confirm_and_run_install's own --yes gate
+    is untouched by any of this)."""
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    workdir = tmp_path / "cwd-all-three"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    install_calls = []
+
+    def input_fn(p):
+        raise AssertionError(f"input_fn must not be called; got prompt: {p!r}")
+
+    rc = cmd_init(
+        _Args(repo, yes=True, no_validation=True, yes_no_validation=True),
+        input_fn=input_fn,
+        run_fn=lambda cmd, cwd: install_calls.append((cmd, cwd)),
+    )
+    assert rc == 0
+    assert install_calls == []
+    cfg = load_config(workdir / "config.local.yaml")
+    assert cfg.project.validation.commands == []
+    assert cfg.project.validation.acknowledged_no_gate is True
+
+
+def test_detected_proposal_with_no_validation_prints_override_note_and_skips_confirm_detected_command(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Detection override semantics (doc 17 §2h): a usable detected
+    proposal is NOT sent through confirm_detected_command; a visible NOTE
+    names what was overridden."""
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    workdir = tmp_path / "cwd-override-note"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    confirm_detected_calls = []
+    monkeypatch.setattr(
+        command_module, "confirm_detected_command",
+        lambda *a, **k: confirm_detected_calls.append((a, k)) or True,
+    )
+
+    messages = []
+    rc = cmd_init(
+        _Args(repo, yes=True, no_validation=True, yes_no_validation=True),
+        print_fn=messages.append,
+    )
+    assert rc == 0
+    assert confirm_detected_calls == []
+    assert any("NOTE" in m and "Rust" in m for m in messages)
+    cfg = load_config(workdir / "config.local.yaml")
+    assert cfg.project.validation.commands == []
+
+
+def test_no_proposal_with_no_validation_skips_resolve_validation_command(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """No usable proposal exists (Unknown stack) + --no-validation: the
+    manual-resolution prompt is bypassed entirely -- the operator is
+    never asked to type a command by hand only to have it discarded."""
+    workdir = tmp_path / "cwd-no-proposal"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    resolve_calls = []
+    monkeypatch.setattr(
+        command_module, "resolve_validation_command",
+        lambda *a, **k: resolve_calls.append((a, k)) or None,
+    )
+
+    rc = cmd_init(
+        _Args(repo, yes=False, no_validation=True, yes_no_validation=True),
+    )
+    assert rc == 0
+    assert resolve_calls == []
+    cfg = load_config(workdir / "config.local.yaml")
+    assert cfg.project.validation.commands == []
+
+
+def test_no_mutation_before_acknowledgement_succeeds(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Decline path: branch/config mutation must not occur before
+    acknowledgement succeeds -- setup_branch/write_config never called."""
+    workdir = tmp_path / "cwd-no-mutation"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    setup_branch_calls = []
+    write_config_calls = []
+    monkeypatch.setattr(
+        command_module, "setup_branch",
+        lambda *a, **k: setup_branch_calls.append((a, k)) or ("agent-work", "deadbeef"),
+    )
+    monkeypatch.setattr(
+        command_module, "write_config",
+        lambda *a, **k: write_config_calls.append((a, k)),
+    )
+
+    rc = cmd_init(_Args(repo, yes=False, no_validation=True),
+                   input_fn=lambda p: "n")
+    assert rc == 1
+    assert setup_branch_calls == []
+    assert write_config_calls == []

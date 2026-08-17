@@ -226,6 +226,9 @@ def cmd_check_config(args) -> int:
             print(f"  - {p}")
         return 1
     print("OK: structure and environment valid")
+    if cfg.project.validation.acknowledged_no_gate:
+        print("NOTE: no validation gate configured (acknowledged_no_gate=true) "
+              "— issues will be accepted without an automated check.")
     return 0
 
 
@@ -324,7 +327,8 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         validator = Validator(cfg.project.validation.commands,
                               timeout_seconds=cfg.project.validation.timeout_seconds,
                               artifacts_dir=artifacts_dir,
-                              env=cfg.project.validation.env)
+                              env=cfg.project.validation.env,
+                              acknowledged_no_gate=cfg.project.validation.acknowledged_no_gate)
         head = adapter.head_of(cfg.project.branch) or adapter.current_commit()
         result = validator.validate(cfg.project.repository, head, "baseline")
         if not result.passed:
@@ -332,7 +336,14 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
                   f"start (ADR-20 requires baseline green). See "
                   f"{artifacts_dir / 'baseline' / 'validation'}", file=sys.stderr)
             return 1
-        print("[health] baseline green")
+        if result.gate_results():
+            print("[health] baseline green")
+        else:
+            # ADR-24 (doc 08 Sec5f): a vacuously-green baseline (no
+            # configured validation command) must remain operator-visible,
+            # not indistinguishable from a real passing gate.
+            print("[health] baseline green (no validation gate configured — "
+                  "commands=[], acknowledged_no_gate=true)")
 
     try:
         ingested = _ingest_issues(cfg, log, proj, run_id)
@@ -346,7 +357,8 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         validator=Validator(cfg.project.validation.commands,
                             timeout_seconds=cfg.project.validation.timeout_seconds,
                             artifacts_dir=artifacts_dir,
-                            env=cfg.project.validation.env),
+                            env=cfg.project.validation.env,
+                            acknowledged_no_gate=cfg.project.validation.acknowledged_no_gate),
         reviewer=_make_reviewer(cfg),
         budget=BudgetManager(cfg.budget.max_executions_per_run,
                              cfg.budget.hard_stop_proxy_cost_per_run_usd),
@@ -431,6 +443,8 @@ def main(argv=None) -> int:
     s.add_argument("--branch", default="agent-work")
     s.add_argument("--yes", action="store_true")
     s.add_argument("--force", action="store_true")
+    s.add_argument("--no-validation", action="store_true")
+    s.add_argument("--yes-no-validation", action="store_true")
     s.set_defaults(fn=cmd_init)
     args = ap.parse_args(argv)
     return args.fn(args)

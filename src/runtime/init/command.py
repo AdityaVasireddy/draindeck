@@ -180,6 +180,30 @@ def confirm_and_run_install(
     return True
 
 
+# ── explicit no-validation acknowledgement (ADR-24, doc 08 §5f) ───────
+def confirm_no_validation(
+    *,
+    yes_no_validation: bool,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> bool:
+    """The dedicated trust boundary `--no-validation` must pass through —
+    distinct from `confirm_detected_command`/`resolve_validation_command`
+    (those confirm/collect a validation *command*; this confirms running
+    with NONE at all) and distinct from `--yes` (`--yes` accepts a
+    detected configuration default; there is no default to accept here).
+    `--yes-no-validation` satisfies this non-interactively — `input_fn` is
+    never called in that case, mirroring `confirm_and_run_install`'s own
+    `yes=True` shape. Otherwise prompts once; only an explicit `y`/`Y`
+    proceeds, matching every other refusal path's contract."""
+    if yes_no_validation:
+        return True
+    answer = input_fn(
+        "Proceed without any validation gate? [y/N] "
+    ).strip().lower()
+    return answer == "y"
+
+
 # ── CLI assembly (doc 16 §4) ───────────────────────────────────────────
 def _format_detection_summary(matches: list[DetectionRow]) -> str:
     if not matches:
@@ -197,9 +221,13 @@ def _print_report(
 ) -> None:
     print(f"[init] stack: {chosen_stack}")
     print(f"[init] branch: {branch_name} @ {branch_tip[:12]}")
-    print("[init] validation command(s):")
-    for c in chosen.commands:
-        print(f"    {c}")
+    if chosen.commands:
+        print("[init] validation command(s):")
+        for c in chosen.commands:
+            print(f"    {c}")
+    else:
+        # ADR-24: no fake validation command is ever printed here.
+        print("[init] validation: NONE (acknowledged_no_gate)")
     print(f"[init] wrote {config_dest}")
     print(f"[init] next: python -m runtime.main check-config {config_dest}")
     print(f"[init] then: python -m runtime.main run --config {config_dest}")
@@ -222,6 +250,19 @@ def cmd_init(
     attribute after import does not reach an already-bound default, so
     threading the override through the call chain is the only way to
     make this genuinely injectable at the `cmd_init` layer.)"""
+    no_validation = args.no_validation
+    yes_no_validation = args.yes_no_validation
+
+    # ADR-24 (doc 08 §5f): invalid flag combination refused before any
+    # preflight/detection work — zero git/filesystem side effects for an
+    # invocation that can never succeed.
+    if yes_no_validation and not no_validation:
+        print(
+            "INIT ABORTED: --yes-no-validation requires --no-validation",
+            file=sys.stderr,
+        )
+        return 1
+
     repo_path = Path(args.repo_path).resolve()
     config_dest = Path.cwd() / "config.local.yaml"
     yes = args.yes
@@ -237,7 +278,34 @@ def cmd_init(
     chosen_row = matches[0] if matches else None
     chosen = build_command(chosen_row, repo_path) if chosen_row is not None else None
 
-    if chosen is not None:
+    if no_validation:
+        # ADR-24: an explicit no-gate acknowledgement OVERRIDES automatic
+        # validation selection — this is not a rejection of the detected
+        # proposal, just a visible change of path. Neither
+        # confirm_detected_command nor resolve_validation_command is
+        # called: the operator already opted out of a validation command
+        # entirely, so there is nothing to confirm/collect there.
+        chosen_stack = chosen_row.stack if chosen_row is not None else "none"
+        # Install proposal (if any) is independent of the validation-
+        # command decision (doc 17 §2h) — preserved across the override
+        # so confirm_and_run_install below can still offer it.
+        detected_install_command = chosen.install_command if chosen is not None else None
+        if chosen is not None:
+            print_fn(
+                f"[init] NOTE: --no-validation set; overriding detected "
+                f"validation command(s) for {chosen_stack}."
+            )
+        if not confirm_no_validation(
+            yes_no_validation=yes_no_validation,
+            input_fn=input_fn, print_fn=print_fn,
+        ):
+            print(
+                "INIT ABORTED: no-validation not confirmed; nothing written.",
+                file=sys.stderr,
+            )
+            return 1
+        chosen = CommandProposal(commands=[], install_command=detected_install_command)
+    elif chosen is not None:
         chosen_stack = chosen_row.stack
         if not confirm_detected_command(
             chosen_stack, chosen, yes=yes, input_fn=input_fn, print_fn=print_fn

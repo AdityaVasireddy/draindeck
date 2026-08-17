@@ -65,9 +65,20 @@ class Validator:
         timeout_seconds: int,
         artifacts_dir: Path | str,
         env: dict[str, str | None] | None = None,
+        acknowledged_no_gate: bool = False,
     ) -> None:
-        if not commands:
-            raise ValueError("Validator requires at least one command")
+        # ADR-24 (doc 08 Sec5f): a second, independent enforcement site --
+        # deliberately duplicated alongside ValidationCfg's own model
+        # validator, not collapsed into one check. A directly constructed
+        # Validator (bypassing Config entirely) must still refuse an empty
+        # command list unless its caller explicitly passes
+        # acknowledged_no_gate=True; the config layer alone is not trusted
+        # to be the only gate a hand-built Validator passes through.
+        if not commands and not acknowledged_no_gate:
+            raise ValueError(
+                "Validator requires at least one command unless "
+                "acknowledged_no_gate is set"
+            )
         if any("$" in command for command in commands):
             raise ValueError("validation commands containing '$' must use a .ps1 file with -File")
         self.commands = list(commands)
