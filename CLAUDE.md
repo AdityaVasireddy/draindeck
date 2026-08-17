@@ -58,7 +58,7 @@ production feature; everything builds on the event-log layer.
   Claude Code sessions.
 
 ## Verify commands
-- Unit: `python -m pytest tests\unit -q`  (expect 117 pass)
+- Unit: `python -m pytest tests\unit -q`  (expect 235 pass)
 - Durability gate: `python tests\crash\harness.py %TEMP%\ch`  (expect 60 pass on
   BOTH seed 42 and seed 1337, invariants I-a..I-h; the harness is mutation-tested —
   it can actually fail; see docs/14 for current harness state)

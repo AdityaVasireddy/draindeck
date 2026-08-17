@@ -19,7 +19,6 @@ scratch/*
 
 docs/handoffs/
 tasks/
-NEXT.md
 scratch/
 *_bundle.txt
 .pytest_cache/
