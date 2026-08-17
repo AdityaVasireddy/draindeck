@@ -20,7 +20,7 @@ configured repository at a time, run from a local Windows machine.
 
 ## Architecture
 
-![Draindeck orchestrator architecture](docs/architecture.svg)
+![Draindeck orchestrator architecture](docs/assets/architecture-diagram.webp)
 
 Full component responsibilities and the happy-path sequence diagram live in
 `docs/02-architecture-specification.md` — the diagram above is a summary, not
