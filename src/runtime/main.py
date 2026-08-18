@@ -445,6 +445,7 @@ def main(argv=None) -> int:
     s.add_argument("--force", action="store_true")
     s.add_argument("--no-validation", action="store_true")
     s.add_argument("--yes-no-validation", action="store_true")
+    s.add_argument("--config-out", default=None)
     s.set_defaults(fn=cmd_init)
     args = ap.parse_args(argv)
     return args.fn(args)

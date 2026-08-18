@@ -141,5 +141,9 @@ billing:
 def write_config(path: Path, text: str) -> None:
     """The only disk-write entry point in this feature (doc 16 §4 step
     6). Callers decide *whether* to call this (preflight/confirm already
-    passed); this function never decides on its own."""
+    passed); this function never decides on its own. Default destination
+    is now `<repo>/.draindeck/config.local.yaml` (doc 16 §0b item 6,
+    corrected) — the parent directory rarely pre-exists, so it's created
+    here, at the point of the actual write, not earlier during preflight."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

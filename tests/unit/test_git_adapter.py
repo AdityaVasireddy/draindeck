@@ -168,6 +168,89 @@ def test_reset_hard_removes_untracked(adapter: GitCliAdapter, repo: Path):
     assert (repo / "README").read_text() == "seed\n"
 
 
+# ── worktree_status: untracked-only classification (doc 16 §0c) ────────
+def test_worktree_status_clean(adapter: GitCliAdapter):
+    status = adapter.worktree_status()
+    assert status.untracked_only is False
+    assert status.untracked_count == 0
+    assert status.blocking is False
+
+
+def test_worktree_status_untracked_only(adapter: GitCliAdapter, repo: Path):
+    (repo / "scratch.txt").write_text("x")
+    status = adapter.worktree_status()
+    assert status.untracked_only is True
+    assert status.untracked_count == 1
+    assert status.blocking is False
+
+
+def test_worktree_status_counts_multiple_untracked(adapter: GitCliAdapter, repo: Path):
+    (repo / "a.txt").write_text("a")
+    (repo / "b.txt").write_text("b")
+    status = adapter.worktree_status()
+    assert status.untracked_count == 2
+    assert status.untracked_only is True
+
+
+def test_worktree_status_tracked_modification_blocks(adapter: GitCliAdapter, repo: Path):
+    (repo / "README").write_text("changed\n")
+    status = adapter.worktree_status()
+    assert status.blocking is True
+    assert status.untracked_only is False
+
+
+def test_worktree_status_staged_change_blocks(adapter: GitCliAdapter, repo: Path):
+    (repo / "README").write_text("staged change\n")
+    _run(repo, "add", "README")
+    status = adapter.worktree_status()
+    assert status.blocking is True
+
+
+def test_worktree_status_tracked_deletion_blocks(adapter: GitCliAdapter, repo: Path):
+    (repo / "README").unlink()
+    status = adapter.worktree_status()
+    assert status.blocking is True
+
+
+def test_worktree_status_rename_blocks(adapter: GitCliAdapter, repo: Path):
+    (repo / "README").rename(repo / "RENAMED")
+    _run(repo, "add", "-A")
+    status = adapter.worktree_status()
+    assert status.blocking is True
+
+
+def test_worktree_status_conflict_blocks(adapter: GitCliAdapter, repo: Path):
+    _run(repo, "checkout", "-b", "side")
+    (repo / "README").write_text("side change\n")
+    _run(repo, "commit", "-am", "side change")
+    _run(repo, "checkout", "trunk")
+    (repo / "README").write_text("trunk change\n")
+    _run(repo, "commit", "-am", "trunk change")
+    p = subprocess.run(["git", "merge", "side"], cwd=repo, capture_output=True, text=True)
+    assert p.returncode != 0  # real conflict, as intended
+    try:
+        status = adapter.worktree_status()
+        assert status.blocking is True
+    finally:
+        _run(repo, "merge", "--abort")
+
+
+def test_worktree_status_mixed_tracked_and_untracked_blocks(adapter: GitCliAdapter, repo: Path):
+    (repo / "README").write_text("changed\n")
+    (repo / "scratch.txt").write_text("x")
+    status = adapter.worktree_status()
+    assert status.blocking is True
+    assert status.untracked_only is False
+
+
+def test_worktree_status_matches_is_dirty_on_blocking(adapter: GitCliAdapter, repo: Path):
+    """is_dirty()'s existing scope is unchanged — anything worktree_status
+    calls blocking, is_dirty() also reports True for."""
+    (repo / "README").write_text("changed\n")
+    assert adapter.is_dirty() is True
+    assert adapter.worktree_status().blocking is True
+
+
 # ── checkout_branch ──────────────────────────────────────────────────
 def test_checkout_branch_create_from(adapter: GitCliAdapter):
     base = adapter.current_commit()
@@ -179,6 +262,44 @@ def test_checkout_refuses_dirty(adapter: GitCliAdapter, repo: Path):
     (repo / "x.txt").write_text("x")
     with pytest.raises(RepoError):
         adapter.checkout_branch("issue/042", create_from="HEAD")
+
+
+def test_checkout_allow_untracked_proceeds_over_untracked_only(
+    adapter: GitCliAdapter, repo: Path,
+):
+    (repo / "scratch.txt").write_text("x")
+    adapter.checkout_branch("issue/042", create_from="HEAD", allow_untracked=True)
+    assert adapter.head_of("issue/042") == adapter.current_commit()
+    assert (repo / "scratch.txt").exists()  # left untouched, not staged/removed
+
+
+def test_checkout_allow_untracked_still_refuses_tracked_dirty(
+    adapter: GitCliAdapter, repo: Path,
+):
+    (repo / "README").write_text("changed\n")
+    with pytest.raises(RepoError):
+        adapter.checkout_branch("issue/042", create_from="HEAD", allow_untracked=True)
+
+
+def test_checkout_allow_untracked_conflict_not_forced_through(
+    adapter: GitCliAdapter, repo: Path,
+):
+    """An untracked file that WOULD be overwritten by the target branch's
+    tree causes a clean Git refusal — never forced, never auto-stashed,
+    never deleted."""
+    trunk_tip = adapter.current_commit()
+    adapter.checkout_branch("other", create_from=trunk_tip)
+    (repo / "conflicting.txt").write_text("tracked on other\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add conflicting.txt on other")
+    adapter.checkout_branch("trunk")
+    (repo / "conflicting.txt").write_text("untracked local content\n")
+
+    with pytest.raises(RepoError):
+        adapter.checkout_branch("other", allow_untracked=True)
+
+    assert (repo / "conflicting.txt").read_text() == "untracked local content\n"
+    assert adapter.current_commit() == trunk_tip
 
 
 # ── merge_to: object-DB merge ────────────────────────────────────────

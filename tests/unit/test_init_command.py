@@ -19,6 +19,7 @@ from runtime.init.command import (  # noqa: E402
     confirm_and_run_install,
     confirm_detected_command,
     confirm_no_validation,
+    resolve_config_dest,
     resolve_validation_command,
     run_preflight,
     setup_branch,
@@ -35,6 +36,11 @@ def _run(cwd: Path, *args: str) -> str:
     if p.returncode != 0:
         raise RuntimeError(f"setup git {args} failed: {p.stderr}")
     return p.stdout.strip()
+
+
+def _default_dest(repo_path) -> Path:
+    """The new target-repo-derived default (doc 16 §0c) — never CWD."""
+    return Path(repo_path).resolve() / ".draindeck" / "config.local.yaml"
 
 
 @pytest.fixture()
@@ -61,10 +67,65 @@ def test_preflight_rejects_non_git_path(tmp_path: Path):
         run_preflight(tmp_path / "not-a-repo", tmp_path / "config.local.yaml", force=False)
 
 
-def test_preflight_rejects_dirty_tree(repo: Path, tmp_path: Path):
-    (repo / "dirty.txt").write_text("x")
+def test_preflight_rejects_tracked_dirty_tree(repo: Path, tmp_path: Path):
+    (repo / "README").write_text("locally modified\n")  # tracked, unstaged
     with pytest.raises(InitAbort):
         run_preflight(repo, tmp_path / "config.local.yaml", force=False)
+
+
+def test_preflight_rejects_staged_change(repo: Path, tmp_path: Path):
+    (repo / "README").write_text("staged\n")
+    _run(repo, "add", "README")
+    with pytest.raises(InitAbort):
+        run_preflight(repo, tmp_path / "config.local.yaml", force=False)
+
+
+def test_preflight_rejects_tracked_deletion(repo: Path, tmp_path: Path):
+    (repo / "README").unlink()
+    with pytest.raises(InitAbort):
+        run_preflight(repo, tmp_path / "config.local.yaml", force=False)
+
+
+def test_preflight_rejects_conflicted_merge(repo: Path, tmp_path: Path):
+    _run(repo, "checkout", "-b", "side")
+    (repo / "README").write_text("side\n")
+    _run(repo, "commit", "-am", "side change")
+    _run(repo, "checkout", "main")
+    (repo / "README").write_text("main\n")
+    _run(repo, "commit", "-am", "main change")
+    p = subprocess.run(["git", "merge", "side"], cwd=repo, capture_output=True, text=True)
+    assert p.returncode != 0  # real conflict, as intended
+    try:
+        with pytest.raises(InitAbort):
+            run_preflight(repo, tmp_path / "config.local.yaml", force=False)
+    finally:
+        _run(repo, "merge", "--abort")
+
+
+# ── untracked-only preflight: the bug this session fixes ───────────────
+def test_preflight_allows_untracked_only_with_note(repo: Path, tmp_path: Path):
+    (repo / "Issues.md").write_text("scratch notes\n")  # untracked
+    notes = []
+    adapter = run_preflight(
+        repo, tmp_path / "config.local.yaml", force=False, print_fn=notes.append,
+    )
+    assert adapter.current_commit()
+    assert any("NOTE" in n and "untracked" in n for n in notes)
+
+
+def test_preflight_untracked_files_left_byte_unchanged(repo: Path, tmp_path: Path):
+    (repo / "Issues.md").write_text("scratch notes\n")
+    run_preflight(repo, tmp_path / "config.local.yaml", force=False, print_fn=lambda *_: None)
+    assert (repo / "Issues.md").read_text() == "scratch notes\n"
+
+
+def test_preflight_untracked_files_not_staged_or_removed(repo: Path, tmp_path: Path):
+    (repo / "Issues.md").write_text("scratch notes\n")
+    run_preflight(repo, tmp_path / "config.local.yaml", force=False, print_fn=lambda *_: None)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True,
+    ).stdout
+    assert status.strip() == "?? Issues.md"  # still untracked, not staged ("A ")
 
 
 def test_preflight_rejects_existing_config_without_force(repo: Path, tmp_path: Path):
@@ -115,6 +176,38 @@ def test_setup_branch_preserves_existing_branch_tip_no_force_reset(
     assert adapter.head_of("agent-work") == preserved_tip
     # the extra commit's file must still exist on disk after checkout
     assert (repo / "extra.txt").exists()
+
+
+def test_setup_branch_allows_untracked_only(adapter: GitCliAdapter, repo: Path):
+    """The bug this session fixes: an untracked file must not block
+    branch setup, and must be left untouched by it."""
+    (repo / "Issues.md").write_text("scratch\n")
+    branch, tip = setup_branch(adapter, "agent-work")
+    assert branch == "agent-work"
+    assert (repo / "Issues.md").read_text() == "scratch\n"
+
+
+def test_setup_branch_conflict_from_untracked_file_not_forced_through(
+    adapter: GitCliAdapter, repo: Path,
+):
+    """Branch checkout safety: if switching to an EXISTING branch whose
+    tree contains a file the current worktree has untracked (with
+    different content), Git must refuse cleanly — no force, no
+    auto-stash, no deleting the user's file."""
+    trunk_tip = adapter.current_commit()
+    adapter.checkout_branch("agent-work", create_from=trunk_tip)
+    (repo / "conflicting.txt").write_text("tracked on agent-work\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add conflicting.txt on agent-work")
+    adapter.checkout_branch("main")
+    (repo / "conflicting.txt").write_text("untracked local content\n")
+
+    from runtime.repo.adapter import RepoError
+    with pytest.raises(RepoError):
+        setup_branch(adapter, "agent-work")
+
+    assert (repo / "conflicting.txt").read_text() == "untracked local content\n"
+    assert adapter.current_commit() == trunk_tip
 
 
 # ── Unit 6: manual-validation UX ──────────────────────────────────────
@@ -319,13 +412,14 @@ def test_install_confirm_invokes_exactly_the_proposed_command(tmp_path: Path):
 # ── Unit 8: cmd_init end-to-end ──────────────────────────────────────
 class _Args:
     def __init__(self, repo_path, branch="agent-work", yes=False, force=False,
-                 no_validation=False, yes_no_validation=False):
+                 no_validation=False, yes_no_validation=False, config_out=None):
         self.repo_path = str(repo_path)
         self.branch = branch
         self.yes = yes
         self.force = force
         self.no_validation = no_validation
         self.yes_no_validation = yes_no_validation
+        self.config_out = config_out
 
 
 def test_cmd_init_end_to_end_rust_yes(tmp_path: Path, monkeypatch, repo: Path):
@@ -346,11 +440,12 @@ def test_cmd_init_end_to_end_rust_yes(tmp_path: Path, monkeypatch, repo: Path):
     )
     assert rc == 0
 
-    dest = workdir / "config.local.yaml"
+    dest = _default_dest(repo)
     assert dest.exists()
     cfg = load_config(dest)
     assert cfg.project.validation.commands == ["cargo test"]
     assert install_calls == []  # --yes must never trigger the install
+    assert not (workdir / "config.local.yaml").exists()  # CWD never used
 
 
 def test_cmd_init_end_to_end_static_web_with_files(tmp_path: Path, monkeypatch, repo: Path):
@@ -365,7 +460,7 @@ def test_cmd_init_end_to_end_static_web_with_files(tmp_path: Path, monkeypatch, 
 
     rc = cmd_init(_Args(repo, yes=True))
     assert rc == 0
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == ['node --check "app.js"']
 
 
@@ -376,18 +471,40 @@ def test_cmd_init_unknown_stack_yes_refuses_writes_nothing(tmp_path: Path, monke
 
     rc = cmd_init(_Args(repo, yes=True))
     assert rc == 1
-    assert not (workdir / "config.local.yaml").exists()
+    assert not _default_dest(repo).exists()
 
 
 def test_cmd_init_dirty_tree_refuses(tmp_path: Path, monkeypatch, repo: Path):
-    (repo / "dirty.txt").write_text("x")
+    (repo / "README").write_text("locally modified\n")  # tracked, unstaged
     workdir = tmp_path / "cwd4"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
 
     rc = cmd_init(_Args(repo, yes=True))
     assert rc == 1
-    assert not (workdir / "config.local.yaml").exists()
+    assert not _default_dest(repo).exists()
+
+
+def test_cmd_init_untracked_only_does_not_refuse(tmp_path: Path, monkeypatch, repo: Path):
+    """The exact real-world bug: an untracked Issues.md must not block
+    `init`, must be left untouched, and the target-derived config must
+    still be written."""
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+    (repo / "Issues.md").write_text("scratch notes\n")  # untracked, harmless
+
+    workdir = tmp_path / "cwd4b"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    messages = []
+    rc = cmd_init(_Args(repo, yes=True), print_fn=messages.append)
+    assert rc == 0
+    assert (repo / "Issues.md").read_text() == "scratch notes\n"  # untouched
+    assert any("NOTE" in m and "untracked" in m for m in messages)
+    cfg = load_config(_default_dest(repo))
+    assert cfg.project.validation.commands == ["cargo test"]
 
 
 def test_cmd_init_non_git_path_refuses(tmp_path: Path, monkeypatch):
@@ -405,14 +522,42 @@ def test_cmd_init_existing_config_without_force_refuses(tmp_path: Path, monkeypa
     _run(repo, "add", "-A")
     _run(repo, "commit", "-m", "add cargo")
 
+    dest = _default_dest(repo)
+    dest.parent.mkdir(parents=True)
+    dest.write_text("existing: true\n")
+
     workdir = tmp_path / "cwd6"
     workdir.mkdir()
-    (workdir / "config.local.yaml").write_text("existing: true\n")
     monkeypatch.chdir(workdir)
 
     rc = cmd_init(_Args(repo, yes=True, force=False))
     assert rc == 1
-    assert (workdir / "config.local.yaml").read_text(encoding="utf-8") == "existing: true\n"
+    assert dest.read_text(encoding="utf-8") == "existing: true\n"
+
+
+def test_cmd_init_unrelated_cwd_config_ignored_and_untouched(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """The bug this session fixes: an unrelated config.local.yaml sitting
+    in the invocation directory (e.g. Draindeck's own StockPhotoAgent
+    config) must be completely irrelevant to a different target repo's
+    init — never inspected for existence, never overwritten, not even
+    under --force."""
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    workdir = tmp_path / "cwd6b"
+    workdir.mkdir()
+    unrelated = workdir / "config.local.yaml"
+    unrelated_text = "project:\n  name: StockPhotoAgent\n  repository: 'C:\\\\unrelated'\n"
+    unrelated.write_text(unrelated_text, encoding="utf-8")
+    monkeypatch.chdir(workdir)
+
+    rc = cmd_init(_Args(repo, yes=True, force=True))  # --force: still must not touch it
+    assert rc == 0
+    assert unrelated.read_text(encoding="utf-8") == unrelated_text
+    assert _default_dest(repo).exists()
 
 
 def test_cmd_init_existing_branch_tip_preserved_end_to_end(tmp_path: Path, monkeypatch, repo: Path):
@@ -454,7 +599,7 @@ def test_cmd_init_static_web_zero_survivors_falls_into_manual_ux(
 
     rc = cmd_init(_Args(repo, yes=False), input_fn=lambda prompt: next(answers))
     assert rc == 0
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == ["node --check index.html"]
 
 
@@ -506,7 +651,7 @@ def test_cmd_init_interactive_install_nonzero_still_completes(
         run_fn=lambda cmd, cwd: subprocess.CompletedProcess(args=[cmd], returncode=1),
     )
     assert rc == 0
-    dest = workdir / "config.local.yaml"
+    dest = _default_dest(repo)
     assert dest.exists()
     cfg = load_config(dest)
     assert cfg.project.validation.commands == ["cargo test"]
@@ -540,7 +685,7 @@ def test_cmd_init_interactive_install_launch_failure_still_completes(
         run_fn=raising_run,
     )
     assert rc == 0
-    dest = workdir / "config.local.yaml"
+    dest = _default_dest(repo)
     assert dest.exists()
     cfg = load_config(dest)
     assert cfg.project.validation.commands == ["cargo test"]
@@ -628,7 +773,7 @@ def test_no_validation_alone_confirm_writes_commands_empty(
     rc = cmd_init(_Args(repo, yes=False, no_validation=True),
                    input_fn=lambda p: "y")
     assert rc == 0
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == []
     assert cfg.project.validation.acknowledged_no_gate is True
 
@@ -649,7 +794,7 @@ def test_yes_and_no_validation_still_prompts(tmp_path: Path, monkeypatch, repo: 
     rc = cmd_init(_Args(repo, yes=True, no_validation=True), input_fn=input_fn)
     assert rc == 0
     assert calls["input"] >= 1
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == []
 
 
@@ -672,7 +817,7 @@ def test_no_validation_and_yes_no_validation_bypasses_prompt(
                    input_fn=input_fn)
     assert rc == 0
     assert calls == {"input": 0}
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == []
     assert cfg.project.validation.acknowledged_no_gate is True
 
@@ -704,7 +849,7 @@ def test_all_three_flags_fully_noninteractive_and_install_still_gated(
     )
     assert rc == 0
     assert install_calls == []
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == []
     assert cfg.project.validation.acknowledged_no_gate is True
 
@@ -737,7 +882,7 @@ def test_detected_proposal_with_no_validation_prints_override_note_and_skips_con
     assert rc == 0
     assert confirm_detected_calls == []
     assert any("NOTE" in m and "Rust" in m for m in messages)
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == []
 
 
@@ -762,7 +907,7 @@ def test_no_proposal_with_no_validation_skips_resolve_validation_command(
     )
     assert rc == 0
     assert resolve_calls == []
-    cfg = load_config(workdir / "config.local.yaml")
+    cfg = load_config(_default_dest(repo))
     assert cfg.project.validation.commands == []
 
 
@@ -791,3 +936,272 @@ def test_no_mutation_before_acknowledgement_succeeds(
     assert rc == 1
     assert setup_branch_calls == []
     assert write_config_calls == []
+
+
+# ── resolve_config_dest: unit-level (doc 16 §0c) ────────────────────────
+
+def test_resolve_config_dest_default_is_target_repo_derived(tmp_path: Path):
+    repo_path = (tmp_path / "target").resolve()
+    dest = resolve_config_dest(repo_path, None)
+    assert dest == repo_path / ".draindeck" / "config.local.yaml"
+
+
+def test_resolve_config_dest_two_repos_get_different_defaults(tmp_path: Path):
+    a = (tmp_path / "repo-a").resolve()
+    b = (tmp_path / "repo-b").resolve()
+    assert resolve_config_dest(a, None) != resolve_config_dest(b, None)
+
+
+def test_resolve_config_dest_config_out_absolute_used_as_is(tmp_path: Path):
+    repo_path = (tmp_path / "target").resolve()
+    explicit = tmp_path / "elsewhere" / "custom.yaml"
+    dest = resolve_config_dest(repo_path, str(explicit))
+    assert dest == explicit.resolve()
+
+
+def test_resolve_config_dest_config_out_relative_resolves_against_cwd(
+    tmp_path: Path, monkeypatch,
+):
+    repo_path = (tmp_path / "target").resolve()
+    cwd = tmp_path / "somewhere"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    dest = resolve_config_dest(repo_path, "custom.yaml")
+    assert dest == (cwd / "custom.yaml").resolve()
+    assert dest != repo_path / "custom.yaml"  # not resolved against repo_path
+
+
+# ── CWD-independence regression (the real bug: doc 16 §0c item 2) ──────
+
+def test_cwd_independence_same_repo_same_dest_from_draindeck_root_vs_repo_itself(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    draindeck_root = tmp_path / "draindeck-root"
+    draindeck_root.mkdir()
+    monkeypatch.chdir(draindeck_root)
+    rc1 = cmd_init(_Args(repo, yes=True))
+    assert rc1 == 0
+    dest1 = _default_dest(repo)
+    assert dest1.exists()
+    content1 = dest1.read_text(encoding="utf-8")
+
+    # Re-run from a second, unrelated CWD (arbitrary directory) — same
+    # target repo must resolve to the SAME destination path.
+    another_dir = tmp_path / "some-other-arbitrary-dir"
+    another_dir.mkdir()
+    monkeypatch.chdir(another_dir)
+    dest2 = resolve_config_dest(Path(repo).resolve(), None)
+    assert dest2 == dest1
+    _ = content1  # dest1 already proven written; dest2 is the same path
+
+
+def test_cwd_independence_cwd_equals_repo_itself(repo: Path, monkeypatch):
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    monkeypatch.chdir(repo)  # CWD == the target repo itself
+    dest_from_inside = resolve_config_dest(Path(repo).resolve(), None)
+    assert dest_from_inside == repo.resolve() / ".draindeck" / "config.local.yaml"
+
+
+def test_cwd_independence_cwd_equals_unrelated_repo_b(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    repo_b = tmp_path / "repo-b"
+    repo_b.mkdir()
+    monkeypatch.chdir(repo_b)  # CWD is a wholly different repo
+    dest = resolve_config_dest(Path(repo).resolve(), None)
+    assert dest == Path(repo).resolve() / ".draindeck" / "config.local.yaml"
+    assert not (repo_b / "config.local.yaml").exists()
+
+
+def test_cwd_independence_two_target_repos_different_destinations(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    """Regression for the exact collision this session's bug caused:
+    onboarding two different target repos from the same Draindeck
+    invocation directory must never collide."""
+    repo_b_dir = tmp_path / "repo-b"
+    repo_b_dir.mkdir()
+    _run(repo_b_dir, "init", "-b", "main")
+    _run(repo_b_dir, "config", "core.autocrlf", "false")
+    (repo_b_dir / "README").write_text("seed\n")
+    (repo_b_dir / "Cargo.toml").write_text("[package]\nname='y'\n")
+    _run(repo_b_dir, "add", "-A")
+    _run(repo_b_dir, "commit", "-m", "seed")
+
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    shared_cwd = tmp_path / "shared-cwd"
+    shared_cwd.mkdir()
+    monkeypatch.chdir(shared_cwd)
+
+    rc_a = cmd_init(_Args(repo, yes=True))
+    rc_b = cmd_init(_Args(repo_b_dir, yes=True))
+    assert rc_a == 0 and rc_b == 0
+
+    dest_a = _default_dest(repo)
+    dest_b = _default_dest(repo_b_dir)
+    assert dest_a != dest_b
+    assert dest_a.exists() and dest_b.exists()
+    assert load_config(dest_a).project.name == Path(repo).resolve().name
+    assert load_config(dest_b).project.name == Path(repo_b_dir).resolve().name
+
+
+# ── --config-out override ───────────────────────────────────────────────
+
+def test_config_out_overrides_default_destination(tmp_path: Path, monkeypatch, repo: Path):
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    workdir = tmp_path / "cwd-config-out"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    custom = tmp_path / "custom-dest" / "my-config.yaml"
+
+    rc = cmd_init(_Args(repo, yes=True, config_out=str(custom)))
+    assert rc == 0
+    assert custom.exists()
+    assert not _default_dest(repo).exists()
+    cfg = load_config(custom)
+    assert cfg.project.validation.commands == ["cargo test"]
+
+
+def test_config_out_existing_destination_without_force_refuses(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    workdir = tmp_path / "cwd-config-out-refuse"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    custom = tmp_path / "custom-dest2" / "my-config.yaml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text("existing: true\n")
+
+    rc = cmd_init(_Args(repo, yes=True, config_out=str(custom), force=False))
+    assert rc == 1
+    assert custom.read_text(encoding="utf-8") == "existing: true\n"
+
+
+def test_config_out_force_overwrites_only_resolved_destination(
+    tmp_path: Path, monkeypatch, repo: Path,
+):
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    workdir = tmp_path / "cwd-config-out-force"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    custom = tmp_path / "custom-dest3" / "my-config.yaml"
+    custom.parent.mkdir(parents=True)
+    custom.write_text("existing: true\n")
+    unrelated = workdir / "config.local.yaml"
+    unrelated.write_text("unrelated: true\n", encoding="utf-8")
+
+    rc = cmd_init(_Args(repo, yes=True, config_out=str(custom), force=True))
+    assert rc == 0
+    cfg = load_config(custom)
+    assert cfg.project.validation.commands == ["cargo test"]
+    # --force touched ONLY the resolved --config-out destination
+    assert unrelated.read_text(encoding="utf-8") == "unrelated: true\n"
+
+
+# ── post-init output references the exact resolved path ────────────────
+
+def test_post_init_output_references_exact_config_path(
+    tmp_path: Path, monkeypatch, repo: Path, capsys,
+):
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    workdir = tmp_path / "cwd-post-init"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    rc = cmd_init(_Args(repo, yes=True))
+    assert rc == 0
+    out = capsys.readouterr().out
+    dest = _default_dest(repo)
+    assert str(dest) in out
+    assert f'check-config "{dest}"' in out
+    assert f'run --config "{dest}"' in out
+
+
+def test_target_path_with_spaces_end_to_end(tmp_path: Path, monkeypatch):
+    spaced = tmp_path / "Target Repo With Spaces"
+    spaced.mkdir()
+    _run(spaced, "init", "-b", "main")
+    _run(spaced, "config", "core.autocrlf", "false")
+    (spaced / "README").write_text("seed\n")
+    (spaced / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(spaced, "add", "-A")
+    _run(spaced, "commit", "-m", "seed")
+
+    workdir = tmp_path / "cwd-spaces"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    rc = cmd_init(_Args(spaced, yes=True))
+    assert rc == 0
+    dest = _default_dest(spaced)
+    assert dest.exists()
+    cfg = load_config(dest)
+    assert cfg.project.repository == str(spaced.resolve())
+    assert cfg.project.validation.commands == ["cargo test"]
+
+
+# ── combined real-world regression: both fixes together ────────────────
+
+def test_combined_regression_untracked_only_plus_unrelated_cwd_config(
+    tmp_path: Path, monkeypatch, repo: Path, capsys,
+):
+    """The exact scenario that exposed both bugs in one session: a target
+    repo with a clean tracked tree but a harmless untracked file, invoked
+    from a directory holding an unrelated existing config.local.yaml
+    (e.g. Draindeck's own StockPhotoAgent config)."""
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+    (repo / "Issues.md").write_text("real-world untracked backlog file\n")
+
+    draindeck_root = tmp_path / "draindeck-root"
+    draindeck_root.mkdir()
+    unrelated = draindeck_root / "config.local.yaml"
+    unrelated_text = "project:\n  name: StockPhotoAgent\n  repository: 'C:\\\\SPA'\n"
+    unrelated.write_text(unrelated_text, encoding="utf-8")
+    monkeypatch.chdir(draindeck_root)
+
+    messages = []
+    rc = cmd_init(_Args(repo, branch="agent-work", yes=True), print_fn=messages.append)
+
+    assert rc == 0
+    # untracked-only did not block init
+    assert any("NOTE" in m and "untracked" in m for m in messages)
+    # unrelated CWD config ignored and untouched
+    assert unrelated.read_text(encoding="utf-8") == unrelated_text
+    # branch setup proceeded safely
+    adapter = GitCliAdapter(repo)
+    assert adapter.head_of("agent-work") is not None
+    # target-specific config generated, untracked file untouched
+    dest = _default_dest(repo)
+    assert dest.exists()
+    assert (repo / "Issues.md").read_text() == "real-world untracked backlog file\n"
+    cfg = load_config(dest)
+    assert cfg.project.repository == str(Path(repo).resolve())
+    assert cfg.project.validation.commands == ["cargo test"]
+    # post-init output points to the target-specific config
+    out = capsys.readouterr().out
+    assert str(dest) in out

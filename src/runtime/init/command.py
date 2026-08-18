@@ -24,18 +24,51 @@ class InitAbort(Exception):
     traceback."""
 
 
+def resolve_config_dest(repo_path: Path, config_out: Optional[str]) -> Path:
+    """Default destination is derived from `repo_path` alone (doc 16 §0b
+    item 6, corrected) — the caller's CWD must never influence it. The
+    bug this replaces: `Path.cwd() / "config.local.yaml"` meant `init`
+    against any target repo could collide with, and (with `--force`)
+    silently overwrite, an unrelated config already sitting in whatever
+    directory Draindeck happened to be invoked from (observed: a LUVZ
+    `init` targeting the StockPhotoAgent config in Draindeck's own root).
+    `--config-out`, if relative, resolves against the invoking CWD — the
+    same convention `repo_path`/`--config`/`--log` already use elsewhere
+    in this CLI; an explicit override is the caller's own choice, not the
+    default this invariant protects. `repo_path` is expected pre-resolved
+    (absolute) by the caller."""
+    if config_out:
+        p = Path(config_out)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        return p.resolve()
+    return repo_path / ".draindeck" / "config.local.yaml"
+
+
 # ── preflight + branch safety (doc 16 §4 steps 1 and 5) ───────────────
-def run_preflight(repo_path: Path, config_dest: Path, force: bool) -> GitCliAdapter:
+def run_preflight(
+    repo_path: Path, config_dest: Path, force: bool,
+    *, print_fn: Callable[[str], None] = print,
+) -> GitCliAdapter:
     """Constructing `GitCliAdapter` alone performs the git-repository and
-    git-version(>=2.38) checks (`repo/git_adapter.py:40-43`)."""
+    git-version(>=2.38) checks (`repo/git_adapter.py:40-43`). Untracked
+    files no longer block init (doc 16 correction) — they are never
+    Draindeck's in-progress work, only the target repo's own; tracked/
+    staged/conflicted changes still refuse exactly as before."""
     try:
         adapter = GitCliAdapter(repo_path)
     except RepoError as e:
         raise InitAbort(f"not a usable git repository at {repo_path}: {e}") from e
-    if adapter.is_dirty():
+    status = adapter.worktree_status()
+    if status.blocking:
         raise InitAbort(
-            f"{repo_path} has uncommitted changes — refusing to init over "
-            f"in-progress work. Commit or stash first."
+            f"{repo_path} has uncommitted tracked/staged/conflicted changes "
+            f"— refusing to init over in-progress work. Commit or stash first."
+        )
+    if status.untracked_only:
+        print_fn(
+            f"[init] NOTE: {status.untracked_count} untracked file(s) in "
+            f"{repo_path} — left untouched."
         )
     if config_dest.exists() and not force:
         raise InitAbort(f"{config_dest} already exists — pass --force to overwrite.")
@@ -50,9 +83,9 @@ def setup_branch(adapter: GitCliAdapter, branch: str) -> tuple[str, str]:
     existing_tip = adapter.head_of(branch)
     if existing_tip is None:
         head = adapter.current_commit()
-        adapter.checkout_branch(branch, create_from=head)
+        adapter.checkout_branch(branch, create_from=head, allow_untracked=True)
     else:
-        adapter.checkout_branch(branch)
+        adapter.checkout_branch(branch, allow_untracked=True)
     return branch, adapter.current_commit()
 
 
@@ -229,8 +262,8 @@ def _print_report(
         # ADR-24: no fake validation command is ever printed here.
         print("[init] validation: NONE (acknowledged_no_gate)")
     print(f"[init] wrote {config_dest}")
-    print(f"[init] next: python -m runtime.main check-config {config_dest}")
-    print(f"[init] then: python -m runtime.main run --config {config_dest}")
+    print(f'[init] next: python -m runtime.main check-config "{config_dest}"')
+    print(f'[init] then: python -m runtime.main run --config "{config_dest}"')
 
 
 def cmd_init(
@@ -264,11 +297,11 @@ def cmd_init(
         return 1
 
     repo_path = Path(args.repo_path).resolve()
-    config_dest = Path.cwd() / "config.local.yaml"
+    config_dest = resolve_config_dest(repo_path, getattr(args, "config_out", None))
     yes = args.yes
 
     try:
-        adapter = run_preflight(repo_path, config_dest, args.force)
+        adapter = run_preflight(repo_path, config_dest, args.force, print_fn=print_fn)
     except InitAbort as e:
         print(f"INIT ABORTED: {e}", file=sys.stderr)
         return 1
@@ -337,7 +370,11 @@ def cmd_init(
         run_fn=run_fn,
     )
 
-    branch_name, branch_tip = setup_branch(adapter, args.branch)
+    try:
+        branch_name, branch_tip = setup_branch(adapter, args.branch)
+    except RepoError as e:
+        print(f"INIT ABORTED: branch setup failed: {e}", file=sys.stderr)
+        return 1
 
     text = render_config(
         repo_path=repo_path,

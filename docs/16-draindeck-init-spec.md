@@ -110,6 +110,64 @@ cross-referenced from the section it changes.
    proves the command is *executable*. ADR-23 rule 2 (explicit file
    targets) remains unresolved by Issue A — see §12's reworded criterion.
 
+## 0c. Post-ship correction (resolve-item, 2026-08-17): untracked-only preflight + target-derived config destination
+
+Two onboarding problems surfaced running `init` against a real new target
+repo (LUVZ) and were fixed together in one gated `/resolve-item` pass.
+Both corrections supersede specific claims in §0b item 6 and §3/§4 below;
+this section is the current source of truth for the two behaviors named,
+everything else in §0b–§13 is unchanged.
+
+1. **Untracked-only no longer blocks `init`.** §0b item 6/§4 step 1's
+   description of `adapter.is_dirty()` (blanket tracked-OR-untracked) as
+   the preflight gate is corrected: preflight now calls a new read-only
+   `GitCliAdapter.worktree_status()` classification and refuses only on
+   tracked/staged/deleted/renamed/conflicted changes. Untracked-only
+   proceeds with a printed `[init] NOTE: N untracked file(s) ... — left
+   untouched` and is never staged, moved, or deleted. `is_dirty()` itself,
+   and every other caller of it (reconciler check 3, `checkout_branch`'s
+   own default precondition, `snapshot_commit`), is untouched — this is a
+   strictly additive capability, not a semantics change to the existing
+   witness. `checkout_branch` gained an `allow_untracked: bool = False`
+   parameter (default preserves prior behavior for every non-init caller);
+   `init`'s own `setup_branch` passes `allow_untracked=True`, which still
+   refuses on tracked/staged/conflicted dirt and still lets Git's own
+   checkout refuse cleanly (no force, no auto-stash) if switching branches
+   would overwrite an untracked file the target tree contains.
+2. **Config destination is now target-repo-derived, not CWD-derived.**
+   §0b item 6's "Corrected decision: `init` writes to `Path.cwd() /
+   "config.local.yaml"`" is superseded. That convention meant `init`
+   against any target repo could collide with, and (with `--force`)
+   silently overwrite, an unrelated config sitting in whatever directory
+   Draindeck happened to be invoked from — observed directly: a LUVZ
+   `init` run from Draindeck's own root targeted its existing
+   StockPhotoAgent `config.local.yaml`. **New default:
+   `<repo-path>/.draindeck/config.local.yaml`**, computed from `repo_path`
+   alone (`init/command.py`'s `resolve_config_dest`) — the invoking CWD
+   never influences it. §0b item 6's "No `--config-out`-style flag is
+   being added to solve this now" is also superseded: **`--config-out
+   PATH` was added.** A relative `--config-out` resolves against the
+   invoking CWD (same convention as `repo_path`/`--config`/`--log`
+   elsewhere in this CLI) — that is an explicit override, not the default
+   the CWD-independence invariant protects. `--force` is unchanged in
+   shape but now scoped to whichever destination was actually resolved
+   (target-default or `--config-out`), never an unrelated CWD file.
+   `write_config` now creates the destination's parent directory
+   (`.draindeck/`, or whatever `--config-out` implies) if it doesn't
+   exist.
+3. **ADR check for this correction (documented conclusion: no ADR
+   needed).** Neither change touches doc 03's event/state schema,
+   `Config`/`ValidationCfg` (the YAML *schema* `generate.py` writes is
+   byte-identical; only where it's written changed), the orchestrator
+   loop, engine wrapper, or recovery reconciler — the same criteria §2
+   above used to conclude Issue A itself needed no ADR. §0b item 6 was a
+   spec-level decision (this doc), not one of the numbered ADRs in
+   `docs/08` (ADR-20..24) — reversing it is a spec correction, not an
+   architecture change.
+4. **Full five-gate + 60/60-both-seeds floor applied**, per §2's
+   established floor for any `src/` change of this blast radius (real
+   repository mutation via `checkout_branch`, `src/runtime` behavior).
+
 ## 1. Objective
 
 `draindeck init <repo-path>` takes an arbitrary git repository — Python,

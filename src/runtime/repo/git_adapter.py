@@ -10,10 +10,30 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from .adapter import MergeConflictError, RepoError, RepositoryAdapter
+
+
+@dataclass(frozen=True)
+class WorktreeStatus:
+    """`git status --porcelain` classified beyond `is_dirty()`'s blanket
+    boolean (`is_dirty()` at line ~108 below is unchanged and still used
+    by every other caller — reconciler check 3, `snapshot_commit`,
+    `checkout_branch`'s own default precondition). Porcelain's `??` code
+    is untracked; every other code (` M`/`M `/`A `/` D`/`R `/`UU`/etc.)
+    means tracked, staged, deleted, renamed, or conflicted — all
+    "blocking" here, matching `is_dirty()`'s existing scope for anything
+    that isn't purely untracked. Read-only; introduced for `draindeck
+    init` preflight only (doc 16 correction), not a general-purpose
+    status subsystem."""
+
+    untracked_only: bool
+    untracked_count: int
+    blocking: bool
+
 
 # merge-tree --write-tree (the object-DB merge) needs git >= 2.38 (Oct 2022).
 _MIN_GIT = (2, 38)
@@ -109,6 +129,16 @@ class GitCliAdapter(RepositoryAdapter):
         # --porcelain includes untracked (??) and excludes ignored by default.
         return bool(self._git("status", "--porcelain").stdout.strip())
 
+    def worktree_status(self) -> WorktreeStatus:
+        lines = [ln for ln in self._git("status", "--porcelain").stdout.splitlines() if ln]
+        untracked = sum(1 for ln in lines if ln[:2] == "??")
+        blocking = any(ln[:2] != "??" for ln in lines)
+        return WorktreeStatus(
+            untracked_only=(not blocking and untracked > 0),
+            untracked_count=untracked,
+            blocking=blocking,
+        )
+
     def commit_exists(self, sha: str) -> bool:
         return self._git("cat-file", "-e", f"{sha}^{{commit}}",
                          check=False).returncode == 0
@@ -175,8 +205,27 @@ class GitCliAdapter(RepositoryAdapter):
         return None
 
     # ── mutations ────────────────────────────────────────────────────
-    def checkout_branch(self, branch: str, *, create_from: Optional[str] = None) -> None:
-        if self.is_dirty():
+    def checkout_branch(
+        self, branch: str, *, create_from: Optional[str] = None,
+        allow_untracked: bool = False,
+    ) -> None:
+        """`allow_untracked=False` (default, every existing caller
+        unchanged) keeps the original blanket `is_dirty()` precondition.
+        `allow_untracked=True` (init only, doc 16 correction) still
+        refuses on any tracked/staged/conflicted change, but lets
+        untracked-only state through to the actual `git checkout` below —
+        which refuses on its own, cleanly, if switching branches would
+        overwrite an untracked file the target tree contains. Never
+        forced: no `-f`, no auto-stash, no auto-delete of the conflicting
+        file."""
+        if allow_untracked:
+            if self.worktree_status().blocking:
+                raise RepoError(
+                    f"refuse to checkout {branch}: worktree has tracked/"
+                    f"staged/conflicted changes (upstream sequencing bug — "
+                    f"residue must be preserved first)"
+                )
+        elif self.is_dirty():
             raise RepoError(
                 f"refuse to checkout {branch}: worktree dirty "
                 f"(upstream sequencing bug — residue must be preserved first)"
