@@ -8,12 +8,24 @@ inert to `yaml.safe_load`/`load_config()` by construction.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import yaml
 
 from .detect import CommandProposal, DetectionRow
+
+# Verified against the actually-configured reviewer endpoint
+# (http://localhost:11434/api/tags), not guessed: the bare `qwen2.5-coder`
+# tag does not exist there, only `qwen2.5-coder:14b` does (14.8B, Q4_K_M —
+# see docs/12-session4-engine-wrapper.md's Session-13 correction and
+# config.local.yaml's own `reviewer.qwen.model` comment). `init` generates
+# this exact tag rather than the bare, unresolvable one `config.example.yaml`
+# still shows as a generic portable placeholder. This is a fixed default,
+# not a live probe — see `render_config`'s docstring for why `init`/
+# `check-config` do not query the reviewer endpoint at generation time.
+_REVIEWER_MODEL = "qwen2.5-coder:14b"
 
 
 def _scalar(value: str) -> str:
@@ -61,15 +73,35 @@ def render_config(
     all_matches: list[DetectionRow],
     chosen_stack: str,
     chosen: CommandProposal,
+    today: Optional[Callable[[], date]] = None,
 ) -> str:
     """Full `config.local.yaml` text (no disk I/O — see `write_config`).
     Schema-identical to what `load_config` already parses: every key
     below exists in `Config`/`ProjectCfg`/`ValidationCfg`/etc. today, none
     are new (doc 16 §2 — Issue A never touches the schema). `engine`/
-    `reviewer`/`budget`/`experiment`/`billing` are generic defaults
-    mirroring `config.example.yaml` verbatim (not stack-detected — there
-    is nothing in the repo to detect them from), flagged for review.
+    `budget`/`experiment` are generic defaults mirroring
+    `config.example.yaml` verbatim (not stack-detected — there is nothing
+    in the repo to detect them from), flagged for review. `reviewer.qwen.
+    model` deliberately does NOT mirror `config.example.yaml` verbatim —
+    see `_REVIEWER_MODEL`'s comment; the example file's bare tag is a
+    portable placeholder, not a value ever verified against a live
+    endpoint. `billing.verified_on` is not a static default either: it is
+    `today()`'s calendar date (`date.today()` unless a caller injects
+    `today`, e.g. a test), matching the `YYYY-MM-DD` convention already
+    used by `config.example.yaml`/`config.local.yaml`'s own
+    `verified_on` values, in place of a `TODO: confirm` placeholder that
+    isn't real verification evidence.
+
+    Neither of these two fixes adds a live reviewer-endpoint probe: doing
+    so would require `init`/`check-config` to grow network-coupled,
+    reviewer-specific behavior neither has today (`check_config`/
+    `validate_environment` in `config.py` only ever check repo/branch/env-
+    var shape, never make a network call), which is out of scope here.
+    `_REVIEWER_MODEL` is a fixed, repository-verified string; if the
+    endpoint's available tags ever drift, that is caught the same way it
+    always has been -- at reviewer-call time, not at generation time.
     """
+    verified_on = (today or date.today)().isoformat()
     other = [row.stack for row in all_matches if row.stack != chosen_stack]
     other_comment = (
         f"# Also detected: {', '.join(other)} — see the priority table in\n"
@@ -111,8 +143,10 @@ project:
   repository: {_scalar(str(repo_path))}
   branch: {_scalar(branch)}
   issues_file: Issues.md
-{validation_block}# The sections below are generic defaults (matching config.example.yaml),
-# not detected from this repository — review before a real run.
+{validation_block}# The sections below are generic defaults, not detected from this
+# repository — review before a real run. Most match config.example.yaml
+# verbatim; reviewer.qwen.model and billing.verified_on do not (see
+# comments below) since a verbatim copy would be wrong here.
 engine:
   provider: claude-headless
   auth_mode: subscription
@@ -121,7 +155,7 @@ reviewer:
   provider: qwen
   qwen:
     endpoint: 'http://localhost:11434'
-    model: qwen2.5-coder
+    model: {_scalar(_REVIEWER_MODEL)}  # repo-verified tag, not a placeholder
 budget:
   max_attempts_per_issue: 3
   max_executions_per_run: 10
@@ -133,7 +167,7 @@ experiment:
 billing:
   posture: pro_subscription_headless
   headless_split_status: paused
-  verified_on: {_scalar("TODO: confirm")}
+  verified_on: {_scalar(verified_on)}  # init-run date, not a TODO placeholder
   reverify_at: phase-2-gate
 """
 

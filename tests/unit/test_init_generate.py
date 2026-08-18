@@ -5,14 +5,20 @@ schema to what the engine already parses" made concrete.
 """
 from __future__ import annotations
 
+import re
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from runtime.config import load_config  # noqa: E402
 from runtime.init.detect import CommandProposal, DetectionRow  # noqa: E402
-from runtime.init.generate import render_config, write_config  # noqa: E402
+from runtime.init.generate import (  # noqa: E402
+    _REVIEWER_MODEL,
+    render_config,
+    write_config,
+)
 
 _PY_ROW = DetectionRow("Python", lambda p: True, lambda p: None)
 _RUST_ROW = DetectionRow("Rust", lambda p: True, lambda p: None)
@@ -148,3 +154,127 @@ def test_write_config_writes_exact_text(tmp_path: Path):
     dest = tmp_path / "config.local.yaml"
     write_config(dest, "hello: world\n")
     assert dest.read_text(encoding="utf-8") == "hello: world\n"
+
+
+# --- reviewer.model: full canonical tag, not the bare/incomplete placeholder ---
+
+
+def test_reviewer_model_is_full_canonical_tag(tmp_path: Path):
+    chosen = CommandProposal(commands=["make test"], install_command=None)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="5" * 40,
+        all_matches=[], chosen_stack="manual", chosen=chosen,
+    )
+    dest = tmp_path / "config.local.yaml"
+    write_config(dest, text)
+    cfg = load_config(dest)
+    # the tag survives YAML rendering/load_config round-trip unchanged
+    assert cfg.reviewer.qwen.model == "qwen2.5-coder:14b"
+    assert cfg.reviewer.qwen.model == _REVIEWER_MODEL
+
+
+def test_reviewer_model_tag_is_not_silently_stripped_in_generated_text(tmp_path: Path):
+    chosen = CommandProposal(commands=["make test"], install_command=None)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="6" * 40,
+        all_matches=[], chosen_stack="manual", chosen=chosen,
+    )
+    assert "model: qwen2.5-coder:14b" in text
+    # the old, incomplete `qwen2.5-coder` (no :14b suffix) must not appear
+    # as the value of reviewer.qwen.model any more
+    assert not re.search(r"^\s*model: qwen2\.5-coder\s*(#.*)?$", text, re.MULTILINE)
+
+
+def test_reviewer_provider_and_endpoint_unchanged(tmp_path: Path):
+    chosen = CommandProposal(commands=["make test"], install_command=None)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="7" * 40,
+        all_matches=[], chosen_stack="manual", chosen=chosen,
+    )
+    dest = tmp_path / "config.local.yaml"
+    write_config(dest, text)
+    cfg = load_config(dest)
+    assert cfg.reviewer.provider == "qwen"
+    assert cfg.reviewer.qwen.endpoint == "http://localhost:11434"
+
+
+# --- billing.verified_on: real deterministic date, not "TODO: confirm" ---
+
+
+def test_billing_verified_on_uses_injected_date_no_placeholder(tmp_path: Path):
+    chosen = CommandProposal(commands=["make test"], install_command=None)
+    frozen = date(2026, 1, 5)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="8" * 40,
+        all_matches=[], chosen_stack="manual", chosen=chosen,
+        today=lambda: frozen,
+    )
+    dest = tmp_path / "config.local.yaml"
+    write_config(dest, text)
+    cfg = load_config(dest)
+    assert cfg.billing.verified_on == "2026-01-05"
+    assert cfg.billing.verified_on != "TODO: confirm"
+
+
+def test_billing_verified_on_matches_yyyy_mm_dd_format(tmp_path: Path):
+    chosen = CommandProposal(commands=["make test"], install_command=None)
+    frozen = date(2026, 12, 31)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="9" * 40,
+        all_matches=[], chosen_stack="manual", chosen=chosen,
+        today=lambda: frozen,
+    )
+    dest = tmp_path / "config.local.yaml"
+    write_config(dest, text)
+    cfg = load_config(dest)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", cfg.billing.verified_on)
+
+
+def test_billing_verified_on_defaults_to_real_today_without_injection(tmp_path: Path):
+    chosen = CommandProposal(commands=["make test"], install_command=None)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="a" * 40,
+        all_matches=[], chosen_stack="manual", chosen=chosen,
+    )
+    dest = tmp_path / "config.local.yaml"
+    write_config(dest, text)
+    cfg = load_config(dest)
+    assert cfg.billing.verified_on == date.today().isoformat()
+
+
+def test_billing_posture_and_reverify_at_unchanged(tmp_path: Path):
+    chosen = CommandProposal(commands=["make test"], install_command=None)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="b" * 40,
+        all_matches=[], chosen_stack="manual", chosen=chosen,
+        today=lambda: date(2026, 2, 2),
+    )
+    dest = tmp_path / "config.local.yaml"
+    write_config(dest, text)
+    cfg = load_config(dest)
+    assert cfg.billing.posture == "pro_subscription_headless"
+    assert cfg.billing.headless_split_status == "paused"
+    assert cfg.billing.reverify_at == "phase-2-gate"
+
+
+# --- combined regression: both fixes together on a normal init-generated config ---
+
+
+def test_normal_init_config_has_real_reviewer_model_and_billing_metadata(tmp_path: Path):
+    chosen = CommandProposal(
+        commands=[r'C:\envs\proj\Scripts\python.exe -m pytest'],
+        install_command=None,
+        needs_rule2_confirm=True,
+    )
+    frozen = date(2026, 3, 1)
+    text = render_config(
+        repo_path=tmp_path, branch="agent-work", branch_tip="c" * 40,
+        all_matches=[_PY_ROW], chosen_stack="Python", chosen=chosen,
+        today=lambda: frozen,
+    )
+    dest = tmp_path / "config.local.yaml"
+    write_config(dest, text)
+    cfg = load_config(dest)  # must still load cleanly
+    assert cfg.reviewer.qwen.model == "qwen2.5-coder:14b"
+    assert cfg.billing.verified_on == "2026-03-01"
+    assert cfg.billing.verified_on != "TODO: confirm"
