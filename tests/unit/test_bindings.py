@@ -210,6 +210,72 @@ def test_check2_tamper_raises(world):
 
 
 # ── check 3: dirty workspace ─────────────────────────────────────────
+def test_check3_reviewing_stays_at_end_commit(world):
+    """VALIDATING/REVIEWING must keep pinning at end_commit exactly as
+    before ADR-25 — both states are designed to be re-runnable/re-callable
+    against the produced tree after a crash (state/model.py's
+    ExecutionState comments: VALIDATING "re-runnable against pinned
+    tree", REVIEWING "re-callable; verdicts cacheable by (issue, tree)").
+    ADR-25 narrows its start_commit fallback to ACCEPTED-without-
+    CommitCreated only (next test) — this test guards against
+    re-widening it back to REVIEWING/VALIDATING, which would validate/
+    review the wrong, pre-execution tree after a restart."""
+    repo, adapter, log, base = world
+    _activate(log, base)
+    (repo / "feature.txt").write_text("feat")
+    end = adapter.snapshot_commit("feature")            # lands directly on TRUNK
+    log.append(Event(EventType.EXECUTION_FINISHED, issue_id="042", execution_id="042-e1",
+                     payload={"start_commit": base, "end_commit": end,
+                              "exit_status": 0, "pid": 1}))
+    log.append(Event(EventType.VALIDATION_PASSED, issue_id="042", execution_id="042-e1",
+                     payload={"validated_commit": end, "gate_results": []}))
+    (repo / "planted.txt").write_text("dirty at crash")   # force check 3 to actually run
+    proj, rep = recover(log, **bind_reconciler(adapter, TRUNK))
+    assert proj.executions["042-e1"].state is ExecutionState.REVIEWING
+    assert adapter.current_commit() == end                # pinned at end_commit, not start
+    assert adapter.head_of(TRUNK) == end
+
+
+def test_check3_accepted_no_commit_created_expected_is_start_commit(world):
+    """ADR-25 regression (real LUVZ incident, 2026-08-19), narrowed to
+    ACCEPTED: while an execution is ACCEPTED (ReviewApproved landed) but
+    its CommitCreated has not yet been witnessed — the exact crash window
+    a reviewer transport failure followed by a successful retry leaves
+    behind — check 3 must reset the checked-out branch back to the
+    execution's start_commit, never its unmerged end_commit. The old code
+    unconditionally returned end_commit for VALIDATING/REVIEWING/ACCEPTED,
+    moving the branch itself onto an unwitnessed commit; check 2 then
+    correctly refused to forge a merge for it on every subsequent pass —
+    a deterministic re-halt, not a transient failure. CommitIntent/
+    CommitCreated are only ever legal in ACCEPTED
+    (projections.py::_accepted_view), and ACCEPTED has no outgoing
+    transition (state/transitions.py), so this is the only state the
+    collision can ever occur in."""
+    repo, adapter, log, base = world
+    _activate(log, base)
+    (repo / "feature.txt").write_text("feat")
+    end = adapter.snapshot_commit("feature")            # lands directly on TRUNK
+    assert adapter.head_of(TRUNK) == end                 # simulates the crash: branch already moved
+    log.append(Event(EventType.EXECUTION_FINISHED, issue_id="042", execution_id="042-e1",
+                     payload={"start_commit": base, "end_commit": end,
+                              "exit_status": 0, "pid": 1}))
+    log.append(Event(EventType.VALIDATION_PASSED, issue_id="042", execution_id="042-e1",
+                     payload={"validated_commit": end, "gate_results": []}))
+    log.append(Event(EventType.REVIEW_APPROVED, issue_id="042", execution_id="042-e1",
+                     payload={"reviewed_commit": end, "verdict": "APPROVE"}))
+    proj, rep = recover(log, **bind_reconciler(adapter, TRUNK))
+    assert proj.executions["042-e1"].state is ExecutionState.ACCEPTED
+    assert adapter.current_commit() == base               # reset to start_commit, not end
+    assert adapter.head_of(TRUNK) == base                  # branch pointer restored, not left on end
+    assert adapter.list_attempt_refs("042")                # end still reachable, archived not lost
+    # Second pass must be a clean no-op — the old bug made this halt with
+    # ReconcilerTamperError on every subsequent run against the same world.
+    log.close()
+    with EventLog(log.path) as log2:
+        _, rep2 = recover(log2, **bind_reconciler(adapter, TRUNK))
+        assert rep2.workspace_repairs == []
+
+
 def test_check3_archives_and_resets(world):
     """Issue ACTIVE, latest execution CRASHED (b7), workspace dirty →
     archive residue, reset to base, no event, repair recorded."""

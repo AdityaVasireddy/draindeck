@@ -31,6 +31,7 @@ class ExecutionView:
     # Widened for the reconciler seams (docs/11 §2). All derived straight
     # from doc 03 §3 payloads — no new events, no schema change.
     base_commit: Optional[str] = None          # issue's IssueActivated.base_commit
+    start_commit: Optional[str] = None         # ExecutionFinished.start_commit
     end_commit: Optional[str] = None           # ExecutionFinished.end_commit
     intent_end_commit: Optional[str] = None     # CommitIntent.end_commit
     intent_target_branch: Optional[str] = None  # CommitIntent.target_branch
@@ -150,7 +151,7 @@ class StateProjection:
             "issues": {k: v.value for k, v in sorted(self.issues.items())},
             "executions": {
                 k: [v.issue_id, v.state.value, v.commit_intended,
-                    v.commit_created, v.base_commit, v.end_commit,
+                    v.commit_created, v.base_commit, v.start_commit, v.end_commit,
                     v.intent_end_commit, v.intent_target_branch,
                     v.validated_commit, v.reviewed_commit, v.taxonomy_category,
                     v.feedback, v.pre_execution_untracked]
@@ -421,6 +422,7 @@ def _execution_transition(p: StateProjection, ev: Event) -> None:
             f"{view.state.value} (event {ev.event_id})")
     view.state = fn(ev.payload)
     if ev.type is EventType.EXECUTION_FINISHED:
+        view.start_commit = ev.payload.get("start_commit")
         view.end_commit = ev.payload.get("end_commit")
         if ev.payload.get("outcome") == "REJECTED":
             view.taxonomy_category = ev.payload.get("taxonomy_category")

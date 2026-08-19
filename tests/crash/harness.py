@@ -493,7 +493,8 @@ def run_reset_fixture(root: Path) -> int:
 
     log.append(Event(EventType.EXECUTION_FINISHED, issue_id=iid,
                       execution_id=xid,
-                      payload={"end_commit": end_commit, "pid": os.getpid()}))
+                      payload={"start_commit": base_commit, "end_commit": end_commit,
+                               "pid": os.getpid()}))
 
     adapter = GitCliAdapter(repo)
     adapter.set_attempt_ref(iid, xid, end_commit)

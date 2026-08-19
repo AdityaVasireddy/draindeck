@@ -188,11 +188,37 @@ def _expected_commit(
     proj: StateProjection, adapter: RepositoryAdapter, target_branch: str
 ) -> Optional[str]:
     """The commit the workspace should sit at, from the log's last pinned
-    expectation (docs/11 §2.3 table)."""
+    expectation (docs/11 §2.3 table).
+
+    ADR-25 (narrowed after f5 harness evidence, 2026-08-19): VALIDATING
+    and REVIEWING must keep pinning at end_commit — both states are
+    designed to be re-runnable/re-callable against the produced tree
+    after a crash (state/model.py's ExecutionState comments; proven by
+    tests/crash/harness.py's f5 fixture), so resetting them to
+    start_commit would validate/review the wrong, pre-execution code.
+
+    The real collision is narrower: CommitIntent/CommitCreated are only
+    ever legal while state is ACCEPTED (COMMIT_SEQUENCE_STATE ==
+    ACCEPTED — projections.py::_accepted_view raises otherwise), and
+    EXECUTION_TRANSITIONS has no outgoing row from ACCEPTED, so it is
+    the only state `commit_intended` can ever be true in — the only
+    state check_unwitnessed_commit's tamper guard can ever collide with
+    check 3's reset. While ACCEPTED and commit_created is still False,
+    end_commit is an unmerged, in-flight commit living only on its
+    refs/attempts/... ref (docs/11 §2.1); pinning the checked-out branch
+    there — check 3's reset_hard target — moves the branch itself onto
+    it, which the guard then correctly refuses to treat as a legitimate
+    merge, halting every subsequent run identically (real LUVZ incident,
+    2026-08-19, docs/25). Until CommitCreated lands, the branch should
+    stay at start_commit instead. Once commit_created is true, end_commit
+    is safely merged onto target_branch via a real merge commit and is
+    the correct expectation again."""
     iid = _active_issue(proj)
     if iid is not None:
         latest = proj.latest_execution(iid)
         if latest is not None:
+            if latest.state is ExecutionState.ACCEPTED and not latest.commit_created:
+                return latest.start_commit
             if latest.state in (ExecutionState.VALIDATING,
                                 ExecutionState.REVIEWING,
                                 ExecutionState.ACCEPTED):
