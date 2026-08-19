@@ -12,6 +12,17 @@
 
 ## 1. Current state (verified 2026-08-19)
 
+- **Read-only external observer CLI shipped** (`draindeck observe events`/
+  `observe status`, SPEC.md / ADR-25, `docs/08` §5g): a bytes-direct reader
+  (`src/runtime/observe.py`) that never instantiates `EventLog`/
+  `ReadOnlyEventLog`, never touches the writer/workspace mutex, and never
+  invokes Git — see docs/03's added consumer note. Unit suite 430/430 (396
+  + 34 new), harness `ALL 60 SCENARIOS PASSED` both seed 42 and seed 1337,
+  all verified live this session. One plan acceptance line (Task 3,
+  "lineage/file-generation observations") is intentionally unimplemented —
+  it isn't grounded in `SPEC.md`'s actual public contract; flagged in
+  `tasks/plan.md` (local, gitignored) for a human decision, not resolved
+  here.
 - **Event-log cross-repo isolation + untracked-file preservation fixed**
   (resolve-item, 2026-08-19): a real LUVZ smoke test hit two runtime
   data-safety bugs — (1) `event_log.path`'s default resolved against
