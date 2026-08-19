@@ -7,13 +7,19 @@ LLM reviewer (Qwen via Ollama), and commits only on approval. The orchestrator
 is a plain, single-writer, sequential Python process — no distributed
 workflow engine, no LLM-orchestration framework. Durability is the project's
 first production feature: every other capability builds on an append-only
-event log (`state/events.jsonl`) that survives crashes without repeating or
-double-committing work.
+event log that survives crashes without repeating or double-committing work.
 
-`state/events.jsonl` is the authoritative runtime record; all in-memory state
-(issue/execution status, queue projections) is replayed from it, never stored
-independently. `Issues.md` in the target repository is a human-facing input
-file only — its `STATUS` text is never parsed or treated as runtime state.
+The event log's location is config-driven (`event_log.path` in
+`config.local.yaml`, resolved via `resolve_event_log_path()`) and owned by
+the target repository, not by Draindeck's own working directory: a relative
+path resolves against `project.repository`, defaulting to
+`.draindeck/state/events.jsonl` under the configured target repo — never
+Draindeck's own invocation directory, and never shared across differently
+configured targets. It is the authoritative runtime record; all in-memory
+state (issue/execution status, queue projections) is replayed from it, never
+stored independently. `Issues.md` in the target repository is a human-facing
+input file only — its `STATUS` text is never parsed or treated as runtime
+state.
 
 This is a solo/small-scale tool, not a multi-tenant service: it targets one
 configured repository at a time, run from a local Windows machine.
@@ -67,6 +73,10 @@ not commit local operational details. The repository tracks only the portable
 template; local operational configuration remains outside Git.
 The only supported reviewer provider is `qwen`; any other provider is rejected
 during structural configuration loading, before reviewer or engine work starts.
+`event_log.path` (optional; defaults to `.draindeck/state/events.jsonl`) sets
+the event log's location — a relative value resolves against
+`project.repository`, never the invocation directory; an absolute value is
+used as-is, for an operator who needs to pin a specific location.
 
 Validation commands execute explicitly through Windows PowerShell. Commands
 containing `$` are rejected: place that logic in a `.ps1` file and invoke it
@@ -76,8 +86,8 @@ with `-File` from `validation.commands`.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests\unit
-.\.venv\Scripts\python.exe -m runtime.main verify-log --log state\events.jsonl
-.\.venv\Scripts\python.exe -m runtime.main show-state --log state\events.jsonl
+.\.venv\Scripts\python.exe -m runtime.main verify-log --log <target-repo>\.draindeck\state\events.jsonl
+.\.venv\Scripts\python.exe -m runtime.main show-state --log <target-repo>\.draindeck\state\events.jsonl
 .\.venv\Scripts\python.exe -m runtime.main recover --config config.local.yaml
 .\.venv\Scripts\python.exe -m runtime.main check-config config.local.yaml
 ```
@@ -85,10 +95,16 @@ with `-File` from `validation.commands`.
 `check-config` only inspects local configuration and environment. It does not
 run an engine or reviewer.
 
-`verify-log` and `show-state` are strictly read-only. A missing or incomplete
-log is reported without repair. Torn-tail repair occurs only when `run` or
-configured `recover --config` holds both workspace ownership and exclusive
-authoritative-log writer ownership; bare `recover --log` is not supported.
+`verify-log` and `show-state` are strictly read-only. Their `--log` flag
+takes an explicit path — its own CLI default (`state\events.jsonl`, relative
+to wherever the command is invoked from) is a standalone convenience for
+these two ad hoc inspection subcommands, not the same value `run`/`recover`
+resolve from config; point it at `<target-repo>\.draindeck\state\events.jsonl`
+(or wherever `event_log.path` was configured) to inspect a specific target's
+real log. A missing or incomplete log is reported without repair. Torn-tail
+repair occurs only when `run` or configured `recover --config` holds both
+workspace ownership and exclusive authoritative-log writer ownership; bare
+`recover --log` is not supported.
 
 ## Basic run workflow
 
@@ -105,8 +121,10 @@ target repository, spend, or commit anything.
 
 ## Key concepts
 
-- **Event log is truth.** `state/events.jsonl` (append-only, fsync'd,
-  monotonic `event_id`s) is the only authoritative record of workflow state.
+- **Event log is truth.** The event log (append-only, fsync'd, monotonic
+  `event_id`s; location set by `event_log.path`, defaulting to
+  `.draindeck/state/events.jsonl` under the target repository — see Install
+  and configure above) is the only authoritative record of workflow state.
   Everything else — issue/execution status, queue order, cost totals — is a
   projection replayed from it and is safe to delete and rebuild.
 - **Git is truth for code; the event log is truth for workflow.** Commit
