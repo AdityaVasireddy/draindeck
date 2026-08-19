@@ -146,4 +146,15 @@ human authorization are never release proof.
 | reviewed | I3 pin holds | commit intent → merge → fact | CommitIntent, CommitCreated, IssueCompleted |
 | any REJECTED | executions < cap ∧ no duplicate feedback category | reset workspace; fresh execution with feedback | ExecutionSpawned(retry) |
 | any REJECTED | cap hit ∨ duplicate feedback | escalate | IssueEscalated(NEEDS_HUMAN) |
+
+## Consumer note — read-only external observer (added 2026-08-19)
+
+`src/runtime/observe.py` (ADR-25, `docs/08` §5g) reads this file's on-disk
+bytes directly, framing records on `\n` without instantiating `EventLog`/
+`ReadOnlyEventLog` or touching any lock. It is a consumer of the physical
+log format above, not a participant in the state machine: it introduces no
+event type, no schema version, and no transition, and this note does not
+amend anything above it. Any future change to record framing (event
+vocabulary in §3, artifact schemas in §4) must be evaluated against this
+second reader, not just the writer/replay path.
 | EXECUTING (context blowout) | budget=context/turns | escalate for splitting | IssueEscalated(NEEDS_DECOMPOSITION) |

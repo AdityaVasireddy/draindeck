@@ -36,6 +36,8 @@ Unknown types and schema versions are retained as exact raw evidence. A malforme
 
 Add a lightweight ADR documenting the additive external read contract, its separate byte reader, and no-downgrade consumer expectation. Add a Doc 03 consumer note only; do not amend the frozen schema, state machine, or event types.
 
+Filed as `docs/08-session-0-closure-and-adr-amendments.md` §5g, ADR-25 — Read-only external observer contract. Doc 03 consumer note: `docs/03-state-machine-and-event-schema.md`, "Consumer note — read-only external observer".
+
 ## Project structure
 
 - `src/runtime/observe.py`: bytes-direct observer implementation.

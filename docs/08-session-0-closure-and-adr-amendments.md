@@ -823,6 +823,53 @@ of an Accepted-and-reviewed ADR, per this repo's standing rule.
 
 ---
 
+## 5g. ADR-25 — Read-only external observer contract (additive, non-mutating)
+
+**Status:** ACCEPTED · **Date:** 2026-08-19. Lightweight ADR per CLAUDE.md's
+blast-radius rule: this is a low-blast-radius additive read surface (no
+runtime behavior, event schema, state transition, or Git/recovery change),
+so it uses doc 05's original context → decision → alternatives rejected →
+consequences format rather than ADR-24's heavy evidence apparatus.
+
+**Context:** `SPEC.md` ("Read-only observer contract") asks for a stable
+local read boundary for the Draindeck Dashboard — event evidence and
+observational status without changing workflow behavior, event schema,
+filesystem state, locks, or Git state. No external read surface exists
+today; the only readers of `state/events.jsonl` are `EventLog`/
+`ReadOnlyEventLog`, both internal and lock-aware.
+
+**Decision:** Add a separate, bytes-direct reader (`src/runtime/
+observe.py`) that frames the log on `\n` itself and never instantiates
+`EventLog`/`ReadOnlyEventLog`, acquires the writer/workspace mutex,
+repairs/truncates the log, or invokes Git. Expose it through a new
+`draindeck` console entry point (`observe events`, `observe status`),
+versioned JSON responses only, with raw evidence preserved for unknown/
+malformed/torn records (exact bytes + SHA-256 hash + opaque adapter-owned
+cursor). `status.writerState` returns `UNKNOWN` whenever answering it
+precisely would require the mutex — it never guesses. No new event type,
+schema version, or state transition is introduced; doc 03 stays frozen
+(see its added consumer note, same commit).
+
+**Rejected:**
+- *Route through `EventLog`/`ReadOnlyEventLog`* — couples an external,
+  best-effort read surface to the writer's lock/repair semantics; a slow
+  or misbehaving dashboard consumer could then contend with or block the
+  orchestrator.
+- *Relax `Event.from_line()` to tolerate unknown/malformed input* — would
+  weaken the strict parser the live writer/replay path depends on. The
+  observer needs a different failure posture (preserve evidence, never
+  raise) than the writer (strict, fail fast); one function cannot honestly
+  serve both.
+- *Acquire the mutex to report a precise `writerState`* — the SPEC
+  explicitly trades precision for the read-only guarantee. `UNKNOWN` is
+  honest; a wrong `ACTIVE`/`IDLE` guess is not.
+
+**Consequences:** A second, independent reader of the same physical file
+now exists permanently; any future change to on-disk record framing must
+be evaluated against both readers, not just `EventLog`. The observer is
+additive-only — removing or narrowing it is a consumer-facing break and
+needs its own ADR-governed deprecation, not a silent edit.
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml
