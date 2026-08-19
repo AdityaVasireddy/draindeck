@@ -10,8 +10,19 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-17)
+## 1. Current state (verified 2026-08-19)
 
+- **Event-log cross-repo isolation + untracked-file preservation fixed**
+  (resolve-item, 2026-08-19): a real LUVZ smoke test hit two runtime
+  data-safety bugs — (1) `event_log.path`'s default resolved against
+  Draindeck's own CWD, not the target repo, so every target shared one
+  physical log; (2) startup reconciler check 3 treated ANY untracked file
+  as crash residue and deleted legitimate ones (`Issues.md` + backup) via
+  `clean -fd`. Both fixed together, gated: unit suite 393/393 (up from 235;
+  58 new tests), durability harness `ALL 60 SCENARIOS PASSED` both seed 42
+  and seed 1337, no ADR required (both determinations documented). Full
+  design rationale, worked example, and compatibility notes:
+  `docs/18-resolve-item-event-log-isolation-and-untracked-preservation.md`.
 - **Architecture frozen**, per CLAUDE.md / doc 03.
 - **ADR-19 (kill criteria) CLOSED PASS**, 2026-08-11, two corroborating samples
   (n=20 and n=19; both clear the attempt-1 and cost-per-shipped-issue bars).
@@ -96,16 +107,15 @@
    (117) is far below the current 235. Flagging for a future CLAUDE.md-scoped
    pass, not fixed here.
 
-## 3. Verify commands (updated 2026-08-17)
+## 3. Verify commands (updated 2026-08-19)
 
-- Unit: `.venv\Scripts\python.exe -m pytest tests\unit -q` — **235 passed**,
+- Unit: `.venv\Scripts\python.exe -m pytest tests\unit -q` — **393 passed**,
   verified live this session (CLAUDE.md's "expect 117" is stale, see item 5
   above).
 - Durability gate: `.venv\Scripts\python.exe tests\crash\harness.py %TEMP%\ch
   <seed>` for `<seed>` in `42`, `1337` — expect `ALL 60 SCENARIOS PASSED` on
-  both. Last known-good per the `src/` commits that report it inline
-  (`0ca147b`, `2bff89f`, `d100503`); not independently re-run to completion
-  this session (see §1).
+  both. Verified live this session (see §1, resolve-item entry) — both seeds
+  independently re-run to completion.
 - Config sanity (no engine/reviewer call): `.venv\Scripts\python.exe -m
   runtime.main check-config config.local.yaml`.
 - Read-only state inspection: `.venv\Scripts\python.exe -m runtime.main

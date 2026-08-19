@@ -169,6 +169,12 @@ billing:
   headless_split_status: paused
   verified_on: {_scalar(verified_on)}  # init-run date, not a TODO placeholder
   reverify_at: phase-2-gate
+event_log:
+  # Written explicitly (not left to Config's default) so it's visible here:
+  # this path resolves against `project.repository` above, never the CWD
+  # `draindeck run`/`recover` happens to be invoked from -- this repo's own
+  # event log, isolated from every other target repo's.
+  path: .draindeck/state/events.jsonl
 """
 
 

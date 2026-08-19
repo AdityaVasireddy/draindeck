@@ -236,6 +236,99 @@ def test_check3_clean_workspace_noop(world):
     assert rep.workspace_repairs == []                        # already at base
 
 
+# ── check 3: untracked-file provenance (resolve-item, 2026-08-18) ────
+def test_check3_no_active_issue_preserves_preexisting_untracked(world):
+    """The real LUVZ incident, reproduced: a legitimate pre-existing
+    untracked file (Issues.md) sitting in the target repo with NO active
+    Draindeck issue must survive startup reconciliation unchanged — not be
+    archived to an attempt ref and swept by clean -fd."""
+    repo, adapter, log, base = world
+    (repo / "Issues.md").write_text("- [ ] real user content\n")
+    _, rep = recover(log, **bind_reconciler(adapter, TRUNK))
+    assert (repo / "Issues.md").exists()
+    assert (repo / "Issues.md").read_text() == "- [ ] real user content\n"
+    assert rep.workspace_repairs == []
+    assert adapter.list_attempt_refs() == {}
+
+
+def test_check3_active_issue_no_execution_preserves_untracked(world):
+    """An active issue with no execution spawned yet has no ownership
+    baseline either — untracked dirt still must not be touched."""
+    repo, adapter, log, base = world
+    log.append(Event(EventType.ISSUE_CREATED, issue_id="042", payload={"title": "042"}))
+    log.append(Event(EventType.ISSUE_ACTIVATED, issue_id="042",
+                     payload={"base_commit": base}))
+    (repo / "Issues.md").write_text("pre-existing\n")
+    _, rep = recover(log, **bind_reconciler(adapter, TRUNK))
+    assert (repo / "Issues.md").exists()
+    assert rep.workspace_repairs == []
+
+
+def test_check3_preserves_baseline_but_cleans_new_residue(world):
+    """A crashed execution's own baseline (recorded at spawn, before its
+    engine could touch anything) protects files that predate it, while a
+    file that appeared afterward — genuine crash residue — is still
+    archived and cleaned, proving the fix doesn't just disable check 3."""
+    repo, adapter, log, base = world
+    (repo / "Issues.md").write_text("pre-existing, present before spawn\n")
+    log.append(Event(EventType.ISSUE_CREATED, issue_id="042", payload={"title": "042"}))
+    log.append(Event(EventType.ISSUE_ACTIVATED, issue_id="042",
+                     payload={"base_commit": base}))
+    log.append(Event(EventType.EXECUTION_SPAWNED, issue_id="042",
+                     execution_id="042-e1",
+                     payload={"spawn_reason": "initial", "pid": 1,
+                              "pre_execution_untracked": ["Issues.md"]}))
+    # Crash residue that appeared strictly after spawn.
+    (repo / "scratch.tmp").write_text("engine byproduct\n")
+    _, rep = recover(log, **bind_reconciler(adapter, TRUNK))
+    assert rep.orphans_crashed == ["042-e1"]                  # check 1 ran
+    assert (repo / "Issues.md").exists(), \
+        "baseline-known pre-existing file must survive"
+    assert (repo / "Issues.md").read_text() == "pre-existing, present before spawn\n"
+    assert not (repo / "scratch.tmp").exists(), \
+        "genuine post-spawn residue must still be cleaned"
+    ref = _crashed_events(log)[0].payload["residue_ref"]
+    assert ref is not None                                     # residue preserved
+    assert "scratch.tmp" in adapter.diff(base, ref)
+
+
+def test_check3_terminal_issue_no_longer_active_preserves_untracked(world):
+    """Once an issue leaves ACTIVE, `_active_issue` finds nothing — the
+    prior execution's baseline must not leak into a later, unrelated
+    untracked file appearing with no issue in flight at all."""
+    repo, adapter, log, base = world
+    log.append(Event(EventType.ISSUE_CREATED, issue_id="042", payload={"title": "042"}))
+    log.append(Event(EventType.ISSUE_ACTIVATED, issue_id="042",
+                     payload={"base_commit": base}))
+    log.append(Event(EventType.EXECUTION_SPAWNED, issue_id="042",
+                     execution_id="042-e1",
+                     payload={"spawn_reason": "initial", "pid": 1,
+                              "pre_execution_untracked": []}))
+    log.append(Event(EventType.EXECUTION_FINISHED, issue_id="042",
+                     execution_id="042-e1",
+                     payload={"start_commit": base, "end_commit": base,
+                              "exit_status": 0, "pid": 1}))
+    log.append(Event(EventType.VALIDATION_PASSED, issue_id="042",
+                     execution_id="042-e1",
+                     payload={"validated_commit": base, "gate_results": []}))
+    log.append(Event(EventType.REVIEW_APPROVED, issue_id="042",
+                     execution_id="042-e1",
+                     payload={"reviewed_commit": base, "verdict": "APPROVE"}))
+    log.append(Event(EventType.COMMIT_INTENT, issue_id="042",
+                     execution_id="042-e1",
+                     payload={"end_commit": base, "target_branch": TRUNK}))
+    log.append(Event(EventType.COMMIT_CREATED, issue_id="042",
+                     execution_id="042-e1",
+                     payload={"merge_commit": base, "target_branch": TRUNK,
+                              "backfilled": True}))
+    log.append(Event(EventType.ISSUE_COMPLETED, issue_id="042",
+                     payload={"reason": "accepted"}))
+    (repo / "notes.txt").write_text("added by a human after the issue shipped\n")
+    _, rep = recover(log, **bind_reconciler(adapter, TRUNK))
+    assert (repo / "notes.txt").exists()
+    assert rep.workspace_repairs == []
+
+
 # ── recover_workspace: stale lock (b4) via the bound seam ────────────
 def test_recover_workspace_clears_lock(world):
     repo, adapter, log, base = world

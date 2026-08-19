@@ -34,6 +34,10 @@ billing:                         # checklist A1 record
   verified_on: '2026-07-10'
   reverify_at: phase-2-gate
 event_log:
-  path: state/events.jsonl
+  # Relative paths resolve against project.repository (never this file's
+  # invocation CWD) so each target repo owns an isolated log — this is the
+  # default; the key only needs to be set explicitly for a non-default
+  # location. Give an absolute path to pin a specific location instead.
+  path: .draindeck/state/events.jsonl
 attempts:
   ref_namespace: refs/attempts

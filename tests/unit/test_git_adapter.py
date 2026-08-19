@@ -168,6 +168,39 @@ def test_reset_hard_removes_untracked(adapter: GitCliAdapter, repo: Path):
     assert (repo / "README").read_text() == "seed\n"
 
 
+# ── untracked_paths / reset_hard preserve_untracked (resolve-item) ────
+def test_untracked_paths_lists_only_untracked(adapter: GitCliAdapter, repo: Path):
+    (repo / "README").write_text("changed\n")   # tracked modification
+    (repo / "loose.txt").write_text("x")         # untracked
+    assert adapter.untracked_paths() == ["loose.txt"]
+
+
+def test_untracked_paths_empty_when_clean(adapter: GitCliAdapter):
+    assert adapter.untracked_paths() == []
+
+
+def test_reset_hard_preserve_untracked_keeps_named_paths(
+    adapter: GitCliAdapter, repo: Path,
+):
+    base = adapter.current_commit()
+    (repo / "keep.txt").write_text("pre-existing user file")
+    (repo / "junk.txt").write_text("draindeck residue")
+    adapter.reset_hard(base, preserve_untracked=["keep.txt"])
+    assert (repo / "keep.txt").exists()          # preserved
+    assert (repo / "keep.txt").read_text() == "pre-existing user file"
+    assert not (repo / "junk.txt").exists()       # still cleaned, unaffected
+
+
+def test_reset_hard_preserve_untracked_default_cleans_everything(
+    adapter: GitCliAdapter, repo: Path,
+):
+    """No preserve_untracked argument == prior behavior byte-for-byte."""
+    base = adapter.current_commit()
+    (repo / "junk.txt").write_text("residue")
+    adapter.reset_hard(base)
+    assert not (repo / "junk.txt").exists()
+
+
 # ── worktree_status: untracked-only classification (doc 16 §0c) ────────
 def test_worktree_status_clean(adapter: GitCliAdapter):
     status = adapter.worktree_status()

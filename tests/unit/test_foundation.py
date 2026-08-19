@@ -460,6 +460,25 @@ def test_config_rejects_bad_shapes(tmp_path):
         load_config(broken)
 
 
+def test_config_rejects_qwen_provider_without_qwen_section(tmp_path):
+    """Config._reviewer_subsection: reviewer.provider=qwen requires
+    reviewer.qwen. Regression coverage added after a resolve-item edit
+    (2026-08-18) briefly relocated this validator out of the Config class
+    body, silently disabling it with no test catching the loss."""
+    p = _write_cfg(tmp_path)
+    broken = tmp_path / "no-qwen-section.yaml"
+    text = p.read_text()
+    text = text.replace(
+        "reviewer:\n  provider: qwen\n  qwen: "
+        "{endpoint: 'http://localhost:11434', model: qwen2.5-coder}\n",
+        "reviewer:\n  provider: qwen\n",
+    )
+    assert "qwen: {endpoint" not in text  # confirm the replace actually matched
+    broken.write_text(text)
+    with pytest.raises(ConfigError, match="reviewer.qwen"):
+        load_config(broken)
+
+
 def test_environment_validation(tmp_path):
     repo = tmp_path / "target"
     repo.mkdir()

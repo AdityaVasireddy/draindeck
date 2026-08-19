@@ -28,11 +28,23 @@ def bind_reconciler(adapter: RepositoryAdapter, target_branch: str) -> dict:
         """Check 1 (docs/11 §2.1). Re-entrant by construction: an existing
         ref short-circuits (window b6); a clean tree at a residue commit is
         captured via current_commit() (window b5); a clean tree still at the
-        issue base means nothing happened (window b1)."""
+        issue base means nothing happened (window b1).
+
+        ``exclude_untracked=view.pre_execution_untracked`` (resolve-item,
+        2026-08-18) keeps this execution's pre-spawn baseline (a target
+        repo's own pre-existing untracked files, never Draindeck's) out of
+        the residue commit — otherwise `git add -A` would sweep them in as
+        tracked content, and check 3's later reset back to a commit that
+        never had them would delete them as tracked removal, not preserve
+        them (`preserve_untracked` on reset_hard only protects untracked
+        paths from `clean -fd`, a different mechanism than this)."""
         ref = f"{_ns(adapter)}/{view.issue_id}/{view.execution_id}"
         if adapter.ref_target(ref) is not None:
             return ref                                  # b6: already preserved
-        sha = adapter.snapshot_commit(f"crash residue {view.execution_id}")
+        sha = adapter.snapshot_commit(
+            f"crash residue {view.execution_id}",
+            exclude_untracked=view.pre_execution_untracked,
+        )
         residue = sha or adapter.current_commit()
         if sha is None and residue == view.base_commit:
             return None                                 # b1: nothing happened
@@ -80,18 +92,47 @@ def bind_reconciler(adapter: RepositoryAdapter, target_branch: str) -> dict:
         log's last pinned expectation implies, archiving any residue first.
         Emits no event (no such type in doc 03's frozen vocabulary); the
         ref + RecoveryReport.workspace_repairs are the evidence trail. The
-        repair strings are threaded back via a side channel on the seam."""
+        repair strings are threaded back via a side channel on the seam.
+
+        Untracked-file provenance (resolve-item, 2026-08-18): a blanket
+        ``is_dirty()`` cannot tell a target repo's own pre-existing
+        untracked files (e.g. a real LUVZ smoke test's `Issues.md` and its
+        backup) apart from genuine Draindeck crash residue — treating both
+        as archivable/removable destroyed the former. The only untracked
+        paths this check may treat as residue are ones NOT present in the
+        relevant execution's `pre_execution_untracked` baseline (recorded
+        at ExecutionSpawned, before the engine touched anything — see
+        loop.py). With no active issue, or an active issue with no
+        execution yet, there is no baseline to attribute any untracked
+        path to, so untracked dirt is left alone entirely — only tracked/
+        staged/conflicted dirt (`worktree_status().blocking`) or a genuine
+        HEAD/expected-commit mismatch still triggers a reset, and even
+        then every currently-untracked path is preserved through it."""
         expected = _expected_commit(proj, adapter, target_branch)
         if expected is None:
             return []  # nothing pinned yet (e.g. empty log) — nothing to do
-        dirty = adapter.is_dirty()
+        baseline = _untracked_ownership_baseline(proj)
+        current_untracked = set(adapter.untracked_paths())
+        blocking = adapter.worktree_status().blocking
+        if baseline is None:
+            owned_dirty = blocking
+            preserve = current_untracked
+        else:
+            owned_dirty = blocking or bool(current_untracked - baseline)
+            preserve = baseline & current_untracked
         head = adapter.current_commit()
-        if dirty or head != expected:
+        if owned_dirty or head != expected:
             # Archive residue unless check 1 already captured this exact
             # commit under an attempt ref (avoids double-archiving b7).
             already = head in set(adapter.list_attempt_refs().values())
-            if dirty or not already:
-                sha = adapter.snapshot_commit("reconciler dirty-workspace")
+            if owned_dirty or not already:
+                # exclude_untracked=preserve: keep the same paths out of
+                # this residue commit that reset_hard below will keep on
+                # disk — otherwise add -A would sweep them in as tracked
+                # content, and the reset would then delete them as tracked
+                # removal (a different mechanism than clean -fd).
+                sha = adapter.snapshot_commit("reconciler dirty-workspace",
+                                              exclude_untracked=preserve)
                 residue = sha or adapter.current_commit()
                 if not (residue in set(adapter.list_attempt_refs().values())):
                     issue = _active_issue(proj) or "_recovery"
@@ -99,7 +140,7 @@ def bind_reconciler(adapter: RepositoryAdapter, target_branch: str) -> dict:
                         issue, f"reconciler-{proj.last_event_id}", residue)
                     check_dirty_workspace.repairs.append(
                         f"archived dirty workspace {residue[:12]} for {issue}")
-            adapter.reset_hard(expected)
+            adapter.reset_hard(expected, preserve_untracked=preserve)
             check_dirty_workspace.repairs.append(f"reset workspace to {expected[:12]}")
         return []
 
@@ -125,6 +166,22 @@ def _active_issue(proj: StateProjection) -> Optional[str]:
         if st is IssueState.ACTIVE:
             return iid
     return None
+
+
+def _untracked_ownership_baseline(proj: StateProjection) -> Optional[set]:
+    """Untracked paths that already existed before the currently-relevant
+    execution's engine could have touched anything, or None if there is no
+    execution to attribute any untracked path to (resolve-item, 2026-08-18).
+    None is a stronger signal than an empty set: "no baseline" means check 3
+    must not treat ANY untracked path as residue, where an empty set means
+    the baseline is known and simply had nothing in it."""
+    iid = _active_issue(proj)
+    if iid is None:
+        return None
+    latest = proj.latest_execution(iid)
+    if latest is None:
+        return None
+    return set(latest.pre_execution_untracked)
 
 
 def _expected_commit(

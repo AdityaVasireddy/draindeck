@@ -41,6 +41,13 @@ class ExecutionView:
     reviewed_commit: Optional[str] = None        # ReviewApproved.reviewed_commit
     taxonomy_category: Optional[str] = None      # set on any REJECTED/CRASHED exit
     feedback: list = field(default_factory=list)  # ReviewRejected.feedback[]
+    # Untracked-file provenance (resolve-item, 2026-08-18): the workspace's
+    # untracked paths at ExecutionSpawned time, before the engine could
+    # touch anything -- ExecutionSpawned.payload.pre_execution_untracked,
+    # additive (no new event, no schema change, same pattern as base_commit
+    # above). Reconciler check 3's baseline for "did THIS execution create
+    # this untracked file" -- see recovery/bindings.py.
+    pre_execution_untracked: list = field(default_factory=list)
 
 
 class ContainmentState(str, Enum):
@@ -146,7 +153,7 @@ class StateProjection:
                     v.commit_created, v.base_commit, v.end_commit,
                     v.intent_end_commit, v.intent_target_branch,
                     v.validated_commit, v.reviewed_commit, v.taxonomy_category,
-                    v.feedback]
+                    v.feedback, v.pre_execution_untracked]
                 for k, v in sorted(self.executions.items())
             },
             "issue_executions": dict(sorted(self.issue_executions.items())),
@@ -226,6 +233,7 @@ def _execution_spawned(p: StateProjection, ev: Event) -> None:
     p.executions[xid] = ExecutionView(
         xid, iid, ExecutionState.EXECUTING,
         base_commit=p.issue_base_commit.get(iid),
+        pre_execution_untracked=list(ev.payload.get("pre_execution_untracked") or []),
     )
     p.issue_executions.setdefault(iid, []).append(xid)
 

@@ -12,7 +12,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from .adapter import MergeConflictError, RepoError, RepositoryAdapter
 
@@ -129,6 +129,10 @@ class GitCliAdapter(RepositoryAdapter):
         # --porcelain includes untracked (??) and excludes ignored by default.
         return bool(self._git("status", "--porcelain").stdout.strip())
 
+    def untracked_paths(self) -> list[str]:
+        lines = [ln for ln in self._git("status", "--porcelain").stdout.splitlines() if ln]
+        return [ln[3:] for ln in lines if ln[:2] == "??"]
+
     def worktree_status(self) -> WorktreeStatus:
         lines = [ln for ln in self._git("status", "--porcelain").stdout.splitlines() if ln]
         untracked = sum(1 for ln in lines if ln[:2] == "??")
@@ -235,11 +239,23 @@ class GitCliAdapter(RepositoryAdapter):
         else:
             self._git("checkout", branch)
 
-    def snapshot_commit(self, message: str) -> Optional[str]:
+    def snapshot_commit(
+        self, message: str, *, exclude_untracked: Iterable[str] = (),
+    ) -> Optional[str]:
         if not self.is_dirty():
             return None  # never an empty commit (check-then-act)
         self._git("add", "-A")
+        exclude = list(exclude_untracked)
+        if exclude:
+            # Unstage paths this snapshot does not own (resolve-item,
+            # 2026-08-18) -- e.g. a target repo's own pre-existing untracked
+            # files, never Draindeck's residue to begin with. `git reset --
+            # <path>` on a path with no prior commit drops it back to
+            # untracked on disk; it is never deleted.
+            self._git("reset", "--", *exclude)
         self._checkpoint("snapshot:post-add")
+        if not self._git("diff", "--cached", "--name-only").stdout.strip():
+            return None  # nothing left to commit once excluded paths are out
         # --no-verify: the target repo's hooks must not block or mutate
         # evidence preservation (our validation gates are the real hooks).
         self._git("commit", "--no-verify", "-m", message)
@@ -262,9 +278,14 @@ class GitCliAdapter(RepositoryAdapter):
         self._git("update-ref", ref, target)
         return ref
 
-    def reset_hard(self, commit: str) -> None:
+    def reset_hard(
+        self, commit: str, *, preserve_untracked: Iterable[str] = (),
+    ) -> None:
         self._git("reset", "--hard", commit)   # clears MERGE_HEAD too
-        self._git("clean", "-fd")              # untracked files a reset leaves
+        clean_args = ["clean", "-fd"]
+        for path in preserve_untracked:
+            clean_args += ["-e", path]         # untracked files a reset leaves,
+        self._git(*clean_args)                 # minus anything explicitly preserved
 
     def merge_to(self, target_branch: str, commit: str, message: str) -> str:
         target_head = self.head_of(target_branch)

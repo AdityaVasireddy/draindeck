@@ -186,6 +186,12 @@ class Orchestrator:
             "budget": {"wall_seconds": self.cfg.engine.timeout_seconds,
                        "max_turns": self.cfg.engine.max_turns},
             "pid": os.getpid(),  # I-h: must equal this execution's Finished pid
+            # Untracked-file ownership baseline (resolve-item, 2026-08-18):
+            # captured now, before the engine can touch anything, and
+            # fsync'd with this intent event (I6) -- reconciler check 3
+            # uses it to tell "this execution's own residue" apart from a
+            # target repo's own pre-existing untracked files.
+            "pre_execution_untracked": sorted(self.adapter.untracked_paths()),
         }
         # intent, fsync'd BEFORE any spawn side effect (the engine runs next step)
         self._emit(self._event(EventType.EXECUTION_SPAWNED, issue, payload,

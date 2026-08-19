@@ -160,7 +160,13 @@ class BillingCfg(_Frozen):  # checklist A1 record
 
 
 class EventLogCfg(_Frozen):
-    path: str = "state/events.jsonl"
+    # Target-repo-owned by default (resolve-item, 2026-08-18): a bare
+    # relative path here is resolved against project.repository, never the
+    # invocation CWD (see resolve_event_log_path below) -- ".draindeck/" is
+    # the same target-repo-owned convention `draindeck init` already uses
+    # for config.local.yaml (doc 16 §0c). An absolute path is always used
+    # as-is and is unaffected by this default or its resolution rule.
+    path: str = ".draindeck/state/events.jsonl"
 
 
 class AttemptsCfg(_Frozen):
@@ -183,6 +189,21 @@ class Config(_Frozen):
         if v.provider == "qwen" and v.qwen is None:
             raise ValueError("reviewer.provider=qwen requires reviewer.qwen")
         return v
+
+
+def resolve_event_log_path(cfg: Config) -> Path:
+    """The one place event_log.path becomes a filesystem path (doc 03's
+    authoritative runtime state, and the artifacts/ dir derived from its
+    parent). A relative path is resolved against project.repository, the
+    target repo Config already anchors every other path to -- NEVER against
+    Draindeck's invocation CWD, which previously made the default log
+    shared/stale across unrelated target repos (a foreign log's startup
+    replay corrupting a different target's recovery -- the incident this
+    function exists to prevent). An absolute path (explicit operator
+    override) is returned unchanged, preserving existing configuration that
+    already pins a specific location."""
+    p = Path(cfg.event_log.path)
+    return p if p.is_absolute() else Path(cfg.project.repository) / p
 
 
 def load_config(path: Path | str) -> Config:

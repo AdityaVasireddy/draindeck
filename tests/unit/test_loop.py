@@ -47,6 +47,7 @@ class FakeAdapter:
 
     def head_of(self, branch): return self._branches.get(branch)
     def current_commit(self): return self._head
+    def untracked_paths(self): return []
 
     def checkout_branch(self, branch, *, create_from=None):
         self._head = create_from if create_from is not None else self._branches.get(branch, self._head)

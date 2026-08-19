@@ -25,7 +25,7 @@ crash-safe re-entry possible; it does not decide when to abandon.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Iterable, Optional
 
 
 class RepoError(RuntimeError):
@@ -59,6 +59,17 @@ class RepositoryAdapter(ABC):
         """True iff the worktree has tracked modifications OR untracked
         files (ignored files excluded). The check-3 trigger and the I1
         clean-base guard."""
+
+    @abstractmethod
+    def untracked_paths(self) -> list[str]:
+        """Workspace-relative paths of untracked (``??``) files, ignored
+        files excluded. Used to compute residue provenance: check 3 (doc
+        11 §2.3) only ever treats an untracked path as Draindeck's own
+        crash residue when it is provably absent from the relevant
+        execution's `pre_execution_untracked` baseline (recorded at
+        ExecutionSpawned, before the engine could touch anything) — never
+        by blanket presence, which would misclassify a target repo's own
+        pre-existing untracked files (resolve-item, 2026-08-18)."""
 
     @abstractmethod
     def commit_exists(self, sha: str) -> bool:
@@ -117,14 +128,23 @@ class RepositoryAdapter(ABC):
         refs before any reset/re-branch."""
 
     @abstractmethod
-    def snapshot_commit(self, message: str) -> Optional[str]:
+    def snapshot_commit(
+        self, message: str, *, exclude_untracked: Iterable[str] = (),
+    ) -> Optional[str]:
         """Stage everything (``add -A``) and commit on the current HEAD;
         return the new sha, or None if the worktree was clean (never an
         empty commit). CONVERGENT: re-running after a completed snapshot
         returns None because the tree is clean, so callers use
         ``snapshot_commit(...) or current_commit()`` for full re-run
         safety. Commits bypass target-repo hooks (--no-verify): evidence
-        preservation must not be blockable by the target repo."""
+        preservation must not be blockable by the target repo.
+        ``exclude_untracked`` (resolve-item, 2026-08-18) unstages the given
+        workspace-relative paths before committing — a path with no prior
+        commit stays untracked on disk, never deleted. Used to keep paths this
+        snapshot does not own (a target repo's own pre-existing untracked
+        files) out of the residue commit entirely, so a later reset back
+        to a commit that never had them can't delete them as tracked
+        content. Default ``()`` preserves prior behavior."""
 
     @abstractmethod
     def set_attempt_ref(self, issue_id: str, execution_id: str, commit: str) -> str:
@@ -134,12 +154,20 @@ class RepositoryAdapter(ABC):
         RepoError."""
 
     @abstractmethod
-    def reset_hard(self, commit: str) -> None:
+    def reset_hard(
+        self, commit: str, *, preserve_untracked: Iterable[str] = (),
+    ) -> None:
         """``reset --hard commit`` AND ``clean -fd`` (untracked files that a
         bare reset leaves behind would break I1). Ignored files survive
         (``-x`` omitted) — unreachable by commits, so the pin is
-        unaffected. Also clears in-progress merge state. IDEMPOTENT. Pre
-        (orchestrator-sequenced): residue already preserved to a ref."""
+        unaffected. ``preserve_untracked`` (resolve-item, 2026-08-18)
+        excludes the given workspace-relative paths from the clean —
+        callers with no ownership evidence for a given untracked path
+        (e.g. check 3 clearing pre-existing target-repo files that were
+        never Draindeck's) pass it here rather than losing the file.
+        Default ``()`` preserves prior behavior: clean everything. Also
+        clears in-progress merge state. IDEMPOTENT. Pre (orchestrator-
+        sequenced): residue already preserved to a ref."""
 
     @abstractmethod
     def merge_to(self, target_branch: str, commit: str, message: str) -> str:

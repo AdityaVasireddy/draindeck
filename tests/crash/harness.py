@@ -544,7 +544,20 @@ def run_fixtures(root: Path) -> int:
     passed += 1
     print("PASS fixture[f1-stale-lock]")
 
-    # f2: dirty workspace, no open execution → check 3 archives + resets.
+    # f2: dirty workspace, no open execution. Pre-resolve-item (2026-08-18),
+    # check 3 archived+reset this unconditionally on ANY untracked dirt —
+    # exactly the bug a real LUVZ smoke test hit (a legitimate untracked
+    # Issues.md destroyed with no active issue in flight). Check 3 now has
+    # no ownership baseline to attribute planted.txt to (no active issue at
+    # boot) and leaves it alone entirely — see
+    # test_bindings.py::test_check3_no_active_issue_preserves_preexisting_untracked
+    # for that property in direct, single-call isolation. This fixture's
+    # own worktree still ends up clean by the final `verify()` below, but
+    # now via the WORKER's own unconditional `reset_hard(base)` at issue
+    # 042's first EXECUTING entry (worker.py, mirrors ordinary
+    # reject/retry cleanup — not check 3, and not a target-repo-file-
+    # preservation concern, since that reset always ran on every issue
+    # regardless of this fix) — not via reconciliation, which is the point.
     base = fresh_scenario(root, "fixture[f2-dirty-boot]")
     repo = base / "repo"
     (repo / "planted.txt").write_text("dirty at boot")

@@ -133,7 +133,6 @@ def _drive(cfg: Config, *, skip_baseline: bool, replayed_events: int,
     with mock.patch.object(main_mod, "load_config", return_value=cfg), \
          mock.patch.object(main_mod, "validate_environment", return_value=[]), \
          mock.patch.object(main_mod, "EventLog"), \
-         mock.patch.object(main_mod.Path, "mkdir"), \
          mock.patch.object(main_mod, "Validator", validator_cls), \
          mock.patch.object(main_mod.WorkspaceLease, "acquire", return_value=lease), \
          mock.patch.object(main_mod, "resolve_startup_containment",

@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import Callable
 
 from .budget.manager import BudgetManager
-from .config import Config, ConfigError, load_config, validate_environment
+from .config import (
+    Config,
+    ConfigError,
+    load_config,
+    resolve_event_log_path,
+    validate_environment,
+)
 from .context.pack import build_prompt  # noqa: F401  (re-exported convenience)
 from .engine.claude_headless import ClaudeHeadlessEngine, EngineError
 from .events.log import (
@@ -149,11 +155,12 @@ def _open_startup_recovery(cfg: Config) -> _StartupRecovery:
         # Writer ownership covers repair and replay before any containment or
         # workspace recovery action.  Workspace ownership is deliberately
         # separate: it protects the wider B4/runtime boundary.
-        log = EventLog(Path(cfg.event_log.path))
+        log_path = resolve_event_log_path(cfg)
+        log = EventLog(log_path)
         resolve_startup_containment(
             log, lease.workspace_key, controller_probe=probe_controller_identity)
 
-        artifacts_dir = Path(cfg.event_log.path).parent / "artifacts"
+        artifacts_dir = log_path.parent / "artifacts"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         engine = ClaudeHeadlessEngine(cfg.engine, artifacts_dir)
         adapter = GitCliAdapter(cfg.project.repository, cfg.attempts.ref_namespace)
