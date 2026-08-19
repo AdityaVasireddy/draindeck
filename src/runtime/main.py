@@ -7,6 +7,14 @@
   python -m runtime.main run         --config CONFIG  the orchestrator loop
   python -m runtime.main init        REPO_PATH [--branch NAME] [--yes] [--force]
                                                      onboard a target repo (doc 16)
+  python -m runtime.main observe events --log PATH [--after CURSOR]
+                                         [--limit N] --format json
+                                                     read-only event evidence (ADR-25)
+  python -m runtime.main observe status --log PATH --format json
+                                                     read-only availability (ADR-25)
+
+Installed as the ``draindeck`` console script (pyproject.toml
+[project.scripts]) for the same argv shape.
 
 ``run`` is the Session-5 orchestrator: startup order (config → log → engine →
 adapter → reap_orphans → recover → health → ingest) then the doc 09 §8.2 loop.
@@ -44,6 +52,14 @@ from .events.projections import StateProjection
 from .events.schema import Event, EventType
 from .init.command import cmd_init
 from .loop import Orchestrator, OrchestratorHalt
+from .observe import (
+    DEFAULT_LIMIT,
+    ObserverInputError,
+    read_events_page,
+    read_status,
+    validate_limit,
+    validate_log_path,
+)
 from .queue.issues_md import IssuesParseError, parse as parse_issues
 from .recovery.bindings import bind_reconciler
 from .recovery.containment import WorkspaceContainmentBlocked, resolve_startup_containment
@@ -100,6 +116,28 @@ def cmd_show_state(args) -> int:
         "event_counts": dict(sorted(proj.counts.items())),
     }
     print(json.dumps(out, indent=2))
+    return 0
+
+
+def cmd_observe_events(args) -> int:
+    try:
+        log_path = validate_log_path(args.log)
+        limit = validate_limit(args.limit)
+        page = read_events_page(log_path, after=args.after, limit=limit)
+    except ObserverInputError as e:
+        print(json.dumps(e.to_response()), file=sys.stderr)
+        return 1
+    print(json.dumps(page))
+    return 0
+
+
+def cmd_observe_status(args) -> int:
+    try:
+        log_path = validate_log_path(args.log)
+    except ObserverInputError as e:
+        print(json.dumps(e.to_response()), file=sys.stderr)
+        return 1
+    print(json.dumps(read_status(log_path)))
     return 0
 
 
@@ -445,6 +483,18 @@ def main(argv=None) -> int:
     s.add_argument("--skip-baseline", action="store_true",
                    help="skip the first-run baseline-green health check")
     s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("observe")
+    observe_sub = s.add_subparsers(dest="observe_cmd", required=True)
+    ev = observe_sub.add_parser("events")
+    ev.add_argument("--log", required=True)
+    ev.add_argument("--after", default=None)
+    ev.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+    ev.add_argument("--format", required=True, choices=["json"])
+    ev.set_defaults(fn=cmd_observe_events)
+    st = observe_sub.add_parser("status")
+    st.add_argument("--log", required=True)
+    st.add_argument("--format", required=True, choices=["json"])
+    st.set_defaults(fn=cmd_observe_status)
     s = sub.add_parser("init")
     s.add_argument("repo_path")
     s.add_argument("--branch", default="agent-work")
