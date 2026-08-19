@@ -7,6 +7,17 @@ repository mutation, `src/runtime` behavior, Git/recovery behavior). Surfaced
 in a real LUVZ live run, after doc 18's two fixes (event-log isolation,
 untracked-file preservation) were already active and working correctly.
 
+**Correction (2026-08-19, later same day):** §"Root cause" below claims
+production "runs the engine directly on the checked-out `target_branch`
+(advancing its local tip in place, not on a separate per-issue branch)".
+That claim is wrong. `git blame` on `loop.py:215` shows the per-issue-branch
+checkout (`issue/{issue}`) has existed unchanged since the original
+`loop.py` commit (`2608ac7`, 2026-07-12) — the engine has always run on a
+per-issue branch, never on `target_branch` directly. This does not affect
+this doc's fix or evidence, both of which stand. The corrected mechanism
+(how `target_branch` actually ends up checked out when the collision this
+doc fixes occurs) is in `docs/26-recovery-redo-merge-checked-out-target-collision.md`.
+
 ## 1. Problem — check-3 pins the branch at an unmerged commit, colliding
 ## with check-2's unwitnessed-commit guard
 
