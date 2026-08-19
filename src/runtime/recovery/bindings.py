@@ -54,7 +54,26 @@ def bind_reconciler(adapter: RepositoryAdapter, target_branch: str) -> dict:
         """Check 2 (docs/11 §2.2). For each CommitIntent without its
         CommitCreated, ask git whether the merge happened (is_ancestor,
         doc 02 §4.2). Ancestor → backfill the fact; not → redo the merge
-        (check-then-act) then record it."""
+        (check-then-act) then record it.
+
+        Checked-out-target collision (docs/26, 2026-08-19): recovery
+        inherits HEAD wherever the previous process left it, which is
+        routinely target_branch itself — the repo's normal at-rest state
+        between runs (main.py checks it out at startup and restores it at
+        shutdown; loop.py never checks it out mid-execution). merge_to
+        refuses outright when target_branch is checked out, correctly,
+        since it never touches the worktree and moving a checked-out
+        branch's ref would desync index/worktree. ``head_of(target) ==
+        current_commit()`` stands in for "HEAD is on target_branch" here
+        without a new adapter primitive: in this single-writer runtime the
+        redo-merge path only reaches this branch when ``end`` is NOT an
+        ancestor of target (the ancestor case backfills instead), so a
+        HEAD legitimately sitting on issue/{issue} would show its own
+        divergent tip, not target's — the equality check only ever fires
+        for the real collision. Reconstruct issue/{issue} at the
+        execution's own base_commit and move HEAD there first; the
+        branch's content doesn't matter to merge_to (object-DB only), only
+        that HEAD is off target_branch."""
         out: list[Event] = []
         for view in proj.executions.values():
             if not (view.commit_intended and not view.commit_created):
@@ -76,6 +95,15 @@ def bind_reconciler(adapter: RepositoryAdapter, target_branch: str) -> dict:
                     )
                 backfilled = True
             else:
+                if adapter.head_of(target) == adapter.current_commit():
+                    if view.base_commit is None:
+                        raise _tamper(
+                            f"{view.execution_id} has no base_commit to "
+                            f"reconstruct issue/{view.issue_id} onto before "
+                            f"redoing the merge"
+                        )
+                    adapter.checkout_branch(
+                        f"issue/{view.issue_id}", create_from=view.base_commit)
                 mc = adapter.merge_to(target, end, f"merge {view.issue_id}")
                 backfilled = False
             out.append(Event(

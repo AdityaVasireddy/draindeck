@@ -182,6 +182,33 @@ def test_c3_already_merged_backfill(world):
     assert created[0].payload["merge_commit"] == mc
 
 
+def test_c1_checked_out_target_collision_redo(world):
+    """Doc 26 regression: HEAD sitting on target_branch (the repo's normal
+    at-rest state between runs) when check 2 needs to redo an unmerged
+    merge must not hit merge_to's checked-out-target guard. Recovery must
+    reconstruct issue/{issue} from base_commit, move HEAD there, then
+    merge exactly as test_c1_unmerged_redo does."""
+    repo, adapter, log, base = world
+    adapter.checkout_branch("issue/042", create_from=base)
+    (repo / "feature.txt").write_text("feat")
+    end = adapter.snapshot_commit("feature")
+    adapter.checkout_branch(TRUNK)                        # simulates the collision
+    _intent_log(log, base, end)                            # c1: trunk unmoved
+    proj, rep = recover(log, **bind_reconciler(adapter, TRUNK))
+    created = _created_events(log)
+    assert len(created) == 1
+    assert created[0].payload["backfilled"] is False        # recovery merged
+    mc = created[0].payload["merge_commit"]
+    assert adapter.head_of(TRUNK) == mc
+    assert adapter.is_ancestor(end, TRUNK)
+    # HEAD moved off target onto the reconstructed issue branch. Check 3
+    # (which runs after check 2 in the same recover() call) then re-pins it
+    # to end_commit, since ACCEPTED-with-commit_created falls through
+    # _expected_commit's VALIDATING/REVIEWING/ACCEPTED branch (ADR-25).
+    assert adapter.current_commit() == end
+    assert adapter.head_of("issue/042") == end
+
+
 def test_check2_idempotent_second_pass(world):
     repo, adapter, log, base = world
     adapter.checkout_branch("issue/042", create_from=base)
