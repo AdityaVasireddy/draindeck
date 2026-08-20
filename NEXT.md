@@ -10,19 +10,40 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-19)
+## 1. Current state (verified 2026-08-20)
 
-- **Read-only external observer CLI shipped** (`draindeck observe events`/
-  `observe status`, SPEC.md / ADR-25, `docs/08` §5g): a bytes-direct reader
+- **Read-only external observer CLI shipped, then remediated**
+  (`draindeck observe events`/`observe status`, SPEC.md / ADR-25 +
+  Amendment 1, `docs/08` §5g): a bytes-direct, streaming reader
   (`src/runtime/observe.py`) that never instantiates `EventLog`/
   `ReadOnlyEventLog`, never touches the writer/workspace mutex, and never
-  invokes Git — see docs/03's added consumer note. Unit suite 430/430 (396
-  + 34 new), harness `ALL 60 SCENARIOS PASSED` both seed 42 and seed 1337,
-  all verified live this session. One plan acceptance line (Task 3,
-  "lineage/file-generation observations") is intentionally unimplemented —
-  it isn't grounded in `SPEC.md`'s actual public contract; flagged in
-  `tasks/plan.md` (local, gitignored) for a human decision, not resolved
-  here.
+  invokes Git — see docs/03's consumer note. The 2026-08-19 shipment's
+  "lineage/file-generation" gap (noted below as unimplemented) was closed
+  via a 2026-08-20 `/resolve-item` remediation: every `events` response
+  now reports `contentLineage`/`fileGeneration`, cursors are rejected
+  (`CURSOR_LOG_REPLACED`) once the log they were issued against no longer
+  matches, `records.length` never exceeds `limit` (even into a torn
+  tail), `Path.read_bytes()` is gone in favor of bounded chunked reads,
+  and an oversized record is capped and honestly flagged
+  (`integrity: "OVERSIZED"`) rather than silently truncated. `offsetBytes`
+  was removed from public record output as part of the same amendment
+  (pre-GA correction — no external consumer existed yet). A same-day
+  second `/resolve-item` pass fixed a real bug the first pass introduced
+  (a `\n` found past `MAX_RECORD_BYTES` in one oversized `read()` gulp
+  could still validate a record as complete, in both record streaming
+  and `contentLineage` discovery — fixed by bounding the search itself,
+  `buf.find(b"\n", 0, MAX_RECORD_BYTES)`) and narrowed an overclaim: the
+  cursor/identity check detects the log going missing, its on-disk
+  identity changing, its first record's bytes changing, or the cursor
+  landing past current EOF — it does **not** detect an in-place
+  truncate-and-rewrite that preserves both fingerprints while changing
+  only later bytes; that's a documented, accepted bounded-reader
+  limitation now, not a claimed guarantee. Full detail: `docs/08` §5g
+  Amendment 1. **Uncommitted as of this NEXT.md edit** — the remediation
+  diff is sitting in the working tree pending the human's explicit commit
+  authorization (`/resolve-item` never commits); unit suite 445/445,
+  harness `ALL 60 SCENARIOS PASSED` both seed 42 and seed 1337, all
+  verified live against the uncommitted diff.
 - **Event-log cross-repo isolation + untracked-file preservation fixed**
   (resolve-item, 2026-08-19): a real LUVZ smoke test hit two runtime
   data-safety bugs — (1) `event_log.path`'s default resolved against

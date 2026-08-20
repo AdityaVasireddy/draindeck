@@ -870,6 +870,103 @@ be evaluated against both readers, not just `EventLog`. The observer is
 additive-only — removing or narrowing it is a consumer-facing break and
 needs its own ADR-governed deprecation, not a silent edit.
 
+### ADR-25 — Amendment 1 (2026-08-20): identity, cursor safety, strict
+### pagination, and bounded reads
+
+**Status:** ACCEPTED. Filed via `/resolve-item` as a remediation against
+the shipped implementation, which review found short of this ADR's own
+"additive, non-mutating, read-only" bar in four ways. Handled as an
+amendment to this ADR, not a new one, per the remediation item's explicit
+authorization ("stop and ask ... if [it] requires a new ADR beyond
+amending ADR-25" — none of the four gaps below require changing doc 03 or
+a frozen contract; they correct this ADR's own external surface).
+
+**Gap 1 — no log-identity signal, so a cursor could silently continue
+across a replaced or truncated log.** The original cursor encoded only a
+byte offset; if the log at that path were ever replaced (a corrupted log
+recovered from backup, an operator swapping in a different log) or
+truncated, a stale cursor would resume reading the new file at the old
+numeric offset and misinterpret unrelated bytes as continuation records —
+exactly the "silently continue after log replacement" failure this ADR's
+own read-only-observer premise exists to avoid. **Fix:** every `events`
+response now reports `contentLineage` (SHA-256 of the first complete
+record) and `fileGeneration` (device + file index — the same pair Python
+surfaces on Windows via `os.stat().st_dev`/`st_ino` as the NTFS volume
+serial number and file index, no platform-specific API needed). Cursors
+embed both; `read_events_page` recomputes current identity on every call
+and rejects a mismatch — or an embedded offset past the current file's
+end — as `CURSOR_LOG_REPLACED`, never silently continuing.
+
+**Honest scope of this fix (corrected same-day, before this diff's first
+commit):** the first draft of this Gap 1 fix described itself as
+detecting "the log being replaced or truncated," full stop — that
+overclaimed. What `(contentLineage, fileGeneration)` actually catches is
+four concrete, realistic cases: the log going missing, `fileGeneration`
+(the file's on-disk identity) changing, `contentLineage` (the first
+record's bytes) changing, or the cursor's offset landing past the
+current file's end. An in-place truncate-and-rewrite that preserves both
+the file's identity and the exact first-record bytes while changing only
+the bytes between the first record and the cursor's position is
+**not** detected — it is indistinguishable from ordinary append-only
+growth to a reader that only fingerprints the first record. Closing that
+would need hashing the full prefix up to the cursor's offset on every
+call (which breaks Gap 4's own boundedness fix below), persistent
+cross-invocation state (this CLI has none), or writer cooperation (out
+of scope). This is a documented boundary of a stat + first-record
+fingerprint, not a bug — see SPEC.md's Identity section for the same
+wording kept in sync.
+
+**Gap 2 — `offsetBytes` leaked the internal position abstraction into
+public output**, in tension with the ADR's own "cursors are adapter-owned
+and opaque to consumers" clause. **Fix:** removed from record output;
+resumability is carried only by the opaque cursor. No external consumer
+existed yet (the dashboard integration this ADR supports had not started
+consuming the field), so this is recorded as a pre-GA correction rather
+than a breaking-change deprecation under the "additive-only" consequence
+above.
+
+**Gap 3 — pagination could exceed the requested `limit`.** The original
+loop appended a torn tail record unconditionally before checking the
+limit, so a page could return `limit + 1` records whenever the record
+immediately after the limit boundary happened to be torn. **Fix:** the
+limit check now runs before any record (complete, torn, or oversized) is
+added to the page; an unread item beyond the limit is reported via
+`hasMore=true` and a cursor pointing at it instead of being force-included.
+
+**Gap 4 — `Path.read_bytes()` loaded the entire log into memory
+regardless of `limit`,** undermining the ADR's own boundedness intent for
+a diagnostic tool meant to run against a potentially long-lived,
+ever-growing log. **Fix:** replaced with a streaming reader over an open
+file handle, bounded to `CHUNK_SIZE` (64 KiB) per read and never reading
+past `limit + 1` records. A single record's scan for its terminator is
+separately capped at `MAX_RECORD_BYTES` (8 MiB); a record that never
+terminates within that cap is reported as `integrity: "OVERSIZED"` with a
+hash of only the scanned prefix — explicitly labeled as partial evidence,
+never silently truncated and presented as if it were the complete record.
+
+**Bug fixed same-day, before this diff's first commit:** the first draft
+searched for a record's terminating `\n` across the *entire* accumulated
+read buffer, not just its first `MAX_RECORD_BYTES` bytes. Because a
+single `read()` can pull in up to one `CHUNK_SIZE` more than the cap in
+one call, a `\n` sitting just past the cap could still be found and wrongly
+accepted as a valid terminator — the cap was enforced only when no `\n`
+was present anywhere in the (possibly already-overshot) buffer, not when
+one existed beyond byte `MAX_RECORD_BYTES`. Fixed by bounding the search
+itself (`buf.find(b"\n", 0, MAX_RECORD_BYTES)`) in both the record
+streamer and the `contentLineage` discovery reader — a `\n` only counts
+as a terminator when it falls within the cap; the same rule now applies
+consistently to both.
+
+**Consequences:** the cursor's internal encoding changed (now a
+self-describing token carrying resume position + log identity, still
+opaque outside this module) and record shape gained
+`truncatedPrefixHash`/`truncatedPrefixBytes` alongside the identity
+fields in `metadata`. Both are backward-incompatible with the initial
+shipment's shape; accepted because no consumer existed yet. Any future
+change to this surface still needs its own ADR-governed deprecation per
+this ADR's original consequences clause — this amendment does not relax
+that going forward.
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml

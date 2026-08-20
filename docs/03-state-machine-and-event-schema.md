@@ -149,12 +149,22 @@ human authorization are never release proof.
 
 ## Consumer note — read-only external observer (added 2026-08-19)
 
-`src/runtime/observe.py` (ADR-25, `docs/08` §5g) reads this file's on-disk
-bytes directly, framing records on `\n` without instantiating `EventLog`/
-`ReadOnlyEventLog` or touching any lock. It is a consumer of the physical
-log format above, not a participant in the state machine: it introduces no
-event type, no schema version, and no transition, and this note does not
-amend anything above it. Any future change to record framing (event
+`src/runtime/observe.py` (ADR-25, `docs/08` §5g, amended §5g Amendment 1)
+reads this file's on-disk bytes directly, framing records on `\n` without
+instantiating `EventLog`/`ReadOnlyEventLog` or touching any lock, and
+streams them in bounded chunks rather than loading the file whole. It also
+fingerprints the file's identity (first-record content hash + device/file
+index) purely by reading/stat-ing bytes already in view, so a resumed
+paginated read can detect the log going missing, that identity changing,
+or its own cursor position landing past the current file's end — a
+bounded check, not a guarantee against every possible replacement (see
+`docs/08` §5g Amendment 1's "Honest scope" note for the specific gap this
+does not close). This is observation of the existing physical file, not a
+new piece of state this file's schema owns. It is a consumer of the
+physical log format above, not
+a participant in the state machine: it introduces no event type, no schema
+version, and no transition, and this note does not amend anything above
+it. Any future change to record framing (event
 vocabulary in §3, artifact schemas in §4) must be evaluated against this
 second reader, not just the writer/replay path.
 | EXECUTING (context blowout) | budget=context/turns | escalate for splitting | IssueEscalated(NEEDS_DECOMPOSITION) |
