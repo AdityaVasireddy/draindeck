@@ -66,3 +66,77 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+DEFAULT_MAX_BODY_BYTES = 64 * 1024
+
+
+async def _reject_body_too_large(scope, receive, send, max_bytes: int) -> None:
+    response = JSONResponse(
+        status_code=413,
+        content={"error": {"code": "REQUEST_BODY_TOO_LARGE",
+                            "message": f"request body exceeds {max_bytes} bytes"}},
+    )
+    await response(scope, receive, send)
+
+
+class MaxBodySizeMiddleware:
+    """Bounds request body size (docs/19 "API body...are bounded").
+
+    Primary check: reject on ``Content-Length`` before ``self.app`` is ever
+    invoked. This must be the primary mechanism, not a fallback — FastAPI's
+    own body-parsing (for a pydantic-model request body) catches ANY
+    exception raised from ``receive()`` during parsing and converts it into
+    its own generic 400, so a `receive()`-stream exception raised from
+    *inside* app code never reaches this middleware's own error response;
+    rejecting before dispatch is the only way to guarantee a 413.
+
+    Secondary, best-effort guard: the streaming counter below still bounds
+    actual bytes received for a request that lies about — or omits —
+    Content-Length. Given the swallowing behavior above, such a request is
+    still rejected (the app never completes normally), but not guaranteed
+    to surface as exactly a clean 413 — an accepted, honestly-documented
+    gap for this local, loopback-only tool, not a bypass of the bound
+    itself.
+    """
+
+    def __init__(self, app, max_bytes: int = DEFAULT_MAX_BODY_BYTES) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        max_bytes = self.max_bytes
+        for name, value in scope.get("headers", ()):
+            if name == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    declared = None
+                if declared is not None and declared > max_bytes:
+                    await _reject_body_too_large(scope, receive, send, max_bytes)
+                    return
+                break
+
+        total = 0
+
+        async def limited_receive():
+            nonlocal total
+            message = await receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > max_bytes:
+                    raise _BodyTooLarge()
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _BodyTooLarge:
+            await _reject_body_too_large(scope, receive, send, max_bytes)

@@ -27,7 +27,14 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     expected to pre-exist)."""
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), isolation_level=None)
+    # check_same_thread=False: FastAPI async route handlers run synchronous
+    # sqlite3 calls directly on the ASGI server's single event-loop thread,
+    # which is not necessarily the thread that called connect() (uvicorn
+    # itself runs both on the same thread, but Starlette's TestClient runs
+    # the app on a separate portal thread) -- access is always serialized
+    # onto one thread at a time, never genuinely concurrent, so disabling
+    # sqlite3's same-thread check is safe here, not a race.
+    conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -58,6 +65,38 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "  entity_type     TEXT NOT NULL,"
         "  entity_id       TEXT NOT NULL,"
         "  created_at      TEXT NOT NULL"
+        ")"
+    )
+
+    # Registration (docs/19 "Registration and polling"). canonical_log_path
+    # is NULL when logPath was omitted at registration (valid — becomes
+    # NOT_INITIALIZED); the partial unique index below enforces uniqueness
+    # only among registrations that DO have a logPath, matching "canonical
+    # logPath is unique across registrations; one projectPath may have
+    # distinct logs" — projectPath itself is deliberately not constrained.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS repositories ("
+        "  id                 INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  project_path       TEXT NOT NULL,"
+        "  log_path           TEXT,"
+        "  canonical_log_path TEXT,"
+        "  created_at         TEXT NOT NULL"
+        ")"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_repositories_canonical_log_path "
+        "ON repositories(canonical_log_path) WHERE canonical_log_path IS NOT NULL"
+    )
+
+    # Single indexer-writer lease (ADR-26 decision 2). One singleton row
+    # (id=1, enforced by CHECK) — see lease.py for the acquire/renew/
+    # takeover protocol built on top of this table.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS indexer_lease ("
+        "  id           INTEGER PRIMARY KEY CHECK (id = 1),"
+        "  owner_token  TEXT NOT NULL,"
+        "  acquired_at  TEXT NOT NULL,"
+        "  heartbeat_at TEXT NOT NULL"
         ")"
     )
 
