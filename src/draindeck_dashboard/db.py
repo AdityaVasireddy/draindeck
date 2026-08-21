@@ -100,6 +100,81 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ")"
     )
 
+    # Identity generations (docs/19 "SQLite, lease, and identity
+    # generations"). Each observed (contentLineage, fileGeneration) pair
+    # opens a new generation row for a repository; generation_number is a
+    # per-repository monotonic sequence, not a global one.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS identity_generations ("
+        "  id                        INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  repository_id             INTEGER NOT NULL,"
+        "  generation_number         INTEGER NOT NULL,"
+        "  content_lineage           TEXT,"
+        "  file_generation_device    INTEGER,"
+        "  file_generation_file_index INTEGER,"
+        "  file_generation_available INTEGER NOT NULL,"
+        "  opened_at                 TEXT NOT NULL,"
+        "  UNIQUE(repository_id, generation_number)"
+        ")"
+    )
+
+    # The durable checkpoint (docs/19 "Cursor, idempotency, and
+    # integrity"): last record cursor/hash plus identity generation — never
+    # nextCursor alone. One row per repository (repository_id is the PK).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS checkpoints ("
+        "  repository_id          INTEGER PRIMARY KEY,"
+        "  identity_generation_id INTEGER NOT NULL,"
+        "  last_record_cursor     TEXT,"
+        "  last_record_hash       TEXT,"
+        "  halted_oversized       INTEGER NOT NULL DEFAULT 0,"
+        "  reduced_confidence     INTEGER NOT NULL DEFAULT 0,"
+        "  updated_at             TEXT NOT NULL"
+        ")"
+    )
+
+    # The evidence store. Idempotent upsert key is exactly
+    # (repository, identity_generation, record_cursor) per docs/19 —
+    # boundary re-delivery at a TORN/OVERSIZED tail is expected and must
+    # overwrite the same row, not duplicate it.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS evidence ("
+        "  id                     INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  repository_id          INTEGER NOT NULL,"
+        "  identity_generation_id INTEGER NOT NULL,"
+        "  record_cursor          TEXT NOT NULL,"
+        "  integrity              TEXT NOT NULL,"
+        "  event_id               INTEGER,"
+        "  event_type             TEXT,"
+        "  schema_version         INTEGER,"
+        "  record_hash            TEXT,"
+        "  length_bytes           INTEGER,"
+        "  stored_at              TEXT NOT NULL,"
+        "  UNIQUE(repository_id, identity_generation_id, record_cursor)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_evidence_event_lookup ON evidence("
+        "  repository_id, identity_generation_id, integrity, event_id)"
+    )
+
+    # CORRUPT (docs/19 "Cursor, idempotency, and integrity"): two OK records
+    # sharing the same non-null integer eventId with different recordHash
+    # values, scoped to one identity generation.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS corruptions ("
+        "  id                     INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  repository_id          INTEGER NOT NULL,"
+        "  identity_generation_id INTEGER NOT NULL,"
+        "  event_id               INTEGER NOT NULL,"
+        "  cursor_a               TEXT NOT NULL,"
+        "  hash_a                 TEXT NOT NULL,"
+        "  cursor_b               TEXT NOT NULL,"
+        "  hash_b                 TEXT NOT NULL,"
+        "  detected_at            TEXT NOT NULL"
+        ")"
+    )
+
 
 def connect_and_init(db_path: Path | str) -> sqlite3.Connection:
     conn = connect(db_path)

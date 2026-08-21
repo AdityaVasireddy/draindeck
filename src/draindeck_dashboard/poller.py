@@ -49,37 +49,47 @@ def next_backoff_seconds(current_backoff: Optional[float]) -> float:
     return min(current_backoff * 2, BACKOFF_MAX_SECONDS)
 
 
-async def poll_repository_once(executable: str, log_path: str,
-                                after: Optional[str]) -> PollResult:
-    """One tick for one repository: up to MAX_PAGES_PER_TICK pages of at
-    most PAGE_LIMIT records each, stopping early at a caught-up page
-    (hasMore false), an OVERSIZED tail (terminal — never chases hasMore
-    past it, since ADR-25 exposes no safe cursor beyond it), or an
-    observer error."""
-    result = PollResult()
+async def poll_pages(executable: str, log_path: str, after: Optional[str]):
+    """Async generator: up to MAX_PAGES_PER_TICK raw observer-response pages
+    for one repository's tick, holding the global concurrency slot for the
+    whole generator's lifetime (one repository occupies one of the four
+    slots for its entire tick, since its own pages are inherently
+    sequential). Yields each page as returned by `observe events`, then
+    stops — without a further observer call — at a caught-up page (hasMore
+    false) or an OVERSIZED tail (terminal: ADR-25 exposes no safe cursor
+    beyond it, so this never chases hasMore past it). An ObserverError
+    propagates to the caller after any pages already yielded."""
     cursor = after
     async with _global_semaphore:
         for _ in range(MAX_PAGES_PER_TICK):
-            try:
-                page = await asyncio.to_thread(
-                    invoke_observer_events, executable, log_path,
-                    after=cursor, limit=PAGE_LIMIT,
-                )
-            except ObserverError as e:
-                result.error = e
-                return result
+            page = await asyncio.to_thread(
+                invoke_observer_events, executable, log_path,
+                after=cursor, limit=PAGE_LIMIT,
+            )
+            yield page
+            if any(r["integrity"] == "OVERSIZED" for r in page["records"]):
+                return
+            cursor = page["nextCursor"]
+            if not page["hasMore"]:
+                return
 
+
+async def poll_repository_once(executable: str, log_path: str,
+                                after: Optional[str]) -> PollResult:
+    """One tick for one repository, aggregated into a single PollResult —
+    see `poll_pages` for the per-page bounding rules this is built on.
+    Phase 4's indexer uses `poll_pages` directly instead, so each page can
+    be persisted in its own transaction."""
+    result = PollResult()
+    try:
+        async for page in poll_pages(executable, log_path, after):
             result.pages_fetched += 1
             result.availability = page["metadata"]["availability"]
             records = page["records"]
             result.records.extend(records)
             result.next_cursor = page["nextCursor"]
-
             if any(r["integrity"] == "OVERSIZED" for r in records):
                 result.halted_oversized = True
-                return result
-
-            cursor = page["nextCursor"]
-            if not page["hasMore"]:
-                return result
-        return result
+    except ObserverError as e:
+        result.error = e
+    return result

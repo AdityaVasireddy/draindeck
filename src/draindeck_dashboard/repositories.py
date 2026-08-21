@@ -131,4 +131,8 @@ def delete_repository(conn: sqlite3.Connection, repo_id: int) -> None:
     repository on disk (docs/19)."""
     get_repository(conn, repo_id)  # raises NotFoundError if missing
     conn.execute("DELETE FROM changes WHERE repository_id = ?", (repo_id,))
+    conn.execute("DELETE FROM corruptions WHERE repository_id = ?", (repo_id,))
+    conn.execute("DELETE FROM evidence WHERE repository_id = ?", (repo_id,))
+    conn.execute("DELETE FROM checkpoints WHERE repository_id = ?", (repo_id,))
+    conn.execute("DELETE FROM identity_generations WHERE repository_id = ?", (repo_id,))
     conn.execute("DELETE FROM repositories WHERE id = ?", (repo_id,))
