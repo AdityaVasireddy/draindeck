@@ -24,6 +24,7 @@ from .repositories import (
     list_repositories,
     register_repository,
 )
+from .scheduler import Scheduler
 from .security import (
     DEFAULT_MAX_BODY_BYTES,
     LoopbackOnlyMiddleware,
@@ -48,15 +49,20 @@ class _RegisterRepositoryRequest(BaseModel):
 def create_app(cfg: DashboardConfig) -> FastAPI:
     conn = connect_and_init(cfg.db_path)
     tailer = ChangeTailer(conn)
+    scheduler = Scheduler(conn, cfg.observer_executable)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        # One database tailer per process (docs/19): started once here,
-        # not per SSE connection.
+        # One database tailer, and one ingestion scheduler, per process
+        # (docs/19): started once here, not per request/connection. The
+        # scheduler only actually indexes while this process holds the
+        # single indexer-writer lease -- see scheduler.py.
         tailer.start()
+        scheduler.start()
         try:
             yield
         finally:
+            await scheduler.stop()
             tailer.stop()
 
     app = FastAPI(title="Draindeck Dashboard", docs_url=None, redoc_url=None,
@@ -78,6 +84,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     app.state.db = conn
     app.state.config = cfg
     app.state.tailer = tailer
+    app.state.scheduler = scheduler
 
     @app.get("/api/health")
     async def health() -> dict:

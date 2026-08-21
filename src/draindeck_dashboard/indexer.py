@@ -171,6 +171,21 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
                 )
                 _record_change(conn, repo_id, "corruption", str(event_id))
 
+        # A single record caught up exactly at EOF is intentionally
+        # re-delivered on every subsequent tick (docs/19; see
+        # ingest_repository_tick's checkpoint-fallback comment) -- harmless
+        # for THIS idempotent upsert, but the `changes` table backs the SSE
+        # feed, so recording a "change" on every no-op re-delivery would
+        # make change_sequence grow forever and the UI refresh on every
+        # single tick even though nothing new happened. Only record a
+        # change when the row is new or its content actually differs.
+        existing = conn.execute(
+            "SELECT integrity, record_hash FROM evidence WHERE repository_id = ? "
+            "AND identity_generation_id = ? AND record_cursor = ?",
+            (repo_id, identity_generation_id, cursor),
+        ).fetchone()
+        content_changed = existing is None or existing != (integrity, record_hash)
+
         conn.execute(
             "INSERT INTO evidence (repository_id, identity_generation_id, record_cursor, "
             "integrity, event_id, event_type, schema_version, issue_id, execution_id, run_id, "
@@ -187,7 +202,8 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
              schema_version, issue_id, execution_id, run_id, event_ts, payload_json,
              record_hash, length_bytes, _now()),
         )
-        _record_change(conn, repo_id, "evidence", cursor)
+        if content_changed:
+            _record_change(conn, repo_id, "evidence", cursor)
 
 
 async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,

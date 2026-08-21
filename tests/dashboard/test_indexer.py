@@ -468,6 +468,69 @@ def test_checkpoint_stores_last_observed_availability(tmp_path, monkeypatch):
     assert availability == "AVAILABLE"
 
 
+# ── regression: no-op re-delivery must not spam the change feed ────────
+
+def test_perpetual_redelivery_of_an_unchanged_record_does_not_grow_changes_table(tmp_path, monkeypatch):
+    """A single record caught up exactly at EOF has no page-level cursor
+    to advance past it (see the earlier "caught-up polling" test), so it
+    is intentionally re-delivered on every subsequent tick -- harmless for
+    the idempotent evidence upsert. But the `changes` table backs the SSE
+    feed, and a naive implementation calls _record_change on every
+    upsert regardless of whether the content actually changed, which
+    would make change_sequence grow forever and the UI refresh on every
+    single scheduler tick even though nothing new happened. Discovered via
+    a live scheduler smoke test, not by inspection."""
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1)
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+
+    for _ in range(5):
+        outcome = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+        assert outcome.status == "ok"
+
+    changes_count = conn.execute(
+        "SELECT COUNT(*) FROM changes WHERE repository_id = ?", (repo_id,)
+    ).fetchone()[0]
+    assert changes_count == 1  # exactly one real change, not one per tick
+
+    evidence_count = conn.execute(
+        "SELECT COUNT(*) FROM evidence WHERE repository_id = ?", (repo_id,)
+    ).fetchone()[0]
+    assert evidence_count == 1  # still idempotent -- unaffected by the fix
+
+
+def test_a_record_that_actually_changes_still_records_a_change(tmp_path, monkeypatch):
+    """The fix for the above must not suppress real changes -- a torn
+    record completing into OK (different record_hash at the same cursor)
+    must still be recorded. The FIRST record stays complete throughout --
+    contentLineage is derived from it, so leaving it torn-then-completed
+    would itself look like a log replacement (see
+    test_torn_tail_persists_then_completes_on_redelivery)."""
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write('{"event_id":2,"schema_version":1,"ts":"2026-08-20T00:00:01Z",'
+                '"run_id":null,"type":"IssueCreated","issue_id":null,'
+                '"execution_id":null,"payload":{}')  # torn: no trailing newline
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+
+    asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write("}\n")  # complete the second record: same cursor, different hash
+    asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+
+    changes_count = conn.execute(
+        "SELECT COUNT(*) FROM changes WHERE repository_id = ?", (repo_id,)
+    ).fetchone()[0]
+    assert changes_count == 3  # record 1, torn record 2, then completed record 2
+
+
 # ── regression: stale checkpoint mid-tick (independent review finding) ──
 
 def test_cursor_replaced_mid_tick_reuses_the_generation_opened_earlier_this_tick(tmp_path, monkeypatch):
