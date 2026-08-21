@@ -39,6 +39,7 @@ from .views import (
     list_evidence,
     list_executions,
     list_issues,
+    list_runs,
 )
 
 _PAGE_LIMIT_DEFAULT = 50
@@ -139,6 +140,15 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     ) -> dict:
         get_repository(app.state.db, repo_id)
         return list_executions(app.state.db, repo_id, limit=limit, offset=offset)
+
+    @app.get("/api/repositories/{repo_id}/runs")
+    async def repository_runs(
+        repo_id: int,
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict:
+        get_repository(app.state.db, repo_id)
+        return list_runs(app.state.db, repo_id, limit=limit, offset=offset)
 
     @app.get("/api/repositories/{repo_id}/evidence")
     async def repository_evidence(

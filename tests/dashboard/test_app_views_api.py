@@ -21,10 +21,10 @@ def _observer_reader(executable, log_path, *, after, limit):
 
 def _write_event_line(log_path: Path, event_id: int, event_type: str, *,
                       issue_id: str | None = None, execution_id: str | None = None,
-                      payload: dict | None = None) -> None:
+                      run_id: str | None = None, payload: dict | None = None) -> None:
     line = json.dumps({
         "event_id": event_id, "schema_version": 1, "ts": "2026-08-20T00:00:00Z",
-        "run_id": None, "type": event_type, "issue_id": issue_id,
+        "run_id": run_id, "type": event_type, "issue_id": issue_id,
         "execution_id": execution_id, "payload": payload or {},
     }, sort_keys=True, separators=(",", ":")) + "\n"
     with open(log_path, "a", encoding="utf-8") as f:
@@ -158,3 +158,98 @@ def test_evidence_pagination_slices_correctly(tmp_path, monkeypatch):
     assert [e["eventId"] for e in page1["items"]] == [1, 2]
     assert [e["eventId"] for e in page2["items"]] == [3, 4]
     assert page1["total"] == 5
+
+
+# ── /runs (Phase 7 follow-up: paginated Runs resource) ──────────────────
+_RUN_ID_A = "run-20260821T060512Z-3fa85f64-5717-4562-b3fc-2c963f66afa6"
+
+_RUN_STARTED_PAYLOAD = {
+    "engine": {"provider": "claude-headless", "model": "default"},
+    "reviewer": {"provider": "qwen", "model": "qwen2.5-coder"},
+    "budget": {"max_attempts_per_issue": 3, "max_executions_per_run": 10,
+              "hard_stop_proxy_cost_per_run_usd": 15.0, "proxy_pricing": "api_list_rates"},
+    "config_digest": "a" * 64,
+}
+
+
+def test_runs_endpoint_for_unregistered_repository_is_404(tmp_path):
+    client, _ = _client_and_app(tmp_path)
+    resp = client.get("/api/repositories/999/runs")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_runs_endpoint_reflects_completed_run_with_full_metadata(tmp_path, monkeypatch):
+    client, app = _client_and_app(tmp_path)
+    repo = _git_worktree(tmp_path)
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1, "RunStarted", run_id=_RUN_ID_A, payload=_RUN_STARTED_PAYLOAD)
+    _write_event_line(log_path, 2, "IssueCreated", issue_id="1", run_id=_RUN_ID_A)
+    _write_event_line(log_path, 3, "IssueActivated", issue_id="1", run_id=_RUN_ID_A)
+    _write_event_line(log_path, 4, "ExecutionSpawned", issue_id="1", execution_id="1-e1",
+                      run_id=_RUN_ID_A)
+    _write_event_line(log_path, 5, "RunFinished", run_id=_RUN_ID_A,
+                      payload={"outcome": "COMPLETED", "detail": None})
+
+    created = client.post("/api/repositories",
+                          json={"projectPath": str(repo), "logPath": str(log_path)})
+    repo_id = created.json()["id"]
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    asyncio.run(indexer.ingest_repository_tick(app.state.db, repo_id, "exe", str(log_path)))
+
+    runs = client.get(f"/api/repositories/{repo_id}/runs").json()
+    assert runs["total"] == 1
+    run = runs["items"][0]
+    assert run["runId"] == _RUN_ID_A
+    assert run["engineProvider"] == "claude-headless"
+    assert run["reviewerModel"] == "qwen2.5-coder"
+    assert run["configDigest"] == "a" * 64
+    assert run["outcome"] == "COMPLETED"
+    assert run["displayOutcome"] == "COMPLETED"
+
+    executions = client.get(f"/api/repositories/{repo_id}/executions").json()
+    assert executions["items"][0]["runId"] == _RUN_ID_A
+    assert executions["items"][0]["runMetadata"]["available"] is True
+
+
+def test_runs_endpoint_shows_early_failure_run_with_zero_executions(tmp_path, monkeypatch):
+    """A CHECKOUT_FAILED run never reaches issue ingestion -- no execution
+    row can exist for it -- but /runs must still surface it."""
+    client, app = _client_and_app(tmp_path)
+    repo = _git_worktree(tmp_path)
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1, "RunStarted", run_id=_RUN_ID_A, payload=_RUN_STARTED_PAYLOAD)
+    _write_event_line(log_path, 2, "RunFinished", run_id=_RUN_ID_A,
+                      payload={"outcome": "CHECKOUT_FAILED", "detail": None})
+
+    created = client.post("/api/repositories",
+                          json={"projectPath": str(repo), "logPath": str(log_path)})
+    repo_id = created.json()["id"]
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    asyncio.run(indexer.ingest_repository_tick(app.state.db, repo_id, "exe", str(log_path)))
+
+    runs = client.get(f"/api/repositories/{repo_id}/runs").json()
+    executions = client.get(f"/api/repositories/{repo_id}/executions").json()
+
+    assert runs["total"] == 1
+    assert runs["items"][0]["outcome"] == "CHECKOUT_FAILED"
+    assert executions["total"] == 0
+
+
+def test_runs_endpoint_unresolved_run_reports_no_controlled_finish(tmp_path, monkeypatch):
+    client, app = _client_and_app(tmp_path)
+    repo = _git_worktree(tmp_path)
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1, "RunStarted", run_id=_RUN_ID_A, payload=_RUN_STARTED_PAYLOAD)
+
+    created = client.post("/api/repositories",
+                          json={"projectPath": str(repo), "logPath": str(log_path)})
+    repo_id = created.json()["id"]
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    asyncio.run(indexer.ingest_repository_tick(app.state.db, repo_id, "exe", str(log_path)))
+
+    runs = client.get(f"/api/repositories/{repo_id}/runs").json()
+    run = runs["items"][0]
+    assert run["outcome"] is None
+    assert run["displayOutcome"] == "no controlled finish observed"
+    assert "running" not in run["displayOutcome"].lower()

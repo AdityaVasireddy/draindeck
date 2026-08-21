@@ -200,6 +200,10 @@ button:hover { filter: brightness(1.08); }
   width: 100%;
 }
 
+.runs-block {
+  margin-bottom: 1.5rem;
+}
+
 .columns {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -132,7 +132,7 @@ async function selectRepo(id) {
   document.getElementById("detail-repo-id").textContent = `#${id}`;
   await refreshRepoList(); // updates the "Selected" label on rows
   await Promise.all([
-    refreshHealth(id), refreshIssues(id), refreshExecutions(id), refreshEvidence(id),
+    refreshHealth(id), refreshRuns(id), refreshIssues(id), refreshExecutions(id), refreshEvidence(id),
   ]);
 }
 
@@ -236,6 +236,66 @@ function renderIssueRow(el, issue) {
   el.appendChild(right);
 }
 
+// Never "Running"/"in progress" -- ADR-25 gives Dashboard no liveness
+// signal, so an unresolved RunStarted (no matching RunFinished yet) must
+// never be rendered as a claim about current process state.
+const NO_CONTROLLED_FINISH_TEXT = "no controlled finish observed";
+
+// Run metadata is ALWAYS rendered -- either the real provider/model/outcome
+// or the exact "run metadata unavailable (legacy/ambiguous)" fallback text.
+// Never left blank (docs/19 "Run lifecycle compatibility"). Availability
+// comes entirely from the runMetadata.available flag the server already
+// computed from RunStarted evidence -- this function never inspects runId's
+// string shape itself.
+function runMetadataText(runMetadata) {
+  if (!runMetadata || !runMetadata.available) {
+    return (runMetadata && runMetadata.message) || "run metadata unavailable (legacy/ambiguous)";
+  }
+  const provider = runMetadata.engineProvider || "unknown engine";
+  const model = runMetadata.engineModel || "unknown model";
+  const outcome = runMetadata.outcome || NO_CONTROLLED_FINISH_TEXT;
+  return `${provider} / ${model} — ${outcome}`;
+}
+
+function outcomeBadgeKind(displayOutcome) {
+  if (displayOutcome === "COMPLETED") return "ok";
+  if (displayOutcome === NO_CONTROLLED_FINISH_TEXT) return "muted";
+  return "danger"; // any other controlled outcome is a failure/halt/interrupt
+}
+
+function renderRunRow(el, run) {
+  clear(el);
+  const info = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "entity-title";
+  title.textContent = run.runId; // textContent only -- never innerHTML
+  const meta = document.createElement("div");
+  meta.className = "entity-meta";
+  const provider = run.engineProvider || "unknown engine";
+  const model = run.engineModel || "unknown model";
+  const reviewer = run.reviewerProvider || "unknown reviewer";
+  meta.textContent = `${provider} / ${model} — reviewer: ${reviewer}`;
+  const digestMeta = document.createElement("div");
+  digestMeta.className = "entity-meta";
+  digestMeta.textContent = run.configDigest ? `digest: ${run.configDigest}` : "digest: unavailable";
+  info.appendChild(title);
+  info.appendChild(meta);
+  info.appendChild(digestMeta);
+
+  const right = document.createElement("div");
+  right.appendChild(badge(run.displayOutcome, outcomeBadgeKind(run.displayOutcome)));
+  if (run.inconsistent) right.appendChild(badge("inconsistent", "warn"));
+
+  el.appendChild(info);
+  el.appendChild(right);
+}
+
+async function refreshRuns(repoId) {
+  const data = await apiFetch(`/api/repositories/${repoId}/runs`);
+  syncList(document.getElementById("runs-list"), data.items, (r) => r.runId,
+    renderRunRow, "No runs observed yet.");
+}
+
 function renderExecutionRow(el, execution) {
   clear(el);
   const info = document.createElement("div");
@@ -245,12 +305,19 @@ function renderExecutionRow(el, execution) {
   const meta = document.createElement("div");
   meta.className = "entity-meta";
   meta.textContent = execution.issueId ? `issue ${execution.issueId}` : "issue unknown";
+  const runMeta = document.createElement("div");
+  runMeta.className = "entity-meta entity-run-meta";
+  runMeta.textContent = runMetadataText(execution.runMetadata);
   info.appendChild(title);
   info.appendChild(meta);
+  info.appendChild(runMeta);
 
   const right = document.createElement("div");
   right.appendChild(badge(execution.state, stateBadgeKind(execution.state)));
   if (execution.inconsistent) right.appendChild(badge("inconsistent", "warn"));
+  if (execution.runMetadata && execution.runMetadata.inconsistent) {
+    right.appendChild(badge("run inconsistent", "warn"));
+  }
 
   el.appendChild(info);
   el.appendChild(right);
@@ -305,6 +372,7 @@ function connectEvents() {
     refreshRepoList();
     if (state.selectedRepoId !== null) {
       refreshHealth(state.selectedRepoId);
+      refreshRuns(state.selectedRepoId);
       refreshIssues(state.selectedRepoId);
       refreshExecutions(state.selectedRepoId);
       refreshEvidence(state.selectedRepoId);
@@ -326,6 +394,7 @@ function connectEvents() {
     }
     if (state.selectedRepoId !== null && change.repositoryId === state.selectedRepoId) {
       refreshHealth(state.selectedRepoId);
+      refreshRuns(state.selectedRepoId);
       refreshIssues(state.selectedRepoId);
       refreshExecutions(state.selectedRepoId);
       refreshEvidence(state.selectedRepoId);

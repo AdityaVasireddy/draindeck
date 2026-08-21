@@ -11,7 +11,12 @@ import json
 import sqlite3
 from typing import Optional
 
-from .projections import build_projection
+from .projections import (
+    RUN_METADATA_UNAVAILABLE,
+    RUN_NO_CONTROLLED_FINISH_OBSERVED,
+    build_projection,
+    has_run_metadata,
+)
 
 
 def _current_generation_id(conn: sqlite3.Connection, repo_id: int) -> Optional[int]:
@@ -41,6 +46,27 @@ def list_issues(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: i
     ], limit=limit, offset=offset)
 
 
+def _run_metadata_field(result, run_id: Optional[str]) -> dict:
+    """Always a populated object -- never blank/absent (docs/19: "must never
+    show a blank metadata panel"). Availability comes from build_projection's
+    own RunStarted evidence, never from run_id's string shape."""
+    if not has_run_metadata(result, run_id):
+        return {"available": False, "message": RUN_METADATA_UNAVAILABLE}
+    run = result.runs[run_id]
+    return {
+        "available": True,
+        "runId": run.run_id,
+        "engineProvider": run.engine_provider,
+        "engineModel": run.engine_model,
+        "reviewerProvider": run.reviewer_provider,
+        "reviewerModel": run.reviewer_model,
+        "budget": run.budget,
+        "configDigest": run.config_digest,
+        "outcome": run.outcome,
+        "inconsistent": run.inconsistent,
+    }
+
+
 def list_executions(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: int) -> dict:
     generation_id = _current_generation_id(conn, repo_id)
     if generation_id is None:
@@ -49,7 +75,39 @@ def list_executions(conn: sqlite3.Connection, repo_id: int, *, limit: int, offse
     ordered = sorted(result.executions.values(), key=lambda v: v.execution_id)
     return _paginate([
         {"executionId": v.execution_id, "issueId": v.issue_id, "state": v.state,
-         "inconsistent": v.inconsistent, "lastEventId": v.last_event_id}
+         "inconsistent": v.inconsistent, "lastEventId": v.last_event_id,
+         "runId": v.run_id, "runMetadata": _run_metadata_field(result, v.run_id)}
+        for v in ordered
+    ], limit=limit, offset=offset)
+
+
+def list_runs(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: int) -> dict:
+    """Every observed RunStarted, independent of whether any execution was
+    ever spawned under it -- a RunStarted followed by CHECKOUT_FAILED/
+    REVIEWER_UNREACHABLE/BASELINE_FAILED/INGEST_FAILED never reaches issue
+    ingestion, so it would otherwise be invisible from the executions view
+    alone (review requirement: "A RunStarted must produce a visible run
+    even if no ExecutionSpawned ever occurs")."""
+    generation_id = _current_generation_id(conn, repo_id)
+    if generation_id is None:
+        return _paginate([], limit=limit, offset=offset)
+    result = build_projection(conn, repo_id, generation_id)
+    ordered = sorted(result.runs.values(), key=lambda v: v.run_id)
+    return _paginate([
+        {
+            "runId": v.run_id,
+            "engineProvider": v.engine_provider,
+            "engineModel": v.engine_model,
+            "reviewerProvider": v.reviewer_provider,
+            "reviewerModel": v.reviewer_model,
+            "budget": v.budget,
+            "configDigest": v.config_digest,
+            "outcome": v.outcome,
+            # Never "Running" -- ADR-25 gives no liveness signal (docs/19).
+            "displayOutcome": v.outcome or RUN_NO_CONTROLLED_FINISH_OBSERVED,
+            "inconsistent": v.inconsistent,
+            "lastEventId": v.last_event_id,
+        }
         for v in ordered
     ], limit=limit, offset=offset)
 

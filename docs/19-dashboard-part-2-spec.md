@@ -149,6 +149,49 @@ BASELINE_FAILED, INGEST_FAILED, COMPLETED, HALTED, and INTERRUPTED. Abrupt
 death has no fabricated finish. Provider/model and config digest appear only
 after this core change passes its focused tests and both durability seeds.
 
+### `/runs` resource (additive, review follow-up 2026-08-21)
+
+`GET /api/repositories/{id}/runs` is a paginated (`limit`/`offset`, same
+envelope as `/issues`/`/executions`/`/evidence`) list of every RunStarted
+observed for the repository's current identity generation, independent of
+whether any `ExecutionSpawned` ever occurred under it. A run whose
+RunStarted is followed by CHECKOUT_FAILED, REVIEWER_UNREACHABLE,
+BASELINE_FAILED, or INGEST_FAILED never reaches issue ingestion, so it has
+zero executions and would otherwise be invisible from `/executions` alone;
+`/runs` is the one place such a run is guaranteed to appear.
+
+Each item exposes `runId`, `engineProvider`, `engineModel`,
+`reviewerProvider`, `reviewerModel`, `budget` (all four fields verbatim),
+`configDigest`, `outcome` (`null` until a matching RunFinished is
+observed), `displayOutcome`, `inconsistent`, and `lastEventId`.
+`displayOutcome` is the controlled-outcome string when one exists, or the
+literal `"no controlled finish observed"` when it doesn't — never
+`"Running"` or any other claim about current process state, since ADR-25's
+observer boundary gives Dashboard no liveness signal to make that claim
+with. This is the run-level counterpart of the execution-level
+`"run metadata unavailable (legacy/ambiguous)"` fallback: both exist so the
+UI never has to imply something it cannot actually observe.
+
+The tolerant reducer backing both `/runs` and `/executions`' `runMetadata`
+field flags (never raises on) a duplicate RunStarted or RunFinished for the
+same `run_id`, a RunFinished with a non-null `detail` or an outcome outside
+the seven-value closed set, an unexpected key anywhere in a RunStarted/
+RunFinished payload, and a `config_digest`/budget field that doesn't match
+the shape doc 03 defines — in every case the run stays visible (never a
+blank panel) with `inconsistent: true`, and a duplicate RunFinished never
+overwrites the outcome an earlier, valid one already recorded.
+
+The Runs UI section renders every field via `textContent` (never
+`innerHTML`) and keys its rows by `runId` through the same stable
+incremental list-sync helper the Issues/Executions/Evidence lists already
+use, so a live SSE-triggered refresh updates rows in place instead of
+tearing down and rebuilding the list.
+
+This section is Dashboard's own, additive-only concern; it does not modify
+the frozen Doc 03 amendment (`docs/03`'s "Amendment — run lifecycle
+events"), which continues to govern only the runtime's own event schema
+and emission rules.
+
 ## Verification
 
 Tests cover registration uniqueness, observer invocation/error mapping,
