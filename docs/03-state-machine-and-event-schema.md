@@ -500,11 +500,33 @@ Exact rules, applied at `apply()` time:
 - `run_id` must be non-null (§3's envelope otherwise allows `run_id` to
   be null for other event types; for `RunStarted`/`RunFinished` it must
   not be).
-- `run_id` must match the new-format pattern
-  `run-\d{8}T\d{6}Z-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
-  — the legacy timestamp-only format is never valid for either type,
-  because a legacy-format run never has a `RunStarted`/`RunFinished` in
-  the first place.
+- `run_id` must be a **full-string match** — e.g. `re.fullmatch`, never
+  `re.search` or an end-unanchored `re.match`, so trailing characters
+  after an otherwise-valid id are rejected, not ignored — against
+  `run-(\d{8}T\d{6}Z)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`,
+  **and** the two things that pattern's literals only partly express must
+  also hold:
+  - the captured 15-character timestamp component must parse as a
+    genuine UTC calendar moment — e.g. `datetime.strptime(ts,
+    "%Y%m%dT%H%M%SZ")` succeeding without raising `ValueError`. The
+    pattern's `\d{8}T\d{6}Z` alone checks digit *shape* only, not
+    calendar *validity*: it would still match a structurally-shaped but
+    impossible moment such as month `13` or day `32`, which the strptime
+    parse rejects.
+  - the UUID suffix must be a **genuine version-4 UUID**, not merely
+    UUID-shaped hexadecimal text: the version nibble (the literal
+    character `4` fixed as the first character of the third
+    hyphen-separated group above) and the RFC 4122 variant bits (the
+    first character of the fourth group constrained to `8`, `9`, `a`, or
+    `b`) are already enforced by the pattern's literals — they are not a
+    separate step. A UUID-shaped suffix with a different version nibble
+    (`1`, `3`, `5`, …) or an invalid variant nibble fails to match at the
+    regex level, as does any hex character above written uppercase (the
+    pattern uses `[0-9a-f]`/`[89ab]` exclusively, never
+    `[0-9A-Fa-f]`/`[89abAB]`).
+  The legacy timestamp-only format (no UUID suffix at all) is never
+  valid for either type, because a legacy-format run never has a
+  `RunStarted`/`RunFinished` in the first place.
 - `issue_id` must be null.
 - `execution_id` must be null.
 
@@ -515,10 +537,36 @@ Exact rules, applied at `apply()` time:
 - `reviewer`: a JSON object with exactly the keys `provider` (non-empty
   string) and `model` (string or `null` — the documented nullable rule
   above; when present as a string it must be non-empty).
-- `budget`: a JSON object with exactly the keys
-  `max_attempts_per_issue` (integer ≥ 1), `max_executions_per_run`
-  (integer ≥ 1), `hard_stop_proxy_cost_per_run_usd` (number > 0), and
-  `proxy_pricing` (non-empty string).
+- `budget`: a JSON object with exactly these keys:
+  - `max_attempts_per_issue` and `max_executions_per_run`: each an
+    integer ≥ 1. **A JSON boolean is not an integer for this purpose**,
+    even though Python's `bool` is a subclass of `int` and
+    `isinstance(True, int)` is `True` (verified) — the check must
+    explicitly exclude `bool`. This is exactly what the existing
+    `_positive_int` helper in this module already does; reuse it rather
+    than re-deriving the check.
+  - `hard_stop_proxy_cost_per_run_usd`: an `int` or `float` (again never
+    `bool` — `isinstance(True, float)` is `False`, but the allowed-types
+    check still must not accept a bool via its `int` branch), satisfying
+    `math.isfinite(value)`, and `> 0`. `math.isfinite` is required
+    explicitly, not left to comparison behavior: `json.loads` accepts
+    `NaN`/`Infinity`/`-Infinity` as non-standard JSON extensions by
+    default (verified — `Event.from_line` uses plain `json.loads` with
+    no `parse_constant` override), decoding them to ordinary Python
+    `float` values that reach this check. `float("nan") > 0` happens to
+    already evaluate `False` under IEEE 754, but `float("inf") > 0`
+    evaluates `True` (both verified) — a `> 0`-only check would silently
+    accept an infinite cost limit. `math.isfinite(value)` rejects `NaN`
+    and both infinities uniformly, for either an `int` or a `float`
+    input, and must be checked in addition to, not instead of, `> 0`.
+  - `proxy_pricing`: a string, validated against a closed set of allowed
+    values matching `BudgetCfg.proxy_pricing`'s own `Literal` type in
+    `config.py` — today exactly `{"api_list_rates"}` — kept in sync by
+    comment/convention, the same pattern `config.py`'s own
+    `KNOWN_REVIEWER_PROVIDERS` frozenset already establishes for a closed
+    set of allowed values. Not "any non-empty string," which an earlier
+    draft of this section said and which would accept a value the
+    configuration layer itself would never produce.
 - `config_digest`: a string matching `^[0-9a-f]{64}$` (exactly 64
   lowercase hexadecimal characters).
 - No key other than `engine`, `reviewer`, `budget`, `config_digest` may
