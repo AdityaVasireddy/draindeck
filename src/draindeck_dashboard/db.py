@@ -129,6 +129,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "  last_record_hash       TEXT,"
         "  halted_oversized       INTEGER NOT NULL DEFAULT 0,"
         "  reduced_confidence     INTEGER NOT NULL DEFAULT 0,"
+        "  availability           TEXT,"
         "  updated_at             TEXT NOT NULL"
         ")"
     )
@@ -136,7 +137,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # The evidence store. Idempotent upsert key is exactly
     # (repository, identity_generation, record_cursor) per docs/19 —
     # boundary re-delivery at a TORN/OVERSIZED tail is expected and must
-    # overwrite the same row, not duplicate it.
+    # overwrite the same row, not duplicate it. issue_id/execution_id/
+    # run_id/payload_json are populated only for integrity="OK" records
+    # (Phase 5: the issues/executions projection needs the actual event
+    # content, not just its metadata).
     conn.execute(
         "CREATE TABLE IF NOT EXISTS evidence ("
         "  id                     INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -147,6 +151,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "  event_id               INTEGER,"
         "  event_type             TEXT,"
         "  schema_version         INTEGER,"
+        "  issue_id               TEXT,"
+        "  execution_id           TEXT,"
+        "  run_id                 TEXT,"
+        "  event_ts               TEXT,"
+        "  payload_json           TEXT,"
         "  record_hash            TEXT,"
         "  length_bytes           INTEGER,"
         "  stored_at              TEXT NOT NULL,"
@@ -156,6 +165,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_evidence_event_lookup ON evidence("
         "  repository_id, identity_generation_id, integrity, event_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_evidence_ordered ON evidence("
+        "  repository_id, identity_generation_id, event_id)"
     )
 
     # CORRUPT (docs/19 "Cursor, idempotency, and integrity"): two OK records

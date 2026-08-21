@@ -2,9 +2,70 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Draindeck Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <p>Draindeck Dashboard</p>
+  <header class="app-header">
+    <h1>Draindeck Dashboard</h1>
+    <p id="connection-status" class="status-pill" role="status" aria-live="polite">Connecting…</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="repos-heading" class="panel">
+      <h2 id="repos-heading">Repositories</h2>
+
+      <form id="register-form" class="register-form">
+        <div class="field">
+          <label for="project-path">Project path</label>
+          <input id="project-path" name="projectPath" required
+                 placeholder="C:\Projects\StockPhotoAgent" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="log-path">Log path (optional)</label>
+          <input id="log-path" name="logPath"
+                 placeholder="C:\Projects\StockPhotoAgent\.draindeck\state\events.jsonl"
+                 autocomplete="off">
+        </div>
+        <button type="submit">Register</button>
+        <p id="register-error" class="error-text" role="alert"></p>
+      </form>
+
+      <ul id="repo-list" class="repo-list" aria-label="Registered repositories">
+        <li class="empty-state" data-empty-placeholder>No repositories registered yet.</li>
+      </ul>
+    </section>
+
+    <section id="repo-detail" class="panel" hidden aria-labelledby="detail-heading">
+      <h2 id="detail-heading">Repository <span id="detail-repo-id"></span></h2>
+
+      <div id="health-panel" class="health-panel" aria-live="polite"></div>
+
+      <div class="columns">
+        <div>
+          <h3>Issues</h3>
+          <ul id="issues-list" class="entity-list" aria-label="Issues">
+            <li class="empty-state" data-empty-placeholder>No issues observed yet.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Executions</h3>
+          <ul id="executions-list" class="entity-list" aria-label="Executions">
+            <li class="empty-state" data-empty-placeholder>No executions observed yet.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div>
+        <h3>Evidence</h3>
+        <ul id="evidence-list" class="entity-list evidence-list" aria-label="Evidence">
+          <li class="empty-state" data-empty-placeholder>No evidence observed yet.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
 </body>
 </html>

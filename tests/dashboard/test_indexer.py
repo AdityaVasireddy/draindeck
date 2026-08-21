@@ -30,11 +30,13 @@ def _observer_reader(executable, log_path, *, after, limit):
     return read_events_page(Path(log_path), after=after, limit=limit)
 
 
-def _write_event_line(log_path: Path, event_id: int, payload: dict | None = None) -> None:
+def _write_event_line(log_path: Path, event_id: int, payload: dict | None = None, *,
+                      event_type: str = "IssueCreated", issue_id: str | None = None,
+                      execution_id: str | None = None, run_id: str | None = None) -> None:
     line = json.dumps({
         "event_id": event_id, "schema_version": 1, "ts": "2026-08-20T00:00:00Z",
-        "run_id": None, "type": "IssueCreated", "issue_id": None, "execution_id": None,
-        "payload": payload or {},
+        "run_id": run_id, "type": event_type, "issue_id": issue_id,
+        "execution_id": execution_id, "payload": payload or {},
     }, sort_keys=True, separators=(",", ":")) + "\n"
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(line)
@@ -399,3 +401,68 @@ def test_one_page_is_one_transaction_atomic_rollback_on_failure(tmp_path, monkey
         "SELECT 1 FROM checkpoints WHERE repository_id = ?", (repo_id,)
     ).fetchone()
     assert checkpoint is None
+
+
+# ── payload decoding + availability (Phase 5 groundwork) ───────────────
+
+def test_ok_record_payload_is_decoded_and_persisted(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1, payload={"title": "fix the bug"},
+                      event_type="IssueCreated", issue_id="42", run_id="run-1")
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+
+    outcome = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+    assert outcome.status == "ok"
+
+    row = conn.execute(
+        "SELECT issue_id, execution_id, run_id, event_ts, payload_json "
+        "FROM evidence WHERE repository_id = ?", (repo_id,)
+    ).fetchone()
+    assert row[0] == "42"
+    assert row[1] is None
+    assert row[2] == "run-1"
+    assert row[3] == "2026-08-20T00:00:00Z"
+    assert json.loads(row[4]) == {"title": "fix the bug"}
+
+
+def test_non_ok_record_never_gets_decoded_payload_fields(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write('{"event_id":1,"schema_version":1,"ts":"2026-08-20T00:00:00Z",'
+                '"run_id":null,"type":"IssueCreated","issue_id":"42",'
+                '"execution_id":null,"payload":{}')  # torn: no trailing newline
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+
+    outcome = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+    assert outcome.status == "ok"
+
+    row = conn.execute(
+        "SELECT integrity, issue_id, payload_json FROM evidence WHERE repository_id = ?",
+        (repo_id,),
+    ).fetchone()
+    assert row[0] == "TORN"
+    assert row[1] is None
+    assert row[2] is None
+
+
+def test_checkpoint_stores_last_observed_availability(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1)
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+
+    outcome = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+    assert outcome.status == "ok"
+
+    availability = conn.execute(
+        "SELECT availability FROM checkpoints WHERE repository_id = ?", (repo_id,)
+    ).fetchone()[0]
+    assert availability == "AVAILABLE"

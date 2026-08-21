@@ -9,6 +9,8 @@ CURSOR_LOG_REPLACED confirm-before-rollover protocol.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +18,7 @@ from typing import Optional
 
 from .observer_client import ObserverError, invoke_observer_events
 from .poller import poll_pages
+from .sse import prune_changes
 
 _HALTED_DETAIL = "OVERSIZED tail — operator remediation required"
 
@@ -75,20 +78,22 @@ def _open_new_generation(conn: sqlite3.Connection, repo_id: int, metadata: dict)
 
 def _set_checkpoint(conn: sqlite3.Connection, repo_id: int, *, identity_generation_id: int,
                     last_record_cursor: Optional[str], last_record_hash: Optional[str],
-                    halted_oversized: bool, reduced_confidence: bool) -> None:
+                    halted_oversized: bool, reduced_confidence: bool,
+                    availability: Optional[str] = None) -> None:
     conn.execute(
         "INSERT INTO checkpoints (repository_id, identity_generation_id, last_record_cursor, "
-        "last_record_hash, halted_oversized, reduced_confidence, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "last_record_hash, halted_oversized, reduced_confidence, availability, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(repository_id) DO UPDATE SET "
         "identity_generation_id=excluded.identity_generation_id, "
         "last_record_cursor=excluded.last_record_cursor, "
         "last_record_hash=excluded.last_record_hash, "
         "halted_oversized=excluded.halted_oversized, "
         "reduced_confidence=excluded.reduced_confidence, "
+        "availability=excluded.availability, "
         "updated_at=excluded.updated_at",
         (repo_id, identity_generation_id, last_record_cursor, last_record_hash,
-         int(halted_oversized), int(reduced_confidence), _now()),
+         int(halted_oversized), int(reduced_confidence), availability, _now()),
     )
 
 
@@ -97,6 +102,37 @@ def _record_change(conn: sqlite3.Connection, repo_id: int, entity_type: str, ent
         "INSERT INTO changes (repository_id, entity_type, entity_id, created_at) "
         "VALUES (?, ?, ?, ?)",
         (repo_id, entity_type, entity_id, _now()),
+    )
+
+
+def _decode_ok_payload(rec: dict) -> tuple:
+    """(issue_id, execution_id, run_id, event_ts, payload_json) for an
+    integrity="OK" record, or all-None if decoding fails. This is
+    Dashboard's OWN additional parsing beyond what observe.py already
+    validated (event_id/type/schema_version only) — it degrades to
+    "unavailable" on any failure rather than raising."""
+    raw_b64 = rec.get("recordBytesBase64")
+    if raw_b64 is None:
+        return (None, None, None, None, None)
+    try:
+        raw = base64.b64decode(raw_b64)
+        body = raw[:-1] if raw.endswith(b"\n") else raw
+        obj = json.loads(body)
+    except Exception:
+        return (None, None, None, None, None)
+    if not isinstance(obj, dict):
+        return (None, None, None, None, None)
+    issue_id = obj.get("issue_id")
+    execution_id = obj.get("execution_id")
+    run_id = obj.get("run_id")
+    ts = obj.get("ts")
+    payload = obj.get("payload")
+    return (
+        issue_id if isinstance(issue_id, str) else None,
+        execution_id if isinstance(execution_id, str) else None,
+        run_id if isinstance(run_id, str) else None,
+        ts if isinstance(ts, str) else None,
+        json.dumps(payload) if isinstance(payload, dict) else None,
     )
 
 
@@ -111,6 +147,9 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
         record_hash = (rec.get("truncatedPrefixHash") if integrity == "OVERSIZED"
                        else rec.get("recordHash"))
         length_bytes = rec.get("lengthBytes")
+        issue_id = execution_id = run_id = event_ts = payload_json = None
+        if integrity == "OK":
+            issue_id, execution_id, run_id, event_ts, payload_json = _decode_ok_payload(rec)
 
         # CORRUPT: two OK records sharing the same non-null integer eventId
         # with a different recordHash, scoped to this identity generation.
@@ -134,15 +173,19 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
 
         conn.execute(
             "INSERT INTO evidence (repository_id, identity_generation_id, record_cursor, "
-            "integrity, event_id, event_type, schema_version, record_hash, length_bytes, stored_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "integrity, event_id, event_type, schema_version, issue_id, execution_id, run_id, "
+            "event_ts, payload_json, record_hash, length_bytes, stored_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(repository_id, identity_generation_id, record_cursor) DO UPDATE SET "
             "integrity=excluded.integrity, event_id=excluded.event_id, "
             "event_type=excluded.event_type, schema_version=excluded.schema_version, "
-            "record_hash=excluded.record_hash, length_bytes=excluded.length_bytes, "
-            "stored_at=excluded.stored_at",
+            "issue_id=excluded.issue_id, execution_id=excluded.execution_id, "
+            "run_id=excluded.run_id, event_ts=excluded.event_ts, "
+            "payload_json=excluded.payload_json, record_hash=excluded.record_hash, "
+            "length_bytes=excluded.length_bytes, stored_at=excluded.stored_at",
             (repo_id, identity_generation_id, cursor, integrity, event_id, event_type,
-             schema_version, record_hash, length_bytes, _now()),
+             schema_version, issue_id, execution_id, run_id, event_ts, payload_json,
+             record_hash, length_bytes, _now()),
         )
         _record_change(conn, repo_id, "evidence", cursor)
 
@@ -178,6 +221,7 @@ async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,
             conn, repo_id, identity_generation_id=new_generation_id,
             last_record_cursor=None, last_record_hash=None, halted_oversized=False,
             reduced_confidence=not probe["metadata"]["fileGeneration"]["available"],
+            availability=probe["metadata"]["availability"],
         )
         conn.execute("COMMIT")
     except Exception:
@@ -244,7 +288,9 @@ async def ingest_repository_tick(conn: sqlite3.Connection, repo_id: int,
                     conn, repo_id, identity_generation_id=identity_generation_id,
                     last_record_cursor=last_cursor, last_record_hash=last_hash,
                     halted_oversized=halted, reduced_confidence=reduced_confidence,
+                    availability=metadata["availability"],
                 )
+                prune_changes(conn)  # retain only the latest 10,000 (docs/19)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
