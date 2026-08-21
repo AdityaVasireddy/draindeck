@@ -179,6 +179,14 @@ requires its own separate, explicit per-commit authorization before it
 lands, exactly as ADR-26 (`docs/08` §5h) required this amendment itself
 to exist before implementation could begin.
 
+**Corrected the same day (2026-08-21).** Verification against the
+running code (not assumption) found the originally accepted text
+overstated the no-downgrade refusal's scope and timing, and understated
+what replaying these events actually requires. Both are corrected in
+place below, each marked "— corrected 2026-08-21" with a note explaining
+what changed and why; a new "Strict replay validation" section was also
+added. Implement against the corrected text only.
+
 This amendment adds two new **schema-version-1** event types, `RunStarted`
 and `RunFinished`, giving Dashboard Part 2 (`docs/19`) run-level
 provenance — engine/reviewer identity, a config fingerprint, and a
@@ -413,48 +421,221 @@ amendment; it must never be extended to also backfill a `RunFinished`.
 An unresolved `RunStarted` is the permanent, correct record of this case
 (see "Event vocabulary addition" above).
 
-### Replay and projection treatment
+### Replay and projection treatment — corrected 2026-08-21
 
-Replaying `RunStarted` or `RunFinished` advances the log's last-event-id
-and increments its per-type event count — the same generic bookkeeping
-every event type already receives on replay — and does nothing else: no
-issue transition (§1) and no execution transition (§2) ever fires for
-either type, and no existing projection field is touched. A projection
-digest computed over a log that contains these events naturally reflects
-their presence in that per-type count, exactly as it already does for
-every event type; this is expected and requires no special-casing for
-backward digest-byte compatibility, since old logs simply never contained
-these types to begin with.
+**Correction note:** the version of this section accepted on 2026-08-21
+claimed replaying `RunStarted`/`RunFinished` "requires no code change to
+`projections.py`." That was wrong: it accounted for state-machine
+bookkeeping only and omitted structural payload validation, which this
+amendment does require (see "Strict replay validation" immediately
+below). The corrected rule is stated here; do not implement against the
+original claim.
+
+Replaying `RunStarted` or `RunFinished` performs exactly two things:
+generic bookkeeping (advancing the log's last-event-id and incrementing
+its per-type event count — the same generic bookkeeping every event type
+already receives on replay) and the structural validation defined in
+"Strict replay validation" below. It does nothing else: no issue
+transition (§1) and no execution transition (§2) ever fires for either
+type, and no existing projection field (`issues`, `executions`,
+`issue_executions`, `issue_base_commit`, `issue_depends_on`) is ever
+touched by either type. A projection digest computed over a log that
+contains these events naturally reflects their presence in the per-type
+count, exactly as it already does for every event type; this needs no
+special-casing for backward digest-byte compatibility, since old logs
+simply never contained these types to begin with.
 
 Dashboard-side rendering of `RunStarted`/`RunFinished` (provider/model/
 budget/outcome, and the "run metadata unavailable (legacy/ambiguous)"
 fallback for a run_id with no matching `RunStarted`) is specified in
 `docs/19` and is Dashboard's own concern — this section states only what
-the runtime's own replay/projection layer does, which is nothing beyond
-the bookkeeping above.
+the runtime's own replay/projection layer does.
 
-### No-downgrade policy
+### Strict replay validation (added 2026-08-21)
 
-Once a log contains a `RunStarted` or `RunFinished` event, every
-subsequent attempt to open it — for writing or for read-only replay — by
-a binary that does not recognize both new event types must refuse. This
-is a **binding operational policy**: operators must not attempt to
-replay or write such a log with a Draindeck binary older than the one
-that introduced this amendment. Release documentation must state this as
-a refusal, not an implied compatibility promise — matching ADR-26
-decision 8 exactly.
+Structural validation of `RunStarted`/`RunFinished` happens at
+**projection-building time** (`StateProjection.apply()`), the same layer
+that already validates the containment-protocol payloads above — never at
+raw byte-level replay (`EventLog.replay()`/`ReadOnlyEventLog.replay()`),
+which only ever checks the envelope (`event_id` contiguity,
+`schema_version`, a known `type` string, `payload` is a JSON object) and
+has no concept of any specific type's payload shape. A **malformed but
+recognized-type** payload therefore replays cleanly at the raw byte
+level and only fails once a consumer builds a `StateProjection` from the
+log — `show-state`, `recover()` (and therefore ordinary startup), the
+orchestrator, and any future run-lifecycle projection all do this and
+will all encounter the failure; a bare contiguity check (`verify-log`)
+will not. This is the identical failure-mode split the containment
+protocol amendment already established for its own payloads, not a new
+asymmetry introduced here.
 
-This refusal is already structural in the existing schema/log
-implementation, verified by inspection as of this amendment, not merely
-asserted as a hoped-for property: an event's `type` string is resolved
-through the closed `EventType` enum, an unrecognized string raises a
-schema error, and every entry point that reads or opens a log for
-writing — a fresh open, a full replay, or a read-only inspection —
-already converts that schema error into a refusal to proceed. Adding
-`RunStarted`/`RunFinished` to the enum on the introducing binary and
-leaving them absent on an older one is therefore sufficient by itself to
-make an older binary refuse such a log; this amendment requires no new
-enforcement code beyond registering the two new type strings.
+Validation is implemented as two new `_HANDLERS` entries
+(`EventType.RUN_STARTED`, `EventType.RUN_FINISHED`) whose functions
+**validate only — they perform no state mutation** (they never touch
+`issues`, `executions`, or any other projection field). This is
+independent of, and must not be confused with, `RESOLUTION_OF`: adding a
+validation-only `_HANDLERS` entry does **not** add either type to
+`RESOLUTION_OF`, and the reconciler continues to never attempt to
+resolve, heal, or backfill a `RunFinished` for an orphaned `RunStarted`,
+exactly as "Event vocabulary addition" above requires. `_HANDLERS` and
+`RESOLUTION_OF` are separate mechanisms consulted by separate consumers
+(`StateProjection.apply()` and the reconciler, respectively); nothing in
+this section changes that.
+
+A validation failure raises `TransitionError` — the same exception type
+containment-payload validation already raises — and propagates out of
+`StateProjection.apply()`/`rebuild()` exactly as any other
+`TransitionError` does today, including out of `recover()`
+(`src/runtime/recovery/reconciler.py`, which constructs a fresh
+`StateProjection` and calls `apply()` for every replayed event as part of
+ordinary startup, verified by reading that module). A log containing a
+structurally malformed `RunStarted`/`RunFinished` therefore refuses to
+complete startup recovery — the same fail-loud posture already applied
+to every other event this document governs ("a log that does not replay
+cleanly is corrupted history").
+
+Exact rules, applied at `apply()` time:
+
+**Envelope, both types:**
+- `run_id` must be non-null (§3's envelope otherwise allows `run_id` to
+  be null for other event types; for `RunStarted`/`RunFinished` it must
+  not be).
+- `run_id` must match the new-format pattern
+  `run-\d{8}T\d{6}Z-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
+  — the legacy timestamp-only format is never valid for either type,
+  because a legacy-format run never has a `RunStarted`/`RunFinished` in
+  the first place.
+- `issue_id` must be null.
+- `execution_id` must be null.
+
+**`RunStarted` payload — closed schema, exactly these keys, no others:**
+- `engine`: a JSON object with exactly the keys `provider` (non-empty
+  string) and `model` (non-empty string — never null for `RunStarted`,
+  per "RunStarted payload (exact schema)" above).
+- `reviewer`: a JSON object with exactly the keys `provider` (non-empty
+  string) and `model` (string or `null` — the documented nullable rule
+  above; when present as a string it must be non-empty).
+- `budget`: a JSON object with exactly the keys
+  `max_attempts_per_issue` (integer ≥ 1), `max_executions_per_run`
+  (integer ≥ 1), `hard_stop_proxy_cost_per_run_usd` (number > 0), and
+  `proxy_pricing` (non-empty string).
+- `config_digest`: a string matching `^[0-9a-f]{64}$` (exactly 64
+  lowercase hexadecimal characters).
+- No key other than `engine`, `reviewer`, `budget`, `config_digest` may
+  be present at the top level of the payload, and no key other than the
+  ones named above may be present inside `engine`, `reviewer`, or
+  `budget`. This makes the schema **closed**, not merely a
+  minimum-required-fields check — see "Why the schema is closed" below.
+
+**`RunFinished` payload — closed schema, exactly these keys, no others:**
+- `outcome`: a string, exactly one of `CHECKOUT_FAILED`,
+  `REVIEWER_UNREACHABLE`, `BASELINE_FAILED`, `INGEST_FAILED`,
+  `COMPLETED`, `HALTED`, `INTERRUPTED`. Any other value — including a
+  plausible-looking string — is rejected.
+- `detail`: the key must be present, and its value must be `null`. Under
+  this amendment any non-null `detail` is rejected, which makes "`detail`
+  is always null" (a design decision stated above) an enforced invariant
+  rather than documentation prose alone: no implementation can begin
+  quietly populating it without this document being amended first.
+- No key other than `outcome` and `detail` may be present.
+
+**Why the schema is closed.** §3's general rule ("new needs → new event
+type or bumped `schema_version`") already implies payload evolution
+within one `schema_version` should never be silent; closing the schema
+for these two types makes that implication an enforced invariant instead
+of a convention. It also extends the same allowlist discipline
+`config_digest`'s own computation already applies to *configuration*
+fields to the *entire payload shape* — an unexpected extra field (for
+example, a future code change accidentally attaching a raw configuration
+fragment alongside the allowlisted ones) fails loudly at replay instead
+of silently persisting unnoticed. A field genuinely needed in the future
+is added via a new amendment to this document, exactly like this one.
+
+### No-downgrade policy — corrected 2026-08-21
+
+**Correction note:** the version of this section accepted on 2026-08-21
+overstated the refusal's scope ("every subsequent attempt to open it —
+for writing or for read-only replay") and implied no mutation could occur
+before it fires. Both are corrected below: the refusal applies to the
+strict writer/replay path only (`EventLog`, `ReadOnlyEventLog`) — not to
+ADR-25's bytes-direct observer — and `EventLog`'s own pre-existing
+torn-tail repair can mutate the physical file before the refusal is
+reached, in a narrow, unrelated case described below. Do not implement
+against the original claims.
+
+**Scope: the strict writer/replay path only.** `EventLog` (the
+authoritative writer) and `ReadOnlyEventLog` (`verify-log`, `show-state`,
+and any other strict inspection) both resolve every event's `type`
+through the closed `EventType` enum; an unrecognized string raises a
+schema error that every entry point on this path — `EventLog.__init__`'s
+own startup scan, `EventLog.replay()`, and `ReadOnlyEventLog`'s replay —
+already converts into a refusal to proceed, with no new code required
+beyond registering the two new type strings on the introducing binary.
+The scan that performs this check reads the whole file in `event_id`
+order and refuses on the **first** unrecognized type it reaches, so a
+`RunStarted`/`RunFinished` anywhere in the log — not only at the very
+end — is caught.
+
+**ADR-25's `draindeck observe` is intentionally exempt from this
+refusal** — this restates this document's own existing "Consumer note"
+above, applied to this amendment as that note itself requires ("Any
+future change to record framing... must be evaluated against this
+second reader, not just the writer/replay path"). The bytes-direct
+observer never instantiates `EventLog` or `ReadOnlyEventLog` and never
+validates a record's `type` against `EventType` at all (per its own
+module docstring: "Unknown event types and schema versions are retained
+as exact raw evidence"). It can therefore continue to expose a
+`RunStarted`/`RunFinished` record as ordinary `integrity: "OK"` evidence
+— with `eventType` carrying the literal string, unvalidated — even from
+an observer binary **older** than the one that introduced this
+amendment, with no code change to `observe.py` required for that forward
+compatibility. What the observer categorically cannot do, regardless of
+its own version, is replay in the strict §3 sense (it enforces no
+`event_id` contiguity and no payload structure) or write to the log at
+all — it is read-only by construction (ADR-25). "No-downgrade" as a
+refusal-to-proceed guarantee is therefore a property of the strict
+writer/replay path only; it was never intended to be a property of the
+bounded observer, which trades that strictness for the forward-compatible,
+torn-tail-tolerant reading ADR-25 requires of it.
+
+**Refusal is not necessarily the first thing that happens to the
+physical file.** `EventLog.__init__` runs its existing, pre-existing
+torn-tail repair (`_repair_torn_tail`) *before* the strict type-scan
+(`_scan_last_event_id`) that would raise on an unrecognized type.
+Torn-tail repair reads the whole file and, only if the file's physical
+last line is not newline-terminated, truncates that incomplete tail to a
+sidecar file — a mechanism that predates this amendment, exists for an
+unrelated reason (recovering from a crash mid-append), and engages
+identically whether or not the log contains any lifecycle event. For the
+common case — a cleanly closed log, or a `RunStarted`/`RunFinished` that
+is not the physical last, torn line — this performs a read with no
+write, and the type-scan's refusal is reached with the file completely
+unmodified. In the narrow case where the log's torn tail happens to *be*
+an incomplete `RunStarted`/`RunFinished` write (the process crashed
+during that specific append, before its `fsync` completed) and no other
+lifecycle event exists earlier in the log, torn-tail repair quarantines
+that incomplete line before the type-scan ever sees it; the now-truncated
+file may then contain no lifecycle event at all, and an older binary
+could open and append to it successfully. This is the same class of
+narrow, accepted gap the "Consumer note" above and ADR-25 already accept
+for the observer's own bounded reading (an in-place rewrite the
+fingerprint cannot see) — not something this amendment closes, and worth
+stating honestly rather than implying away.
+
+Once the type-scan reaches an unrecognized `RunStarted`/`RunFinished`
+line without having quarantined it away, the refusal fires **before**
+the file is ever reopened for appending (`EventLog.__init__` raises
+before reaching the `open(self.path, "ab")` call) — an older binary
+therefore never appends a new event past that point. **Operators must
+still not open a log that has any `RunStarted`/`RunFinished` event with a
+Draindeck binary older than the one that introduced this amendment,
+regardless of this mechanism's exact boundary** — the guarantee that
+matters operationally (no silent data loss, no split-brain log) holds for
+every realistic case, and the one narrow gap above requires a crash
+timed to the single specific write this amendment adds, not an everyday
+occurrence. Release documentation must state this as an operator rule, a
+refusal, not an implied compatibility promise — matching ADR-26 decision
+8.
 
 Existing logs containing neither `RunStarted` nor `RunFinished` remain
 fully valid under every existing rule in this document — this amendment
