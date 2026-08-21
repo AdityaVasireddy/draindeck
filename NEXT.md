@@ -10,8 +10,33 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-20)
+## 1. Current state (verified 2026-08-21)
 
+- **Dashboard Part 2 (ADR-26): Phases 1-5 built and committed on branch
+  `dashboard`** (2026-08-21, commits `e989b3b`..`0055953`): ADR-26 accepted
+  (docs/08 §5h, PROPOSED→ACCEPTED) and docs/19 filed as its contract; then
+  the `draindeck_dashboard` package (FastAPI/Uvicorn, `dashboard` extra) —
+  registration API + single-writer lease + bounded observer polling +
+  evidence/identity/checkpoint store with CORRUPT detection + a tolerant
+  issue/execution projection (deliberately NOT `runtime.events.projections`,
+  which raises on illegal transitions) + paginated REST views + a bounded
+  SSE change feed + a vanilla-JS UI covering every UI state in docs/19. An
+  independent adversarial review of Phases 2-5 found two real bugs (a
+  stale-checkpoint race in the `CURSOR_LOG_REPLACED` handler that could
+  orphan evidence under a redundant identity generation; an unbounded SSE
+  subscriber queue for a slow/stalled client), both fixed with regression
+  tests confirmed via `git stash` to fail without the fix. `pytest
+  tests\dashboard -q` 111/111, `pytest tests\unit -q` 445/445 (unchanged —
+  no `src/runtime` file touched, confirmed by a dedicated dependency-
+  carveout test), `git diff --check` clean at every commit, plus one live
+  manual browser smoke test (real server, real subprocess-invoked
+  observer, real Chrome tab, SSE-driven live updates with no page reload).
+  **Not yet built:** Phase 6 (artifacts/diffs), Phase 7 (RunStarted/
+  RunFinished — separately gated, needs its own Doc 03 amendment), and a
+  live background scheduler (nothing currently calls
+  `ingest_repository_tick` automatically — see the handoff's Next Action).
+  Full detail, decisions, and open questions:
+  `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-phases-1-5.md`.
 - **Read-only external observer CLI shipped, then remediated**
   (`draindeck observe events`/`observe status`, SPEC.md / ADR-25 +
   Amendment 1, `docs/08` §5g): a bytes-direct, streaming reader
@@ -152,9 +177,14 @@
   runtime.main check-config config.local.yaml`.
 - Read-only state inspection: `.venv\Scripts\python.exe -m runtime.main
   verify-log --log state\events.jsonl` / `show-state --log state\events.jsonl`.
+- Dashboard suite: `.venv\Scripts\python.exe -m pytest tests\dashboard -q` —
+  **111 passed**, verified live 2026-08-21 (see §1 Dashboard entry above).
 
 ## 4. Pointer index
 
+- **Dashboard Part 2, Phases 1-5 (ADR-26 acceptance through API/SSE/UI):**
+  `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-phases-1-5.md`. Governing
+  contract: `docs/19-dashboard-part-2-spec.md`; decision record: `docs/08` §5h.
 - **ADR-19 closure, both samples:** `docs/08-session-0-closure-and-adr-amendments.md` §4.
 - **Backlog drain to terminal state, reviewer-parser bug discovery:**
   `docs/handoffs/HANDOFF_2026-08-14_session44-backlog-drained.md`.
