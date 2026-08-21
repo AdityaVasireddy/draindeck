@@ -23,13 +23,15 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from .budget.manager import BudgetManager
 from .config import (
@@ -68,6 +70,7 @@ from .repo.adapter import RepoError
 from .repo.git_adapter import GitCliAdapter
 from .reviewer.base import ReviewerError, ReviewerProvider
 from .reviewer.qwen_ollama import QwenOllamaReviewer
+from .state.transitions import TransitionError
 from .validation.runner import Validator
 from .workspace_lease import WorkspaceLease, probe_controller_identity
 
@@ -301,6 +304,110 @@ def _make_reviewer(cfg: Config) -> ReviewerProvider:
     return factory(cfg)
 
 
+# Reviewer-model resolution for RunStarted/config_digest (doc 03 amendment).
+# Mirrors _REVIEWER_FACTORIES's registry-not-Literal-widening pattern: a new
+# provider gets a resolver registered here, never a control-flow branch.
+# "Null only when the selected provider's own config subsection has no
+# model field at all" (doc 03 amendment) -- no registered provider today
+# lacks one; an unregistered future provider resolves to None.
+_REVIEWER_MODEL_RESOLVERS: dict[str, Callable[[Config], Optional[str]]] = {
+    "qwen": lambda cfg: cfg.reviewer.qwen.model,
+}
+
+
+def _resolve_reviewer_model(cfg: Config) -> Optional[str]:
+    resolver = _REVIEWER_MODEL_RESOLVERS.get(cfg.reviewer.provider)
+    return resolver(cfg) if resolver else None
+
+
+def _config_digest(cfg: Config, reviewer_model: Optional[str]) -> str:
+    """SHA-256 over canonical JSON of exactly the doc 03 amendment's
+    10-field allowlist -- built field-by-field, never from the full
+    Config object, so an excluded field (secrets, paths, endpoints,
+    commands, env, ...) can never reach the digest input by construction."""
+    canon = {
+        "budget": {
+            "hard_stop_proxy_cost_per_run_usd": cfg.budget.hard_stop_proxy_cost_per_run_usd,
+            "max_attempts_per_issue": cfg.budget.max_attempts_per_issue,
+            "max_executions_per_run": cfg.budget.max_executions_per_run,
+            "proxy_pricing": cfg.budget.proxy_pricing,
+        },
+        "engine": {
+            "max_turns": cfg.engine.max_turns,
+            "model": cfg.engine.model,
+            "provider": cfg.engine.provider,
+            "timeout_seconds": cfg.engine.timeout_seconds,
+        },
+        "reviewer": {
+            "model": reviewer_model,
+            "provider": cfg.reviewer.provider,
+        },
+    }
+    raw = json.dumps(canon, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _run_started_payload(cfg: Config, reviewer_model: Optional[str], digest: str) -> dict:
+    return {
+        "engine": {"provider": cfg.engine.provider, "model": cfg.engine.model},
+        "reviewer": {"provider": cfg.reviewer.provider, "model": reviewer_model},
+        "budget": {
+            "max_attempts_per_issue": cfg.budget.max_attempts_per_issue,
+            "max_executions_per_run": cfg.budget.max_executions_per_run,
+            "hard_stop_proxy_cost_per_run_usd": cfg.budget.hard_stop_proxy_cost_per_run_usd,
+            "proxy_pricing": cfg.budget.proxy_pricing,
+        },
+        "config_digest": digest,
+    }
+
+
+def _new_run_id() -> str:
+    # run-<UTC-second>-<uuid4> (doc 03 amendment, "Run ID format"). The
+    # UUID4 suffix — never the timestamp alone — is what prevents two runs
+    # starting in the same UTC second from colliding.
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"run-{stamp}-{uuid.uuid4()}"
+
+
+class LifecycleEventInvalid(RuntimeError):
+    """A constructed RunStarted/RunFinished failed the same canonical
+    validation StateProjection.apply() uses at replay time -- e.g. an
+    empty resolved model, or a malformed run_id. Config-layer guards
+    (config.py) close the known gaps; this is the structural, defense-in-
+    depth backstop that guarantees a violation is caught before durable
+    append regardless of what config.py's own rules do or don't catch
+    (review requirement: "a validation failure must occur before durable
+    append"). Reuses runtime.events.projections' own _HANDLERS rather than
+    re-implementing the doc 03 closed-schema rules a second time."""
+
+
+def _validate_lifecycle_event(ev: Event) -> None:
+    try:
+        StateProjection().apply(ev)
+    except TransitionError as e:
+        raise LifecycleEventInvalid(str(e)) from e
+
+
+def _emit_run_started(log: EventLog, proj: StateProjection, cfg: Config, run_id: str) -> None:
+    reviewer_model = _resolve_reviewer_model(cfg)
+    digest = _config_digest(cfg, reviewer_model)
+    payload = _run_started_payload(cfg, reviewer_model, digest)
+    candidate = Event(EventType.RUN_STARTED, run_id=run_id, payload=payload)
+    _validate_lifecycle_event(candidate)
+    eid = log.append(candidate)
+    proj.apply(Event(type=EventType.RUN_STARTED, run_id=run_id, payload=payload, event_id=eid))
+
+
+def _emit_run_finished(log: EventLog, proj: StateProjection, run_id: str, outcome: str) -> None:
+    # detail is always null (doc 03 amendment's binding safety rule) --
+    # never str(exception) or any other dynamically-derived value.
+    payload = {"outcome": outcome, "detail": None}
+    candidate = Event(EventType.RUN_FINISHED, run_id=run_id, payload=payload)
+    _validate_lifecycle_event(candidate)
+    eid = log.append(candidate)
+    proj.apply(Event(type=EventType.RUN_FINISHED, run_id=run_id, payload=payload, event_id=eid))
+
+
 def _reviewer_reachable(cfg: Config) -> tuple[bool, str]:
     if cfg.reviewer.provider != "qwen":
         return True, "skipped (non-qwen provider)"
@@ -346,8 +453,22 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
     artifacts_dir = startup.artifacts_dir
     proj = startup.proj
     report = startup.report
-    run_id = "run-" + datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y%m%dT%H%M%SZ")
+
+    # RunStarted is the run's first action after entering normal run work --
+    # before checkout, reviewer health, baseline validation, and ingestion
+    # (doc 03 amendment, "Ordering and pre-normal-run failures"). Everything
+    # before this call (config load, workspace/log ownership, recovery) is
+    # pre-normal-run and deliberately emits neither RunStarted nor
+    # RunFinished.
+    run_id = _new_run_id()
+    try:
+        _emit_run_started(log, proj, cfg, run_id)
+    except LifecycleEventInvalid as e:
+        # Caught before log.append ran (_validate_lifecycle_event runs
+        # first) -- nothing was durably written for this run.
+        print(f"CONFIG CANNOT PRODUCE A VALID RunStarted: {e}", file=sys.stderr)
+        return 1
+
     if report.orphans_crashed:
         print(f"[recovery] crashed orphans: {report.orphans_crashed}")
     for repair in report.workspace_repairs:
@@ -359,6 +480,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         adapter.checkout_branch(cfg.project.branch)
     except RepoError as e:
         print(f"CHECKOUT FAILED: {e}", file=sys.stderr)
+        _emit_run_finished(log, proj, run_id, "CHECKOUT_FAILED")
         return 1
     print(f"[startup] checked out {cfg.project.branch}")
 
@@ -367,6 +489,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
     if not ok:
         print("[health] reviewer endpoint unreachable — refusing to start "
               "(the first review would halt the run)", file=sys.stderr)
+        _emit_run_finished(log, proj, run_id, "REVIEWER_UNREACHABLE")
         return 1
     if report.replayed_events == 0 and not args.skip_baseline:
         validator = Validator(cfg.project.validation.commands,
@@ -380,6 +503,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
             print(f"[health] BASELINE RED on {cfg.project.branch} — refusing to "
                   f"start (ADR-20 requires baseline green). See "
                   f"{artifacts_dir / 'baseline' / 'validation'}", file=sys.stderr)
+            _emit_run_finished(log, proj, run_id, "BASELINE_FAILED")
             return 1
         if result.gate_results():
             print("[health] baseline green")
@@ -394,6 +518,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         ingested = _ingest_issues(cfg, log, proj, run_id)
     except (IssuesParseError, FileNotFoundError) as e:
         print(f"INGEST FAILED: {e}", file=sys.stderr)
+        _emit_run_finished(log, proj, run_id, "INGEST_FAILED")
         return 1
     print(f"[ingest] {ingested} new issue(s); {len(proj.issues)} total in queue")
 
@@ -409,6 +534,11 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
                              cfg.budget.hard_stop_proxy_cost_per_run_usd),
         artifacts_dir=artifacts_dir, run_id=run_id,
     )
+    # COMPLETED and INTERRUPTED both leave exit_code at 0 today (an existing,
+    # unchanged property of this loop) -- outcome is therefore decided by
+    # which except/try branch actually executed, never by exit_code (doc 03
+    # amendment, INTERRUPTED row: "the process's own exit code does not
+    # distinguish this from COMPLETED").
     exit_code = 0
     try:
         reason = orch.run()
@@ -416,11 +546,14 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         print(f"[done] {reason}")
         print(f"[metrics] executions_this_run={metrics.executions_this_run} "
               f"proxy_dollars_this_run=${metrics.proxy_dollars_this_run:.4f}")
+        _emit_run_finished(log, proj, run_id, "COMPLETED")
     except (OrchestratorHalt, ReviewerError) as e:
         print(f"[halt] run stopped abnormally: {e}", file=sys.stderr)
         exit_code = 2
+        _emit_run_finished(log, proj, run_id, "HALTED")
     except KeyboardInterrupt:
         print("\n[stop] interrupted — current step finished; recovery owns the rest")
+        _emit_run_finished(log, proj, run_id, "INTERRUPTED")
     finally:
         if proj.is_workspace_blocked(lease.workspace_key):
             print("[shutdown] containment remains unreleased; no branch restore attempted",

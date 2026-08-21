@@ -48,6 +48,8 @@ class EventType(str, Enum):
     ISSUE_ESCALATED = "IssueEscalated"
     HUMAN_INTERVENTION = "HumanIntervention"
     GUIDELINE_PROMOTED = "GuidelinePromoted"
+    RUN_STARTED = "RunStarted"                      # intent — doc 03 amendment 2026-08-21
+    RUN_FINISHED = "RunFinished"                     # doc 03 amendment 2026-08-21
 
 
 KIND_OF: dict[EventType, Kind] = {
@@ -56,6 +58,14 @@ KIND_OF: dict[EventType, Kind] = {
 KIND_OF[EventType.EXECUTION_SPAWNED] = Kind.INTENT
 KIND_OF[EventType.EXECUTION_CONTAINMENT_PREPARED] = Kind.INTENT
 KIND_OF[EventType.COMMIT_INTENT] = Kind.INTENT
+# RUN_STARTED is Kind.INTENT for write-ordering purposes only (fsync'd
+# before the normal-run work it announces) — deliberately NOT added to
+# RESOLUTION_OF below. The reconciler must never attempt to resolve, heal,
+# or backfill a RunFinished for an orphaned RunStarted; an unresolved
+# RunStarted after abrupt death is a permanent, honest record, not a gap
+# the reconciler is expected to close (doc 03 amendment, "Event vocabulary
+# addition").
+KIND_OF[EventType.RUN_STARTED] = Kind.INTENT
 
 # Intents and the facts that resolve them (recovery + harness use this).
 RESOLUTION_OF: dict[EventType, frozenset[EventType]] = {

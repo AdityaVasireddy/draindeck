@@ -213,7 +213,14 @@ def test_main_ownership_and_containment_gate_precedes_engine_and_recovery():
     from runtime import main as main_mod
     cfg = mock.MagicMock(project=mock.MagicMock(repository=str(_WORKSPACE), branch="main", validation=mock.MagicMock()),
                          event_log=mock.MagicMock(path="C:/draindeck-unit-state/events.jsonl"),
-                         engine=mock.MagicMock(), attempts=mock.MagicMock(ref_namespace="refs/a"))
+                         engine=mock.MagicMock(provider="claude-headless", model="default",
+                                               max_turns=30, timeout_seconds=1800),
+                         reviewer=mock.MagicMock(provider="qwen",
+                                                 qwen=mock.MagicMock(model="qwen2.5-coder")),
+                         budget=mock.MagicMock(max_attempts_per_issue=3, max_executions_per_run=10,
+                                               hard_stop_proxy_cost_per_run_usd=15.0,
+                                               proxy_pricing="api_list_rates"),
+                         attempts=mock.MagicMock(ref_namespace="refs/a"))
     args = SimpleNamespace(config="x", skip_baseline=True)
     calls = []
     lease = mock.MagicMock(acquired=True, workspace_key="ws", state=SimpleNamespace(value="ACQUIRED"), detail="ok")

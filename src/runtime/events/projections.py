@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Iterable, Optional
 
@@ -474,6 +477,128 @@ def _accepted_view(p: StateProjection, ev: Event) -> ExecutionView:
     return view
 
 
+# ── run lifecycle (doc 03 amendment, "Strict replay validation") ──
+# Validation-only: these never touch issues/executions/etc. Deliberately
+# separate from RESOLUTION_OF (schema.py) — see the amendment's "Event
+# vocabulary addition" section.
+_RUN_ID_RE = re.compile(
+    r"run-(\d{8}T\d{6}Z)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
+_CONFIG_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+# Kept in sync by comment/convention with BudgetCfg.proxy_pricing's Literal
+# type (config.py) — same pattern as config.py's own
+# KNOWN_REVIEWER_PROVIDERS frozenset.
+_KNOWN_PROXY_PRICING: frozenset[str] = frozenset({"api_list_rates"})
+_RUN_OUTCOMES: frozenset[str] = frozenset({
+    "CHECKOUT_FAILED", "REVIEWER_UNREACHABLE", "BASELINE_FAILED",
+    "INGEST_FAILED", "COMPLETED", "HALTED", "INTERRUPTED",
+})
+
+
+def _exact_keys(mapping: dict, allowed: frozenset[str], ev: Event, where: str) -> None:
+    extra = set(mapping) - allowed
+    if extra:
+        raise TransitionError(
+            f"{ev.type.value} {where} has unexpected key(s) {sorted(extra)} "
+            f"(event {ev.event_id})")
+
+
+def _run_envelope(ev: Event) -> None:
+    # isinstance check must precede the regex: re.fullmatch on a non-string
+    # (int/bool/list/dict) raises TypeError, not TransitionError -- every
+    # malformed run_id, regardless of its type, must raise TransitionError
+    # (verified: json.loads can hand any of these back as ev.run_id since
+    # the envelope's run_id field is otherwise untyped JSON).
+    if not isinstance(ev.run_id, str) or not ev.run_id:
+        raise TransitionError(
+            f"{ev.type.value} must have a non-null string run_id (event {ev.event_id})")
+    m = _RUN_ID_RE.fullmatch(ev.run_id)
+    if not m:
+        raise TransitionError(
+            f"{ev.type.value} has invalid run_id {ev.run_id!r} (event {ev.event_id})")
+    try:
+        datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ")
+    except ValueError as e:
+        raise TransitionError(
+            f"{ev.type.value} run_id {ev.run_id!r} has an invalid calendar "
+            f"timestamp (event {ev.event_id})") from e
+    if ev.issue_id is not None:
+        raise TransitionError(
+            f"{ev.type.value} must have issue_id null (event {ev.event_id})")
+    if ev.execution_id is not None:
+        raise TransitionError(
+            f"{ev.type.value} must have execution_id null (event {ev.event_id})")
+
+
+def _run_started(p: StateProjection, ev: Event) -> None:
+    _run_envelope(ev)
+    payload = ev.payload
+    _exact_keys(payload, frozenset({"engine", "reviewer", "budget", "config_digest"}),
+                ev, "payload")
+
+    # engine.provider/model stay plain non-empty-string checks by design —
+    # never closed-set against today's provider registry (doc 03 amendment).
+    engine = _mapping(payload, "engine", ev)
+    _exact_keys(engine, frozenset({"provider", "model"}), ev, "payload.engine")
+    _string(engine, "provider", ev)
+    _string(engine, "model", ev)
+
+    reviewer = _mapping(payload, "reviewer", ev)
+    _exact_keys(reviewer, frozenset({"provider", "model"}), ev, "payload.reviewer")
+    _string(reviewer, "provider", ev)
+    if "model" not in reviewer:
+        raise TransitionError(
+            f"{ev.type.value} missing payload.reviewer.model (event {ev.event_id})")
+    reviewer_model = reviewer["model"]
+    if reviewer_model is not None and (
+            not isinstance(reviewer_model, str) or not reviewer_model):
+        raise TransitionError(
+            f"{ev.type.value} invalid payload.reviewer.model (event {ev.event_id})")
+
+    budget = _mapping(payload, "budget", ev)
+    _exact_keys(budget, frozenset({
+        "max_attempts_per_issue", "max_executions_per_run",
+        "hard_stop_proxy_cost_per_run_usd", "proxy_pricing",
+    }), ev, "payload.budget")
+    _positive_int(budget, "max_attempts_per_issue", ev)
+    _positive_int(budget, "max_executions_per_run", ev)
+    cost = _field(budget, "hard_stop_proxy_cost_per_run_usd", ev)
+    if (isinstance(cost, bool) or not isinstance(cost, (int, float))
+            or not math.isfinite(cost) or cost <= 0):
+        raise TransitionError(
+            f"{ev.type.value} invalid payload.budget.hard_stop_proxy_cost_per_run_usd "
+            f"(event {ev.event_id})")
+    pricing = _string(budget, "proxy_pricing", ev)
+    if pricing not in _KNOWN_PROXY_PRICING:
+        raise TransitionError(
+            f"{ev.type.value} payload.budget.proxy_pricing {pricing!r} is not "
+            f"a known value (known: {sorted(_KNOWN_PROXY_PRICING)}) "
+            f"(event {ev.event_id})")
+
+    digest = _string(payload, "config_digest", ev)
+    if not _CONFIG_DIGEST_RE.fullmatch(digest):
+        raise TransitionError(
+            f"{ev.type.value} payload.config_digest is not 64 lowercase hex "
+            f"characters (event {ev.event_id})")
+
+
+def _run_finished(p: StateProjection, ev: Event) -> None:
+    _run_envelope(ev)
+    payload = ev.payload
+    _exact_keys(payload, frozenset({"outcome", "detail"}), ev, "payload")
+    outcome = _string(payload, "outcome", ev)
+    if outcome not in _RUN_OUTCOMES:
+        raise TransitionError(
+            f"{ev.type.value} payload.outcome {outcome!r} is not a controlled "
+            f"outcome (event {ev.event_id})")
+    if "detail" not in payload:
+        raise TransitionError(
+            f"{ev.type.value} missing payload.detail (event {ev.event_id})")
+    if payload["detail"] is not None:
+        raise TransitionError(
+            f"{ev.type.value} payload.detail must be null (event {ev.event_id})")
+
+
 _HANDLERS = {
     EventType.ISSUE_CREATED: _issue_created,
     EventType.ISSUE_ACTIVATED: _issue_transition,
@@ -492,6 +617,8 @@ _HANDLERS = {
     EventType.REVIEW_REJECTED: _execution_transition,
     EventType.COMMIT_INTENT: _commit_intent,
     EventType.COMMIT_CREATED: _commit_created,
+    EventType.RUN_STARTED: _run_started,
+    EventType.RUN_FINISHED: _run_finished,
     # HumanIntervention / GuidelinePromoted: counted; no state machine in
     # the foundation (escalation handling arrives with the orchestrator).
 }

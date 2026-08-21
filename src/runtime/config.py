@@ -11,6 +11,7 @@ as an immutable object. Two validation layers:
 """
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -112,10 +113,27 @@ class EngineCfg(_Frozen):
     # after the merge and always wins. Sunset condition in doc 08 §5c.
     child_env: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("model")
+    @classmethod
+    def _model_non_empty(cls, v: str) -> str:
+        # Doc 03 amendment: RunStarted.payload.engine.model is never null
+        # or empty. An empty-but-present model here would silently produce
+        # an invalid lifecycle event downstream.
+        if not v:
+            raise ValueError("engine.model must not be empty")
+        return v
+
 
 class QwenCfg(_Frozen):
     endpoint: str
     model: str
+
+    @field_validator("model")
+    @classmethod
+    def _model_non_empty(cls, v: str) -> str:
+        if not v:
+            raise ValueError("reviewer.qwen.model must not be empty")
+        return v
 
 
 # Known reviewer providers. A new provider is added here (and given a
@@ -144,6 +162,30 @@ class BudgetCfg(_Frozen):  # ADR-09
     max_executions_per_run: int = Field(gt=0)
     proxy_pricing: Literal["api_list_rates"] = "api_list_rates"
     hard_stop_proxy_cost_per_run_usd: float = Field(gt=0)
+
+    # mode="before": pydantic's lax int/float coercion silently turns a YAML
+    # `true`/`false` into 1/0 before an "after" validator or Field(gt=0)
+    # ever runs -- isinstance(True, int) is True (verified), so by the time
+    # a normal validator sees the value, its bool-ness is already erased.
+    # This must run before that coercion to catch it at all (doc 03
+    # amendment: a JSON boolean is not an integer/number for budget fields).
+    @field_validator("max_attempts_per_issue", "max_executions_per_run",
+                     "hard_stop_proxy_cost_per_run_usd", mode="before")
+    @classmethod
+    def _reject_bool(cls, v):
+        if isinstance(v, bool):
+            raise ValueError("must be a number, not a boolean")
+        return v
+
+    @field_validator("hard_stop_proxy_cost_per_run_usd")
+    @classmethod
+    def _finite_cost(cls, v: float) -> float:
+        # gt=0 alone already rejects NaN (`nan > 0` is False) and -Infinity
+        # (`-inf > 0` is False) under IEEE 754 (verified) -- but not
+        # +Infinity (`inf > 0` is True), which math.isfinite catches.
+        if not math.isfinite(v):
+            raise ValueError("must be finite (not NaN or Infinity)")
+        return v
 
 
 class ExperimentCfg(_Frozen):  # ADR-19 — do not edit after run begins
