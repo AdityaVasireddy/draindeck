@@ -5,8 +5,15 @@ description = "Autonomous issue-resolution runtime - durability foundation"
 requires-python = ">=3.12"
 dependencies = ["pyyaml>=6", "pydantic>=2"]
 
+[project.optional-dependencies]
+# ADR-26 (docs/08 SS5h): FastAPI/Uvicorn are an explicit framework carve-out
+# for the draindeck_dashboard package only. Core src/runtime stays
+# framework-free and must never import from this extra.
+dashboard = ["fastapi>=0.115", "uvicorn>=0.32"]
+
 [project.scripts]
 draindeck = "runtime.main:main"
+draindeck-dashboard = "draindeck_dashboard.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
