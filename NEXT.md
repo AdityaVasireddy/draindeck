@@ -12,43 +12,33 @@
 
 ## 1. Current state (verified 2026-08-21)
 
-- **Dashboard Part 2 (ADR-26): Phases 1-5 built on branch `dashboard`,
-  Phase 3 now genuinely complete with automatic ingestion** (2026-08-21,
-  commits `e989b3b`..pending): ADR-26 accepted (docs/08 §5h,
-  PROPOSED→ACCEPTED) and docs/19 filed as its contract; then the
+- **Dashboard Part 2 (ADR-26): Phases 1-6 built on branch `dashboard`**
+  (2026-08-21, commits `e989b3b`..`15ed193`): ADR-26 accepted (docs/08
+  §5h, PROPOSED→ACCEPTED) and docs/19 filed as its contract; then the
   `draindeck_dashboard` package (FastAPI/Uvicorn, `dashboard` extra) —
-  registration API + single-writer lease + bounded observer polling +
+  registration API + single-writer lease + bounded observer polling with
+  automatic scheduling (one asyncio task per repo, independent 2s-normal
+  / 2-60s-backoff cadence, gated on holding the indexer lease) +
   evidence/identity/checkpoint store with CORRUPT detection + a tolerant
   issue/execution projection (deliberately NOT `runtime.events.projections`,
   which raises on illegal transitions) + paginated REST views + a bounded
-  SSE change feed + a vanilla-JS UI covering every UI state in docs/19.
-  Phase 3 was initially committed WITHOUT a live scheduler — nothing called
-  `ingest_repository_tick` automatically, so ingestion required manual
-  intervention. Closed in a follow-up pass this session: `scheduler.py`
-  adds one asyncio task per registered repository (independent 2s-normal /
-  2-60s-exponential-backoff cadence per repo, structurally impossible to
-  overlap ticks for the same repo since each task's loop is sequential),
-  gated entirely on holding the single indexer-writer lease (followers
-  never index), wired into the app's lifespan alongside the existing
-  `ChangeTailer`. A live smoke test running the real scheduler surfaced a
-  genuine bug: the intentional perpetual re-delivery of a caught-up
-  single-record log (accepted, idempotent, since Phase 4) was recording a
-  NEW "change" row on every no-op re-delivery, making the SSE feed and UI
-  refresh every 2s forever even with nothing new — fixed in
-  `indexer.py`'s `_upsert_evidence_and_detect_corrupt` to only record a
-  change when evidence content actually differs; re-verified live
-  (`changes` table held steady across ~6 ticks / 12s after the fix). An
-  earlier independent adversarial review of Phases 2-5 found two more real
-  bugs (a stale-checkpoint race in the `CURSOR_LOG_REPLACED` handler; an
-  unbounded SSE subscriber queue), both fixed with regression tests. `pytest
-  tests\dashboard -q` 123/123, `pytest tests\unit -q` 445/445 (unchanged —
-  no `src/runtime` file touched, confirmed by a dedicated dependency-
-  carveout test), `git diff --check` clean, plus two live manual browser/
-  DB smoke tests (real server, real subprocess-invoked observer, real
-  Chrome tab, fully automatic ingestion with zero manual `ingest_
-  repository_tick` calls). **Not yet built:** Phase 6 (artifacts/diffs),
-  Phase 7 (RunStarted/RunFinished — separately gated, needs its own Doc 03
-  amendment). Full detail, decisions, and open questions:
+  SSE change feed + a vanilla-JS UI covering every UI state in docs/19 +
+  artifact containment (transcript serving, resolved-final-path
+  containment verified against real symlinks/junctions/8.3 aliases) and a
+  hardened derived-diff endpoint (`--no-ext-diff`/`--no-textconv`
+  verified against a real configured driver with a vacuity check). Five
+  real bugs were found and fixed during this build, three via an
+  independent adversarial review and two via live scheduler smoke
+  testing (a stale-checkpoint generation race, an unbounded SSE queue, a
+  checkpoint-cursor perpetual-restart bug, an SSE-feed churn bug on no-op
+  record re-delivery) — see the handoff for details. `pytest
+  tests\dashboard -q` 150/150, `pytest tests\unit -q` 445/445 (unchanged
+  — no `src/runtime` file touched, confirmed by a dedicated dependency-
+  carveout test), `git diff --check` clean at every commit, plus three
+  live manual browser/DB smoke tests. **Not yet built:** Phase 7
+  (RunStarted/RunFinished — separately gated, needs its own Doc 03
+  amendment and explicit acceptance before any source change). Full
+  detail, decisions, and open questions:
   `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-phases-1-5.md`.
 - **Read-only external observer CLI shipped, then remediated**
   (`draindeck observe events`/`observe status`, SPEC.md / ADR-25 +
@@ -191,7 +181,7 @@
 - Read-only state inspection: `.venv\Scripts\python.exe -m runtime.main
   verify-log --log state\events.jsonl` / `show-state --log state\events.jsonl`.
 - Dashboard suite: `.venv\Scripts\python.exe -m pytest tests\dashboard -q` —
-  **123 passed**, verified live 2026-08-21 (see §1 Dashboard entry above).
+  **150 passed**, verified live 2026-08-21 (see §1 Dashboard entry above).
 
 ## 4. Pointer index
 
