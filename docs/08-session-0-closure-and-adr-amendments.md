@@ -967,6 +967,129 @@ change to this surface still needs its own ADR-governed deprecation per
 this ADR's original consequences clause — this amendment does not relax
 that going forward.
 
+
+---
+
+## 5h. ADR-26 — Dashboard architecture and run-lifecycle evidence
+
+**Status:** ACCEPTED · **Date:** 2026-08-20 (accepted 2026-08-20). This is a
+high-blast-radius decision. Acceptance authorizes Phase 1-6 implementation
+(docs/19, dashboard foundation, registration/indexing, API/SSE, UI/artifacts)
+per the gate chain in "Consequences and acceptance gate" below. It is NOT
+authorization to alter the frozen Doc 03 schema or emit a new event type
+(`RunStarted`/`RunFinished`, decision items 5-8) — that Phase 7 work requires
+the separate Doc 03 amendment, its own review, explicit acceptance, and the
+normal per-commit user authorization, per "Required Doc 03 amendment before
+implementation" below.
+
+**Context.** ADR-25 provides a read-only Dashboard boundary but intentionally
+excludes run lifecycle, provider/model, configuration, and cost metadata.
+The Dashboard also needs a durable local index, concurrent read behavior, a
+safe registration rule, and a single SSE resume sequence. Existing strict
+replay rejects unknown event types, so adding run events is not a harmless
+additive change: opening such a log with an older binary is unsafe.
+
+**Decision.**
+
+1. Dashboard is a local FastAPI/Uvicorn process with a static vanilla UI and
+   Dashboard-owned SQLite database in a separate `draindeck_dashboard`
+   package. This is an explicit framework carve-out for that package only;
+   core `src/runtime` stays framework-free. It consumes only ADR-25's observer
+   CLI. The complete public and operational contract is docs/19.
+   The package path is `src/draindeck_dashboard`; FastAPI/Uvicorn are a
+   `dashboard` optional-dependency extra, so core-only installs do not pull the
+   web stack.
+   Because Part 2 has no authentication, it binds only to loopback and rejects
+   non-loopback Host/Origin access; remote exposure requires a future
+   authentication/TLS ADR. Browser output is self-only CSP-protected and all
+   observed evidence is rendered as text, never executable markup.
+2. SQLite uses WAL and a 5-second busy timeout. One Dashboard-owned lease
+   elects exactly one indexer writer per database; other processes serve
+   reads/SSE only. The lease uses a 2-second heartbeat, 10-second TTL, and
+   atomic expired-owner takeover. The one monotonic SSE cursor is
+   `change_sequence`.
+3. Registration requires an operator-supplied absolute `logPath`; Dashboard
+   never discovers it by loading target config. Polling, not watching, uses
+   a configured absolute observer executable, `shell=False`, a minimal
+   credential-free child environment, global concurrency four, documented
+   OFFLINE/NOT_INITIALIZED backoff, and bounded pages per tick. Hot polling
+   uses only `observe events --format json`; availability comes from its
+   metadata and status is registration diagnostics only.
+4. ADR-25's current pagination is binding: `nextCursor` is exclusive and null
+   at caught-up EOF only for limit pagination; on a delivered TORN/OVERSIZED
+   tail it is pinned inclusively. Record cursors are inclusive. Dashboard durably
+   checkpoints the last record cursor/hash and identity generation, accepts
+   intentional boundary re-delivery idempotently, and never loops without a
+   per-tick page cap. OVERSIZED is a visible terminal halt because the public
+   contract cannot advance past it. CORRUPT requires two OK records sharing
+   the same non-null integer eventId but different recordHash values, scoped
+   to one contentLineage/fileGeneration generation. CURSOR_LOG_REPLACED is
+   confirmed with a successful after=None identity probe before generation
+   rollover; transient/unavailable probes retain the checkpoint and back off.
+5. After Doc 03 is amended, two new schema-version-1 types exist:
+   `RunStarted` and `RunFinished`. A run ID is
+   `run-<UTC-second>-<uuid4>`; timestamp readability is retained but UUID4
+   prevents new same-second collisions. Existing timestamp-only IDs remain
+   valid but may be ambiguous and carry no fabricated lifecycle metadata.
+6. `RunStarted` is appended and fsync'd immediately after entering normal run
+   work, before checkout, reviewer health, baseline validation, and
+   `_ingest_issues`. Its payload includes engine `{provider, model}`, reviewer
+   `{provider, model}` when configured, safe budget limits, and
+   `config_digest`. Reviewer model is resolved from the selected
+   provider-specific subsection (`qwen.model` today), null only when that
+   provider has no model field. The digest is SHA-256 over UTF-8 canonical JSON
+   with sorted keys and separators `(',', ':')` of exactly this allowlist: engine
+   provider/model/max_turns/timeout_seconds; reviewer provider/model; and
+   budget max_attempts_per_issue/max_executions_per_run/
+   hard_stop_proxy_cost_per_run_usd/proxy_pricing. Missing reviewer model is
+   encoded as null. The projection excludes every other config field,
+   particularly `ANTHROPIC_API_KEY`, auth tokens, passwords, environment
+   mappings, validation commands/env, repository paths, and all endpoints.
+   It never serializes raw configuration into an event.
+7. Once RunStarted exists, every controlled terminal exit appends
+   exactly one `RunFinished` with one of `COMPLETED`, `CHECKOUT_FAILED`,
+   `REVIEWER_UNREACHABLE`, `BASELINE_FAILED`, `INGEST_FAILED`, `HALTED`, or
+   `INTERRUPTED`; safe reason/detail fields are defined by the Doc 03
+   amendment. Failures before normal-run entry have no RunStarted and hence
+   no RunFinished. RunFinished is never synthesized after abrupt process
+   death; recovery may describe crash facts only through existing recovery
+   mechanisms.
+8. No-downgrade policy: a log containing either run type requires a Draindeck
+   version that recognizes both. Operators must not replay or write it with an
+   older binary; release documentation and runtime compatibility checks make
+   this a refusal, not an implied compatibility promise.
+
+**Required Doc 03 amendment before implementation.** It must define the two
+event rows, their envelope fields, payload schemas, controlled outcomes,
+the exact config-digest projection, ordering relative to issue ingestion,
+replay/projection treatment, and the no-downgrade operational policy. It
+must state that pre-normal-run failures carry neither lifecycle event. It
+must not silently reinterpret historical
+events or change existing issue/execution transitions.
+
+**Alternatives rejected.**
+
+- Direct Dashboard log parsing: bypasses ADR-25's torn-tail and
+  forward-compatible evidence boundary.
+- File watching and every-process indexing: nondeterministic across Windows
+  filesystems and conflicts with SQLite's single-writer reality.
+- Automatic target-config discovery: duplicates core path-resolution logic and
+  makes registration unexpectedly read arbitrary repository configuration.
+- Timestamp-only run IDs: known same-second collision.
+- Blacklisting secrets in a digest: new secret-shaped fields could leak;
+  allowlisting safe fields is the safer boundary.
+- Treating new run types as backward compatible: existing strict schema replay
+  rejects them, so that claim would cause operator data loss or failed runs.
+
+**Consequences and acceptance gate.** Before any source change, this ADR,
+docs/19, and the Doc 03 amendment require review and explicit acceptance.
+Implementation then proceeds in small verified commits: Dashboard foundation,
+registration/indexing, API/SSE, UI/artifacts, then separately the core
+run-event change. The core change must add focused ordering/digest/collision/
+controlled-exit/abrupt-death/no-downgrade tests, the full unit suite, and
+crash harness seeds 42 and 1337. Existing logs without run events remain
+valid and receive no fabricated lifecycle history.
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml
