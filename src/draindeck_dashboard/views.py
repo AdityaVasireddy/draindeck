@@ -7,6 +7,7 @@ issue/execution IDs from what is, semantically, a different log.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Optional
 
@@ -74,3 +75,29 @@ def list_evidence(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset:
         for r in rows
     ]
     return {"items": items, "limit": limit, "offset": offset, "total": total}
+
+
+def get_execution_finished_payload(conn: sqlite3.Connection, repo_id: int,
+                                    execution_id: str) -> Optional[dict]:
+    """The decoded payload of the latest OK `ExecutionFinished` evidence
+    row for this execution, scoped to the repository's current identity
+    generation -- the source of `transcript_path`/`start_commit`/
+    `end_commit` for the Phase 6 artifact/diff endpoints. None if no such
+    evidence exists yet, or its payload failed to decode (never raises)."""
+    generation_id = _current_generation_id(conn, repo_id)
+    if generation_id is None:
+        return None
+    row = conn.execute(
+        "SELECT payload_json FROM evidence WHERE repository_id = ? "
+        "AND identity_generation_id = ? AND execution_id = ? "
+        "AND event_type = 'ExecutionFinished' AND integrity = 'OK' "
+        "ORDER BY event_id DESC LIMIT 1",
+        (repo_id, generation_id, execution_id),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    try:
+        payload = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None

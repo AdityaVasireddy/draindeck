@@ -10,13 +10,15 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
+from .artifacts import artifact_root_for_log, resolve_contained_artifact
 from .config import DashboardConfig
 from .db import connect_and_init
-from .errors import register_error_handlers
+from .diffs import compute_diff
+from .errors import NotFoundError, register_error_handlers
 from .health import build_health
 from .repositories import (
     delete_repository,
@@ -32,7 +34,12 @@ from .security import (
     SecurityHeadersMiddleware,
 )
 from .sse import ChangeTailer, stream_events
-from .views import list_evidence, list_executions, list_issues
+from .views import (
+    get_execution_finished_payload,
+    list_evidence,
+    list_executions,
+    list_issues,
+)
 
 _PAGE_LIMIT_DEFAULT = 50
 _PAGE_LIMIT_MAX = 200
@@ -141,6 +148,30 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     ) -> dict:
         get_repository(app.state.db, repo_id)
         return list_evidence(app.state.db, repo_id, limit=limit, offset=offset)
+
+    @app.get("/api/repositories/{repo_id}/executions/{execution_id}/transcript")
+    async def execution_transcript(repo_id: int, execution_id: str) -> PlainTextResponse:
+        repo = get_repository(app.state.db, repo_id)  # 404 if repo missing
+        if repo["logPath"] is None:
+            raise NotFoundError("repository has no configured log path")
+        payload = get_execution_finished_payload(app.state.db, repo_id, execution_id)
+        if payload is None:
+            raise NotFoundError("no ExecutionFinished evidence found for this execution")
+        stored_path = payload.get("transcript_path")
+        if not isinstance(stored_path, str):
+            raise NotFoundError("execution evidence has no transcript_path")
+        root = artifact_root_for_log(repo["logPath"])
+        resolved = resolve_contained_artifact(root, stored_path)
+        return PlainTextResponse(resolved.read_text(encoding="utf-8", errors="replace"))
+
+    @app.get("/api/repositories/{repo_id}/executions/{execution_id}/diff")
+    async def execution_diff(repo_id: int, execution_id: str) -> dict:
+        repo = get_repository(app.state.db, repo_id)  # 404 if repo missing
+        payload = get_execution_finished_payload(app.state.db, repo_id, execution_id)
+        if payload is None:
+            raise NotFoundError("no ExecutionFinished evidence found for this execution")
+        return compute_diff(
+            repo["projectPath"], payload.get("start_commit"), payload.get("end_commit"))
 
     @app.get("/api/events")
     async def events(request: Request, after: Optional[int] = None) -> StreamingResponse:
