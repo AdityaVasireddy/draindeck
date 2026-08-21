@@ -466,3 +466,66 @@ def test_checkpoint_stores_last_observed_availability(tmp_path, monkeypatch):
         "SELECT availability FROM checkpoints WHERE repository_id = ?", (repo_id,)
     ).fetchone()[0]
     assert availability == "AVAILABLE"
+
+
+# ── regression: stale checkpoint mid-tick (independent review finding) ──
+
+def test_cursor_replaced_mid_tick_reuses_the_generation_opened_earlier_this_tick(tmp_path, monkeypatch):
+    """A previous version passed the START-of-tick checkpoint (captured
+    once, before the per-page loop) into _handle_cursor_log_replaced. If
+    page 1 of a multi-page tick opened a brand-new generation and
+    committed, and CURSOR_LOG_REPLACED then hit on page 2+, the stale
+    checkpoint made the identity comparison skip entirely, unconditionally
+    opening a REDUNDANT second generation and orphaning page 1's
+    already-committed evidence under the first. Fixed by re-fetching the
+    checkpoint at the point of the exception, after all earlier pages'
+    commits are already durable."""
+    log_path = tmp_path / "events.jsonl"
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo_id = _register(conn, tmp_path, log_path)
+
+    calls = {"n": 0}
+
+    def fake_paginated(executable, log_path_arg, *, after, limit):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "records": [{
+                    "cursor": "c1", "integrity": "OK", "eventId": 1,
+                    "eventType": "IssueCreated", "schemaVersion": 1,
+                    "recordHash": "h1", "lengthBytes": 10, "recordBytesBase64": None,
+                }],
+                "nextCursor": "c1-next",
+                "hasMore": True,
+                "metadata": {
+                    "availability": "AVAILABLE", "contentLineage": "lineage-A",
+                    "fileGeneration": {"device": 1, "fileIndex": 1, "available": True},
+                },
+            }
+        raise ObserverError("CURSOR_LOG_REPLACED", "replaced")
+
+    def same_identity_probe(executable, log_path_arg, *, after, limit):
+        return {"metadata": {
+            "availability": "AVAILABLE", "contentLineage": "lineage-A",
+            "fileGeneration": {"device": 1, "fileIndex": 1, "available": True},
+        }}
+
+    monkeypatch.setattr(poller, "invoke_observer_events", fake_paginated)
+    monkeypatch.setattr(indexer, "invoke_observer_events", same_identity_probe)
+
+    outcome = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+
+    assert outcome.status == "cursor_replaced_retained"
+    generation_count = conn.execute(
+        "SELECT COUNT(*) FROM identity_generations WHERE repository_id = ?", (repo_id,)
+    ).fetchone()[0]
+    assert generation_count == 1  # no redundant second generation opened
+
+    checkpoint = conn.execute(
+        "SELECT identity_generation_id FROM checkpoints WHERE repository_id = ?", (repo_id,)
+    ).fetchone()
+    evidence_count = conn.execute(
+        "SELECT COUNT(*) FROM evidence WHERE repository_id = ? AND identity_generation_id = ?",
+        (repo_id, checkpoint[0]),
+    ).fetchone()[0]
+    assert evidence_count == 1  # page 1's evidence is not orphaned

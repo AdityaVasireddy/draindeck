@@ -77,6 +77,12 @@ def retry_directive() -> str:
     return f"retry: {RETRY_MS}\n\n"
 
 
+# Sentinel pushed into a subscriber's queue when it overflows (falls more
+# than REPLAY_CAP changes behind) -- a plain object so it is never
+# mistaken for a real ChangeRecord.
+_OVERFLOW = object()
+
+
 class ChangeTailer:
     """One instance per process. Polls the changes table on an interval
     and fans new rows out in memory to every subscriber's queue."""
@@ -104,7 +110,11 @@ class ChangeTailer:
         return [ChangeRecord(*r) for r in rows]
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
+        # Bounded at REPLAY_CAP: a subscriber this far behind is already in
+        # "needs a resync" territory (docs/19's own replay-cap threshold),
+        # so unbounded growth for a slow/stalled client is never the
+        # alternative -- see the QueueFull handling in poll_once below.
+        q: asyncio.Queue = asyncio.Queue(maxsize=REPLAY_CAP)
         self._subscribers.add(q)
         return q
 
@@ -126,7 +136,22 @@ class ChangeTailer:
         self._last_seen = new_max
         for q in list(self._subscribers):
             for row in rows:
-                q.put_nowait(row)
+                try:
+                    q.put_nowait(row)
+                except asyncio.QueueFull:
+                    # This subscriber has fallen too far behind to catch up
+                    # incrementally. Clear its backlog and hand it a single
+                    # overflow sentinel instead: stream_events turns that
+                    # into a forced resync, and the client's reconnect gets
+                    # a real resync decision from actual DB state -- never
+                    # unbounded queue growth for a slow/stalled consumer.
+                    while not q.empty():
+                        try:
+                            q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    q.put_nowait(_OVERFLOW)
+                    break
         return len(rows)
 
     async def run_forever(self) -> None:
@@ -165,6 +190,12 @@ async def stream_events(tailer: ChangeTailer, after: Optional[int]) -> AsyncIter
         while True:
             try:
                 record = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+                if record is _OVERFLOW:
+                    # Fell more than REPLAY_CAP changes behind (a slow or
+                    # stalled consumer) -- force a resync rather than ever
+                    # growing the queue unbounded.
+                    yield resync_event()
+                    return
                 yield record.to_sse_event()
             except asyncio.TimeoutError:
                 yield heartbeat_event()

@@ -185,3 +185,60 @@ def test_stream_events_sends_heartbeat_when_idle(tmp_path, monkeypatch):
         await gen.aclose()
 
     asyncio.run(run())
+
+
+# ── overflow protection (independent review finding) ────────────────────
+
+def test_subscriber_queue_is_bounded_at_replay_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(sse, "REPLAY_CAP", 3)
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    tailer = sse.ChangeTailer(conn)
+    q = tailer.subscribe()
+    assert q.maxsize == 3
+
+
+def test_a_stalled_subscriber_gets_an_overflow_sentinel_not_unbounded_growth(tmp_path, monkeypatch):
+    monkeypatch.setattr(sse, "REPLAY_CAP", 2)
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    tailer = sse.ChangeTailer(conn)
+    q = tailer.subscribe()  # never drained -- simulates a stalled consumer
+
+    for i in range(10):
+        _insert_change(conn, entity_id=str(i))
+    tailer.poll_once()
+
+    # Bounded: never more than maxsize items, and the last one is the
+    # overflow sentinel rather than an ever-growing backlog.
+    assert q.qsize() <= 2
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    assert items[-1] is sse._OVERFLOW
+
+
+def test_stream_events_turns_overflow_into_a_forced_resync(tmp_path, monkeypatch):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    tailer = sse.ChangeTailer(conn)
+
+    async def run():
+        gen = sse.stream_events(tailer, after=None)
+        first = await gen.__anext__()
+        assert first == "retry: 3000\n\n"
+
+        # Drive the generator to subscribe(), then inject overflow directly
+        # -- exercising the exact queue-consumption branch without needing
+        # a real flood of REPLAY_CAP+1 changes.
+        next_task = asyncio.ensure_future(gen.__anext__())
+        await asyncio.sleep(0.02)
+        assert tailer.subscriber_count() == 1
+
+        for q in list(tailer._subscribers):
+            q.put_nowait(sse._OVERFLOW)
+
+        resync = await asyncio.wait_for(next_task, timeout=1)
+        assert "CHANGE_RESYNC_REQUIRED" in resync
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+        assert tailer.subscriber_count() == 0
+
+    asyncio.run(run())

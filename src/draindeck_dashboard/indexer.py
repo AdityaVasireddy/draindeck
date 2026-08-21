@@ -303,7 +303,17 @@ async def ingest_repository_tick(conn: sqlite3.Connection, repo_id: int,
                                    records_ingested=records_ingested, detail=_HALTED_DETAIL)
     except ObserverError as e:
         if e.code == "CURSOR_LOG_REPLACED":
-            return await _handle_cursor_log_replaced(conn, repo_id, executable, log_path, checkpoint)
+            # Re-fetch rather than reuse the `checkpoint` captured at tick
+            # start: an earlier page in THIS SAME tick may already have
+            # opened a new generation and committed (each page is its own
+            # committed transaction, so a fresh read here is durable, not
+            # racy). Passing the stale start-of-tick value would make the
+            # generation-identity comparison below compare against the
+            # WRONG generation, opening a redundant one and orphaning the
+            # evidence that earlier page already committed.
+            current_checkpoint = _current_checkpoint(conn, repo_id)
+            return await _handle_cursor_log_replaced(
+                conn, repo_id, executable, log_path, current_checkpoint)
         return TickOutcome(status="error", detail=e.code)
 
     return TickOutcome(status="ok", pages_ingested=pages_ingested, records_ingested=records_ingested)
