@@ -119,6 +119,63 @@ for a recovery-only pass without launching fresh work. Both subcommands
 require the human authorization described below before they touch a real
 target repository, spend, or commit anything.
 
+## Version compatibility (no-downgrade policy)
+
+Logs containing `RunStarted` or `RunFinished` events (the run-lifecycle
+amendment to `docs/03-state-machine-and-event-schema.md`) must not be
+replayed or opened for writing by a Draindeck runtime binary older than the
+one that introduced these event types. `EventLog` and `ReadOnlyEventLog` —
+the strict writer and read-only-replay paths used by `run`, `recover`,
+`verify-log`, and `show-state` — resolve every event's `type` through a
+closed enum; on a complete log, the strict scan rejects the unrecognized
+lifecycle type before the file is ever reopened for appending. `EventLog`
+does run its existing torn-tail repair before that scan, so if the log's
+physical last line is itself an incomplete, not-yet-`fsync`'d
+`RunStarted`/`RunFinished` write, that line may be quarantined/truncated
+before the refusal is reached — a narrow, pre-existing mechanism unrelated
+to this amendment, not something it closes. Operators must therefore never
+open a log containing any `RunStarted`/`RunFinished` event with a Draindeck
+binary older than the one that introduced this amendment, regardless of
+that mechanism's exact boundary.
+
+`draindeck observe` (ADR-25's read-only external observer, used only by
+Draindeck Dashboard) is intentionally exempt from this refusal: it reads
+event bytes directly without resolving `type` against the runtime's enum
+at all, so it stays forward-compatible with logs from a newer runtime
+version and never blocks read-only observation on a version mismatch. This
+exemption is deliberate and scoped to that one bytes-direct, read-only
+path — it does not extend to `EventLog`/`ReadOnlyEventLog`.
+
+## Draindeck Dashboard (optional, local read-only UI)
+
+A local, read-only FastAPI/Uvicorn web UI over one or more target repos'
+event logs, consumed only through the ADR-25 `draindeck observe` CLI —
+Dashboard never opens a Draindeck workspace/log mutex, parses
+`events.jsonl` directly, or invokes Git itself. See
+`docs/19-dashboard-part-2-spec.md` for the full contract.
+
+Install the optional extra and start it from Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dashboard]"
+.\.venv\Scripts\draindeck-dashboard.exe --config dashboard.local.yaml
+```
+
+`dashboard.local.yaml` is a small, Dashboard-only config, separate from a
+target repo's `config.local.yaml`:
+
+```yaml
+host: "127.0.0.1"        # the only accepted value; binding is not configurable
+port: 8420                 # default; any free local port is fine
+db_path: "C:\\path\\to\\dashboard.sqlite3"       # absolute; Dashboard-owned SQLite DB
+observer_executable: "C:\\Projects\\Draindeck\\.venv\\Scripts\\draindeck.exe"  # absolute
+```
+
+Once running, open `http://127.0.0.1:8420/` and register a target
+repository's project path (and, optionally, an explicit log path) through
+the UI. Dashboard polls automatically in the background — no manual
+ingestion step is needed.
+
 ## Key concepts
 
 - **Event log is truth.** The event log (append-only, fsync'd, monotonic

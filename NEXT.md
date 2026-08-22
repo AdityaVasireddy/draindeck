@@ -12,6 +12,55 @@
 
 ## 1. Current state (verified 2026-08-21)
 
+- **Dashboard Part 2 (ADR-26): Phase 7 (run lifecycle events) complete on
+  branch `dashboard`** (2026-08-21, commits `fd2b9eb`..`7ff1033`, on top of
+  Phases 1-6 below): the frozen Doc 03 amendment (`RunStarted`/`RunFinished`,
+  commits `a8cfdbb`, `9113ec5`, `ecca3cf`) is now implemented. Core:
+  `EventType.RUN_STARTED`/`RUN_FINISHED` added (`RunStarted` is
+  `Kind.INTENT`, deliberately excluded from `RESOLUTION_OF` so recovery
+  never fabricates a `RunFinished` for an orphaned `RunStarted`);
+  validation-only `StateProjection` handlers enforce the exact closed
+  payload/envelope schemas (canonical lowercase UUID4 run IDs, valid UTC
+  timestamps, 64-hex config digest, finite non-bool budget values, the
+  seven-outcome enum, null `detail`); `main.py` generates
+  `run-<UTC-second>-<uuid4>` IDs, emits exactly one `RunStarted` (fsync'd
+  before checkout/reviewer-health/baseline/ingestion) and exactly one
+  `RunFinished` per controlled exit (`CHECKOUT_FAILED`,
+  `REVIEWER_UNREACHABLE`, `BASELINE_FAILED`, `INGEST_FAILED`, `COMPLETED`,
+  `HALTED`, `INTERRUPTED`), with `COMPLETED`/`INTERRUPTED` decided by
+  control-flow path rather than exit code; `config.py` gained field
+  validators rejecting empty engine/reviewer models and booleans/non-finite
+  values in budget fields, so a config that cannot produce a Doc-03-valid
+  `RunStarted` is rejected before any lifecycle event is even constructed,
+  and `main.py` additionally re-validates every constructed event through
+  the same canonical `StateProjection` handlers immediately before
+  `log.append` (defense in depth, not a second implementation). Dashboard:
+  a new paginated `/api/repositories/{id}/runs` endpoint and UI section
+  render every observed run — including a `RunStarted` followed by an
+  early failure with zero executions — showing provider/model/budget/
+  config digest/outcome, or the literal `"no controlled finish observed"`
+  for an unresolved run (never "Running", since ADR-25 gives Dashboard no
+  liveness signal); the existing per-execution `runMetadata` fallback
+  (`"run metadata unavailable (legacy/ambiguous)"`) is preserved unchanged.
+  Two independent adversarial reviews found and fixed three real issues
+  (Dashboard's tolerant reducer under-validating malformed/duplicate
+  RunStarted/RunFinished payloads twice, and a "first-observed-wins"
+  duplicate-handling bug that could permanently hide a later valid record
+  behind an earlier malformed one) — all with regression tests. Verified:
+  **757 unit+dashboard tests passed** (560 unit, 197 dashboard), **crash
+  harness `ALL 60 SCENARIOS PASSED` on both seed 42 and seed 1337**
+  (re-run against the final code), a dedicated abrupt-death fixture
+  (`tests/crash/run_lifecycle_harness.py`, real git + real `EventLog` +
+  real `recover()`, two successive recovery passes) confirming `recover()`
+  never fabricates a `RunFinished` for an orphaned `RunStarted`,
+  `git diff --check` clean, and live browser smoke tests for both a normal
+  COMPLETED run and an early-failure (`CHECKOUT_FAILED`) run with zero
+  executions. Working tree clean after both commits (confirmed via
+  `git status --short --branch`). No-downgrade policy (README "Version
+  compatibility"): `EventLog`/`ReadOnlyEventLog` refuse an unrecognized
+  event type on the strict writer/replay path; `draindeck observe` (ADR-25)
+  is intentionally exempt, being bytes-direct and read-only. Full detail:
+  `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-complete.md`.
 - **Dashboard Part 2 (ADR-26): Phases 1-6 built on branch `dashboard`**
   (2026-08-21, commits `e989b3b`..`15ed193`): ADR-26 accepted (docs/08
   §5h, PROPOSED→ACCEPTED) and docs/19 filed as its contract; then the
@@ -35,10 +84,10 @@
   tests\dashboard -q` 150/150, `pytest tests\unit -q` 445/445 (unchanged
   — no `src/runtime` file touched, confirmed by a dedicated dependency-
   carveout test), `git diff --check` clean at every commit, plus three
-  live manual browser/DB smoke tests. **Not yet built:** Phase 7
-  (RunStarted/RunFinished — separately gated, needs its own Doc 03
-  amendment and explicit acceptance before any source change). Full
-  detail, decisions, and open questions:
+  live manual browser/DB smoke tests. Phase 7 (RunStarted/RunFinished) was
+  separately gated at the time this entry was written; it is now also
+  complete — see the entry immediately below. Full detail, decisions, and
+  open questions for Phases 1-6:
   `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-phases-1-5.md`.
 - **Read-only external observer CLI shipped, then remediated**
   (`draindeck observe events`/`observe status`, SPEC.md / ADR-25 +
@@ -167,27 +216,37 @@
    (117) is far below the current 235. Flagging for a future CLAUDE.md-scoped
    pass, not fixed here.
 
-## 3. Verify commands (updated 2026-08-19)
+## 3. Verify commands (updated 2026-08-21)
 
-- Unit: `.venv\Scripts\python.exe -m pytest tests\unit -q` — **393 passed**,
-  verified live this session (CLAUDE.md's "expect 117" is stale, see item 5
-  above).
+- Unit: `.venv\Scripts\python.exe -m pytest tests\unit -q` — **560 passed**,
+  verified live this session (Dashboard Part 2 Phase 7; see §1 above).
+  CLAUDE.md's "expect 235" is stale, see §2 item 5 above.
 - Durability gate: `.venv\Scripts\python.exe tests\crash\harness.py %TEMP%\ch
   <seed>` for `<seed>` in `42`, `1337` — expect `ALL 60 SCENARIOS PASSED` on
-  both. Verified live this session (see §1, resolve-item entry) — both seeds
+  both. Verified live this session against the Phase 7 code — both seeds
   independently re-run to completion.
+- Lifecycle abrupt-death harness: `.venv\Scripts\python.exe
+  tests\crash\run_lifecycle_harness.py %TEMP%\rlh` — expect `PASS` (proves
+  `recover()` never fabricates a `RunFinished` for an orphaned
+  `RunStarted`, across two successive recovery passes). Verified live this
+  session.
 - Config sanity (no engine/reviewer call): `.venv\Scripts\python.exe -m
   runtime.main check-config config.local.yaml`.
 - Read-only state inspection: `.venv\Scripts\python.exe -m runtime.main
   verify-log --log state\events.jsonl` / `show-state --log state\events.jsonl`.
 - Dashboard suite: `.venv\Scripts\python.exe -m pytest tests\dashboard -q` —
-  **150 passed**, verified live 2026-08-21 (see §1 Dashboard entry above).
+  **197 passed**, verified live 2026-08-21 (Phase 7; see §1 above).
 
 ## 4. Pointer index
 
+- **Dashboard Part 2, complete (Phases 1-7, run lifecycle events shipped):**
+  `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-complete.md`. Governing
+  contracts: `docs/19-dashboard-part-2-spec.md` (Dashboard) and the Doc 03
+  amendment (`docs/03-state-machine-and-event-schema.md`, "Amendment — run
+  lifecycle events") for the core runtime; decision record: `docs/08` §5h.
 - **Dashboard Part 2, Phases 1-5 (ADR-26 acceptance through API/SSE/UI):**
-  `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-phases-1-5.md`. Governing
-  contract: `docs/19-dashboard-part-2-spec.md`; decision record: `docs/08` §5h.
+  `docs/handoffs/HANDOFF_2026-08-21_dashboard-part-2-phases-1-5.md` —
+  superseded by the complete handoff above for anything it conflicts with.
 - **ADR-19 closure, both samples:** `docs/08-session-0-closure-and-adr-amendments.md` §4.
 - **Backlog drain to terminal state, reviewer-parser bug discovery:**
   `docs/handoffs/HANDOFF_2026-08-14_session44-backlog-drained.md`.
