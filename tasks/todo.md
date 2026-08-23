@@ -20,7 +20,7 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
 - [x] Unit 12 — Executions, transcript, and diff workspace
 - [x] Unit 13 — Evidence explorer/detail and visual analytics
 - [x] Unit 14 — About & Safety, exhaustive states, responsive hardening
-- [ ] Unit 15 — Scale, security, full suites, real-browser acceptance
+- [x] Unit 15 — Scale, security, full suites, real-browser acceptance
 - [ ] Unit 16 — Independent reviews, remediation, final documentation/handoff
 
 ## Definition-of-done evidence

@@ -1385,7 +1385,156 @@ page's non-ideal states were audited and confirmed correct, and the one
 real gap found (dialog focus-return) is fixed and live-verified on both
 the Cancel and Escape paths.
 
-### Unit 15–16
+### Unit 15 — Scale, security, and full verification (2026-08-23)
+
+**Files:** `tests/dashboard/scale/seed_fixture.py` (new -- deterministic
+20/1,000/2,000/10,000/100,000 repos/issues/runs/executions/evidence
+fixture, seeded 0.9s in one explicit transaction), `tests/dashboard/scale/
+measure_performance.py` (new -- p95 measurement against docs/27 SS14's
+budgets), `src/draindeck_dashboard/api_queries.py` (two real fixes, both
+below), `tests/dashboard/test_api_queries.py` (2 new tests),
+`tests/dashboard/test_security_hardening.py` (new, 5 tests).
+
+**Scale fixture and performance acceptance:** built the approved
+representative fixture directly into the Dashboard's own v2 tables (never
+through a real observer/target repo, per docs/27 SS13.5) and measured
+every endpoint docs/27 SS14 names via `TestClient`, warm-up 3 + 20
+samples, p95. All 12 endpoints passed on the first measurement after the
+fixes below (see full table in the commands section) -- list/search
+endpoints ranged 2.0-32.9ms against a 300ms budget, detail/timeline/
+topology ranged 1.9-8.4ms against a 200ms budget, both comfortably inside
+docs/27 SS14. `EXPLAIN QUERY PLAN` on the evidence keyset query at 100,000
+rows confirmed `SEARCH e USING INTEGER PRIMARY KEY (rowid<?)` -- no table
+scan.
+
+**Real bug found and fixed (N+1, flagged as a residual item since Unit
+4):** `cross_repository_executions(group_by="issue")` issued 2 extra SQL
+statements per issue group on the page (a `by_state` count query and a
+"newest N" preview query, each re-deriving `identity_generation_id` via a
+redundant correlated subquery) -- bounded by `limit` so never unbounded,
+but still O(groups) per page. A new test asserts a fixed statement count
+via `conn.set_trace_callback`; before the fix, 20 issue groups produced
+42 statements. Fixed by replacing the per-group queries with two
+fixed-cost, page-scoped queries: a `GROUP BY` over a `(repository_id,
+identity_generation_id, issue_id) IN (VALUES ...)` tuple-membership list
+for the state counts, and a `ROW_NUMBER() OVER (PARTITION BY ...)` window
+query for the "newest N" preview -- both still fully parameterized (the
+VALUES placeholders are the only interpolated SQL, matching docs/27
+SS12's "only interpolated fragment is an allowlisted constant" rule,
+since the number of placeholders is server-computed from the page size,
+never from a value). Verified live at 10,000-execution scale (screenshot:
+groupBy=issue renders correct per-issue state breakdowns).
+
+**Real bug found and fixed (row-multiplying JOIN fan-out, found BY the
+scale fixture, not anticipated by any existing test):**
+`repository_summaries`'s "latest run" LEFT JOIN picked the row(s) matching
+`rv.updated_at = (SELECT MAX(...))`, with no tie-breaker -- when the scale
+fixture's 100 runs per repository shared a single seeded timestamp (a
+realistic case under second-resolution timestamps and concurrent/batch
+execution, not just a fixture artifact), the join matched all 100 and
+fanned out the repository row into the result set 100 times, corrupting
+both the returned `items` and the reported `total` (2,000 instead of 20 in
+the live scale check). A new test reproduces the exact tie scenario and
+asserts exactly one row/total=1. Fixed with the same `ROW_NUMBER() OVER
+(PARTITION BY repository_id ORDER BY updated_at DESC, run_id DESC)`
+pattern, breaking ties deterministically on `run_id`. This also improved
+`repository-summaries`' own measured p95 from 32.9ms to 5.6ms, since the
+`COUNT(*)` no longer scans the fanned-out join.
+
+**Unit 2 residual item evaluated (no code change; flagged for Unit 16
+review, not fully closed):** whether fresh-repository backfill should use
+`rebuild_read_models` (full-generation) rather than the per-tick
+incremental path. `read_models.py`'s own module docstring states the
+incremental path handles a previously-OK row's content changing, a
+TORN->OK repair, and (by the same reasoning) a fresh append "correctly by
+construction." That resolves the Unit 2 fresh-registration question:
+correct, by the code's own documented invariant. But confirmed via `grep`
+that `rebuild_read_models` is never called anywhere in `indexer.py` or
+elsewhere in `src/`, only exercised directly by `test_read_models.py` --
+and docs/27 SS8.4 separately states "a previously OK row changing hash,
+event ID, decoded content or integrity, or a lower/non-monotonic
+projectable event schedules an off-thread scoped rebuild," which reads as
+a specific, currently-unimplemented trigger, distinct from the general
+"incremental handles it by construction" claim. This is a genuine,
+unresolved discrepancy between docs/27 SS8.4's text and the shipped
+code's own rationale -- not adjudicated here, since resolving it either
+way (wiring a new call site, or amending docs/27's wording) is an
+architecture-level decision requiring an ADR (CLAUDE.md), out of Unit
+15's scope and blast radius. The `tasks/todo.md` definition-of-done item
+"Normal TORN->OK repair is incremental; unsafe OK mutation rebuild is
+lease-owned/off-thread" should NOT be checked off on the strength of this
+finding alone -- Unit 16's independent contract-honesty review should
+make the explicit call.
+
+**Security tests added (`test_security_hardening.py`):** traversal-shaped
+path segments (`../../etc/passwd`, URL-encoded, and a Windows UNC-style
+`..\\..\\windows\\system32`) on the transcript/diff/issue-detail/
+evidence-detail routes all 404 (never 500 or a filesystem read) --
+confirmed by code reading that `execution_id`/`issue_id`/`evidence_id`
+are always DB lookup keys, never concatenated into a filesystem path
+(the actual artifact path is DB-stored and already goes through
+`artifacts.py`'s containment check, tested separately in
+`test_artifacts.py`). A `<script>` tag in an issue title (free-text
+content, unlike a project path which Windows path validation already
+rejects such characters from) round-trips exactly through `/api/issues`
+and `/api/search` as a properly quoted JSON string with an
+`application/json` content-type -- the two properties that actually make
+a JSON API safe. An earlier draft of this test asserted the raw
+`<script>` substring never appeared in the response bytes at all; that
+was a wrong mental model (conflating JSON safety with HTML entity
+escaping, which a JSON API neither needs nor should apply) and was
+corrected before committing, not forced to pass. Every other item on
+docs/27 SS13.2/SS14's security-test list (Host/Origin/CSP/body limits,
+sort/filter allowlists, offset caps, bounded topology/search) was already
+covered by Units 1-12's own test files -- confirmed present by `grep`
+rather than re-implemented.
+
+**Real-browser acceptance (partial, honestly scoped):** ran the full
+100,000-row scale fixture against a live smoke instance. Home page
+(repository list with real attention/availability chips), Evidence
+Explorer (newest record id 100000 correctly first), and Executions
+groupBy=issue (the just-fixed N+1 query, live-verified showing correct
+per-issue state breakdowns like "4 total (ACCEPTED: 1, CRASHED: 1,
+PENDING: 1, VALIDATING: 1)") all rendered correctly with zero console
+errors at default (1024+ CSS px) viewport. `resize_window` to 1024 CSS px
+was independently confirmed genuine (not a stale render) via
+`window.innerWidth`/`scrollWidth` DOM checks in Unit 14 and reused here.
+**Known, previously-logged limitation, reconfirmed:** `resize_window` to
+320/768 CSS px reports success but does not actually change
+`window.innerWidth` in this session (confirmed again directly via a
+`javascript_exec` check) -- pixel-exact 320/768/1024/1440 screenshots,
+200% text-resize reflow, and forced-colors/reduced-motion live spot
+checks remain not independently verified this session. This is the same
+gap flagged in Units 9-14, not a new one; the underlying CSS for these
+states was code-reviewed and confirmed present in Unit 14. Recorded
+honestly rather than claimed as done.
+
+**Commands run:**
+- `pytest tests/dashboard/test_api_queries.py -q` → **29 passed**
+- `pytest tests/dashboard/test_security_hardening.py -q` → **5 passed**
+- `pytest tests/dashboard -q` → **357 passed**
+- `pytest tests/unit tests/dashboard -q` → **917 passed**, 69.63s, 1 pre-existing warning
+- `python tests/dashboard/scale/measure_performance.py <scratch>/scale_fixture.sqlite3` →
+  seeded 20/1,000/2,000/10,000/100,000 in 0.90s; all 12 endpoints PASS
+  (overview 20.8ms, repository-summaries 5.6ms, search 23.6ms, issues
+  list 1.9ms, runs list 2.7ms, executions list 4.0ms, executions
+  groupBy=issue 6.4ms, evidence keyset 9.4ms, repository health 2.9ms,
+  repository issues 8.3ms, issue timeline 2.0ms, issue topology 1.9ms --
+  all against 300ms/200ms budgets)
+- `EXPLAIN QUERY PLAN` on the evidence keyset query at 100,000 rows →
+  `SEARCH e USING INTEGER PRIMARY KEY (rowid<?)`, no scan
+
+**Checkpoint:** the approved scale fixture is reproducible test tooling
+(committed, not a one-off), every documented performance budget is met
+with recorded values, two real defects the fixture surfaced (an N+1
+pattern and a row-multiplying JOIN fan-out) are fixed and verified both
+in isolated tests and live against the 100,000-row fixture, the Unit 2
+residual item is evaluated and documented, and the security-test
+checklist is covered with five new tests plus confirmed pre-existing
+coverage. The 320/768px live-pixel gap is carried forward honestly, not
+silently dropped or claimed complete.
+
+### Unit 16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

@@ -80,16 +80,20 @@ def repository_summaries(conn: sqlite3.Connection, *, limit: int = 50, offset: i
         "  WHERE resolved_at IS NULL GROUP BY repository_id"
         ") ac ON ac.repository_id = r.id "
         "LEFT JOIN ("
-        "  SELECT rv.repository_id, rv.outcome AS latest_outcome, "
-        "    COALESCE(rv.observed_finished_at, rv.observed_started_at) AS latest_run_at "
-        "  FROM run_views rv "
-        "  JOIN checkpoints c2 ON c2.repository_id = rv.repository_id "
-        "    AND c2.identity_generation_id = rv.identity_generation_id "
-        "  WHERE rv.updated_at = ("
-        "    SELECT MAX(rv2.updated_at) FROM run_views rv2 "
-        "    WHERE rv2.repository_id = rv.repository_id "
-        "      AND rv2.identity_generation_id = rv.identity_generation_id"
-        "  )"
+        "  SELECT repository_id, latest_outcome, latest_run_at FROM ("
+        "    SELECT rv.repository_id, rv.outcome AS latest_outcome, "
+        "      COALESCE(rv.observed_finished_at, rv.observed_started_at) AS latest_run_at, "
+        # A tied updated_at (realistic under second-resolution timestamps
+        # and concurrent/batch runs) must still resolve to exactly one row
+        # per repository -- never fan out and multiply the repository in
+        # the outer result set. run_id is an arbitrary but stable
+        # tie-break, not a meaningful ordering.
+        "      ROW_NUMBER() OVER (PARTITION BY rv.repository_id "
+        "        ORDER BY rv.updated_at DESC, rv.run_id DESC) AS rn "
+        "    FROM run_views rv "
+        "    JOIN checkpoints c2 ON c2.repository_id = rv.repository_id "
+        "      AND c2.identity_generation_id = rv.identity_generation_id"
+        "  ) WHERE rn = 1"
         ") lr ON lr.repository_id = r.id"
     )
     sql = (
@@ -338,36 +342,57 @@ def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, of
     )
     total = conn.execute(f"SELECT COUNT(*) {group_base}", params).fetchone()[0]
     group_rows = conn.execute(
-        f"SELECT g.repository_id, g.issue_id, iv.state, iv.title, r.project_path {group_base} "
-        "ORDER BY g.issue_id LIMIT ? OFFSET ?",
+        f"SELECT g.repository_id, g.identity_generation_id, g.issue_id, iv.state, iv.title, "
+        f"r.project_path {group_base} ORDER BY g.issue_id LIMIT ? OFFSET ?",
         [*params, limit, offset],
     ).fetchall()
-    items = []
-    for repo_id, issue_id, issue_state, title, path in group_rows:
-        exec_rows = conn.execute(
-            "SELECT state FROM execution_views WHERE repository_id = ? AND issue_id = ? "
-            "AND identity_generation_id = (SELECT identity_generation_id FROM checkpoints "
-            "WHERE repository_id = ?)",
-            (repo_id, issue_id, repo_id),
-        ).fetchall()
-        by_state: dict = {}
-        for (s,) in exec_rows:
-            by_state[s] = by_state.get(s, 0) + 1
-        newest = conn.execute(
-            "SELECT execution_id FROM execution_views WHERE repository_id = ? AND issue_id = ? "
-            "AND identity_generation_id = (SELECT identity_generation_id FROM checkpoints "
-            "WHERE repository_id = ?) ORDER BY last_event_id DESC LIMIT ?",
-            (repo_id, issue_id, repo_id, _EXECUTION_GROUP_PREVIEW_LIMIT),
-        ).fetchall()
+
+    items = [
+        {"issue": {"issueId": issue_id, "state": issue_state, "title": title},
+         "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]},
+         "totalExecutions": 0, "byState": {}, "newestExecutions": [], "executionsTruncated": False}
+        for repo_id, _gen_id, issue_id, issue_state, title, path in group_rows
+    ]
+    if not group_rows:
+        return _paginate(items, limit=limit, offset=offset, total=total)
+
+    # Two fixed-cost queries covering every group on this page -- never one
+    # pair of queries per group -- using a tuple-membership VALUES list
+    # (still fully parameterized) to scope both the state counts and the
+    # per-group "newest N" preview (via a window function) to exactly the
+    # (repository, generation, issue) triples already selected above.
+    group_keys = [(repo_id, gen_id, issue_id) for repo_id, gen_id, issue_id, *_ in group_rows]
+    values_sql = ", ".join(["(?, ?, ?)"] * len(group_keys))
+    values_params = [v for key in group_keys for v in key]
+
+    by_state_map: dict = {}
+    for repo_id, issue_id, state_, count in conn.execute(
+        "SELECT repository_id, issue_id, state, COUNT(*) FROM execution_views "
+        f"WHERE (repository_id, identity_generation_id, issue_id) IN (VALUES {values_sql}) "
+        "GROUP BY repository_id, issue_id, state",
+        values_params,
+    ).fetchall():
+        by_state_map.setdefault((repo_id, issue_id), {})[state_] = count
+
+    newest_map: dict = {}
+    for repo_id, issue_id, execution_id in conn.execute(
+        "SELECT repository_id, issue_id, execution_id FROM (SELECT repository_id, issue_id, "
+        "execution_id, ROW_NUMBER() OVER (PARTITION BY repository_id, issue_id "
+        "ORDER BY last_event_id DESC) AS rn FROM execution_views "
+        f"WHERE (repository_id, identity_generation_id, issue_id) IN (VALUES {values_sql})) "
+        "WHERE rn <= ? ORDER BY repository_id, issue_id, rn",
+        [*values_params, _EXECUTION_GROUP_PREVIEW_LIMIT],
+    ).fetchall():
+        newest_map.setdefault((repo_id, issue_id), []).append(execution_id)
+
+    for item, (repo_id, _gen_id, issue_id, *_rest) in zip(items, group_rows):
+        by_state = by_state_map.get((repo_id, issue_id), {})
         total_executions = sum(by_state.values())
-        items.append({
-            "issue": {"issueId": issue_id, "state": issue_state, "title": title},
-            "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]},
-            "totalExecutions": total_executions,
-            "byState": by_state,
-            "newestExecutions": [r[0] for r in newest],
-            "executionsTruncated": total_executions > _EXECUTION_GROUP_PREVIEW_LIMIT,
-        })
+        item["totalExecutions"] = total_executions
+        item["byState"] = by_state
+        item["newestExecutions"] = newest_map.get((repo_id, issue_id), [])
+        item["executionsTruncated"] = total_executions > _EXECUTION_GROUP_PREVIEW_LIMIT
+
     return _paginate(items, limit=limit, offset=offset, total=total)
 
 

@@ -118,6 +118,29 @@ def test_repository_summaries_offset_beyond_cap_rejected(tmp_path):
         api_queries.repository_summaries(conn, limit=50, offset=10_001)
 
 
+def test_repository_summaries_latest_run_tie_does_not_duplicate_repository(tmp_path):
+    """Unit 15 (docs/27 SS14 scale testing surfaced this): two runs for the
+    same repository finishing at the exact same second-resolution
+    timestamp is realistic under concurrent/batch execution, not just a
+    fixture artifact -- the "latest run" join must pick exactly one row
+    per repository even when `updated_at` ties, never fan out and
+    multiply the repository in the result set or its total count."""
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO run_views (repository_id, identity_generation_id, run_id, outcome, "
+            "inconsistent, observed_started_at, observed_finished_at, updated_at) "
+            "VALUES (?, ?, ?, 'COMPLETED', 0, '2026-08-23T00:00:00Z', '2026-08-23T01:00:00Z', "
+            "'2026-08-23T01:00:00Z')",
+            (repo_id, gen_id, f"r{i}"),
+        )
+    result = api_queries.repository_summaries(conn, limit=50, offset=0)
+    assert result["total"] == 1
+    assert len(result["items"]) == 1
+    assert result["items"][0]["latestRun"]["outcome"] == "COMPLETED"
+
+
 # --- overview ---
 
 def test_overview_aggregates_across_repositories(tmp_path):
@@ -222,6 +245,47 @@ def test_cross_repository_executions_group_by_execution_is_default(tmp_path):
     )
     result = api_queries.cross_repository_executions(conn, limit=50, offset=0)
     assert result["items"][0]["executionId"] == "e1"
+
+
+def test_cross_repository_executions_group_by_issue_is_not_n_plus_one(tmp_path):
+    """Unit 15 (docs/27 SS13.2's N+1 assertion requirement; flagged as a
+    residual item since Unit 4): the number of SQL statements executed for
+    a groupBy=issue page must not grow with the number of issue groups on
+    that page -- a bounded-but-per-group query pattern still degrades p95
+    at scale even though it can never return unbounded rows."""
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    n_issues = 20
+    for i in range(n_issues):
+        issue_id = f"i{i}"
+        conn.execute(
+            "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
+            "VALUES (?, ?, ?, 'DONE', '2026-08-23T00:00:00Z')", (repo_id, gen_id, issue_id),
+        )
+        for j in range(3):
+            conn.execute(
+                "INSERT INTO execution_views (repository_id, identity_generation_id, execution_id, "
+                "issue_id, state, last_event_id, updated_at) VALUES (?, ?, ?, ?, 'ACCEPTED', ?, "
+                "'2026-08-23T00:00:00Z')",
+                (repo_id, gen_id, f"{issue_id}-e{j}", issue_id, j),
+            )
+
+    statements = []
+    conn.set_trace_callback(statements.append)
+    try:
+        result = api_queries.cross_repository_executions(conn, limit=50, offset=0, group_by="issue")
+    finally:
+        conn.set_trace_callback(None)
+
+    assert result["total"] == n_issues
+    assert len(result["items"]) == n_issues
+    for item in result["items"]:
+        assert item["totalExecutions"] == 3
+        assert item["byState"]["ACCEPTED"] == 3
+        assert len(item["newestExecutions"]) <= 5
+    # A fixed, small number of statements regardless of n_issues -- not
+    # 2 extra queries per issue group (which would be 2*20=40+ here).
+    assert len(statements) <= 6, f"expected O(1) statements, got {len(statements)}: {statements}"
 
 
 # --- evidence keyset pagination ---
