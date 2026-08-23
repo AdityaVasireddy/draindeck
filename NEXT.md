@@ -17,22 +17,22 @@
   ADR-27 (docs/08 §5i), `docs/27-dashboard-redesign-spec.md`, and
   `tasks/plan.md` were explicitly accepted 2026-08-23 (commit `1828f58`),
   with local per-unit checkpoint commits authorized and merge/push still
-  prohibited. Units 0-5 are complete — 877/877 combined suite green.
-  Backend/data layer (Units 0-4: migration, off-thread read models,
-  attention, bounded query layer) and now Unit 5 (search.py plus the full
-  additive REST route surface: overview, repository-summaries, attention,
-  search, cross-repo issues/runs/executions/evidence, single-entity
-  detail routes, timeline/topology) are all done and live-verified twice
-  against Draindeck's own real 843-event log -- most recently
-  `/api/overview` matching NEXT.md's independently recorded backlog
-  counts exactly (74 DONE / 21 NEEDS_DECOMPOSITION / 7 NEEDS_HUMAN issues,
-  28 attention warnings = 21+7, 114 executions). Two flagged, non-blocking
-  residual items carried to Unit 15's scale/query-count check: Unit 2's
-  fresh-registration backfill relying on the incremental per-tick path
-  rather than a dedicated bulk rebuild, and Unit 4's `groupBy=issue`
-  bounded-but-N+1 query pattern. **Next action:** continue with Unit 6
-  (stable UI routing and security preservation) -- this is where the
-  frontend build begins. Full running evidence log, commands, and
+  prohibited. Backend/data layer (Units 0-5) is complete and twice
+  live-verified against Draindeck's own real 843-event log. Unit 6
+  (stable UI routing: explicit 18-route allowlist serving the app shell,
+  /assets-only static mount, legacy /styles.css and /app.js compat
+  routes, unknown paths retain FastAPI's normal 404) is now also done —
+  887/887 combined suite green. User confirmed (2026-08-23, mid-build
+  check-in) continuing autonomously through the remaining frontend units.
+  Two flagged, non-blocking residual items carried to Unit 15's
+  scale/query-count check: Unit 2's fresh-registration backfill relying
+  on the incremental per-tick path rather than a dedicated bulk rebuild,
+  and Unit 4's `groupBy=issue` bounded-but-N+1 query pattern. Real
+  browser verification of the route plumbing is deferred to Unit 7+, once
+  the new visible shell exists (checking it against the still-unreplaced
+  Part 2 UI now would not be meaningful). **Next action:** continue with
+  Unit 7 (design tokens, shell, themes, shared primitives) — the actual
+  visual redesign begins here. Full running evidence log, commands, and
   per-unit detail:
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
   `tasks/todo.md`.

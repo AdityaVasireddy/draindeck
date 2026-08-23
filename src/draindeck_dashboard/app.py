@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
@@ -436,7 +436,40 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    # --- Stable UI routing (Unit 6; docs/27 SS9.1) ---
+    # API routes are already fully registered above this point. Static
+    # assets mount only at /assets (never at "/", so it can never swallow
+    # an unmatched /api/* path into a 404-from-StaticFiles instead of
+    # FastAPI's own routing 404). An explicit allowlist of approved UI
+    # route PATTERNS returns the same semantic app shell for a direct
+    # reload/deep-link; a genuinely unknown path falls through to
+    # Starlette's ordinary 404 -- there is no catch-all mount left to hide
+    # it. Legacy /styles.css and /app.js get their own compatibility
+    # routes since they no longer live under the "/" root.
     if _STATIC_DIR.exists():
-        app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+        app.mount("/assets", StaticFiles(directory=str(_STATIC_DIR)), name="assets")
+
+        @app.get("/styles.css", include_in_schema=False)
+        async def legacy_styles_css() -> FileResponse:
+            return FileResponse(_STATIC_DIR / "styles.css", media_type="text/css")
+
+        @app.get("/app.js", include_in_schema=False)
+        async def legacy_app_js() -> FileResponse:
+            return FileResponse(_STATIC_DIR / "app.js", media_type="application/javascript")
+
+        async def _app_shell() -> FileResponse:
+            return FileResponse(_STATIC_DIR / "index.html", media_type="text/html")
+
+        _ui_route_patterns = [
+            "/",
+            "/repositories", "/repositories/new", "/repositories/{repo_id}",
+            "/repositories/{repo_id}/runs", "/repositories/{repo_id}/runs/{run_id}",
+            "/repositories/{repo_id}/issues", "/repositories/{repo_id}/issues/{issue_id}",
+            "/repositories/{repo_id}/executions", "/repositories/{repo_id}/executions/{execution_id}",
+            "/repositories/{repo_id}/evidence", "/repositories/{repo_id}/evidence/{evidence_id}",
+            "/attention", "/runs", "/issues", "/executions", "/evidence", "/about",
+        ]
+        for pattern in _ui_route_patterns:
+            app.add_api_route(pattern, _app_shell, methods=["GET"], include_in_schema=False)
 
     return app

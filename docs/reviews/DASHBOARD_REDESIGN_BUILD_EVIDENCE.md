@@ -595,7 +595,46 @@ green; representative live JSON inspected and cross-checked against an
 independent source (NEXT.md's recorded backlog counts) for exact truth
 language -- no illustrative/placeholder values anywhere in the responses.
 
-### Unit 6–16
+### Unit 6 — Stable UI routing and security preservation (2026-08-23)
+
+**Files:** `src/draindeck_dashboard/app.py`,
+`src/draindeck_dashboard/static/index.html`,
+`tests/dashboard/test_app_ui_routes.py` (new).
+
+**Test-first:** 10 tests in new `test_app_ui_routes.py` (RED: 4 failed --
+the 18-route allowlist test, `/assets` mount test, nested-reload security
+headers test, and no-JS fallback test, since none of that existed yet).
+
+**Implementation:** Removed the old catch-all `app.mount("/",
+StaticFiles(...))`. API routes were already fully registered earlier in
+`create_app`; static assets now mount only at `/assets` (so an unmatched
+`/api/*` path can never be swallowed by `StaticFiles`'s own 404 instead
+of Starlette's routing 404 -- verified directly). An explicit allowlist
+of the 18 approved UI route patterns from docs/27 §4 (home, repositories/
+new/detail, attention, cross-repo and per-repo runs/issues/executions/
+evidence explorers, per-entity detail routes, about) each registers a
+`GET` returning the same `index.html` app shell, so a direct
+reload/deep-link to any of them works -- `/repositories/new` is
+registered before the parameterized `/repositories/{repo_id}` so the
+literal route wins (Starlette matches in registration order). A
+genuinely unknown path now falls through to FastAPI's ordinary 404 (no
+catch-all left to hide it). `/styles.css` and `/app.js` get their own
+explicit compatibility routes since they no longer live under a root
+mount. Added a `<noscript>` fallback notice to `index.html`.
+
+**Commands run:**
+- `pytest tests/dashboard/test_app_ui_routes.py -q` → 10 passed
+- `pytest tests/dashboard -q` → **327 passed**
+- `pytest tests/unit tests/dashboard -q` → **887 passed**, 78.10s, 1 pre-existing warning
+
+**Checkpoint:** nested reloads pass under TestClient with security
+headers/CSP intact; existing health/security/API routes unchanged
+(regression-free per the combined suite). Real browser deep-link/reload
+verification deferred to Unit 7+, once the new visible shell exists --
+verifying route plumbing against the still-unreplaced Part 2 UI would not
+be a meaningful visual check yet.
+
+### Unit 7–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.
