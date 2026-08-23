@@ -23,12 +23,21 @@ from typing import Optional
 from . import lease
 from .indexer import ingest_repository_tick
 from .poller import NORMAL_INTERVAL_SECONDS, next_backoff_seconds
+from .read_model_worker import ReadModelWorker
 
 # Statuses that must back off even if the checkpoint's last-known
 # availability is stale (docs/19: "transient/unavailable probes retain
 # the checkpoint and back off"; a hard observer error is the same class).
 _BACKOFF_STATUSES = frozenset({"error", "cursor_replaced_retained"})
 _BACKOFF_AVAILABILITIES = frozenset({"OFFLINE", "NOT_INITIALIZED"})
+
+
+def _db_path_of(conn: sqlite3.Connection) -> str:
+    """The on-disk path backing this connection's main database -- lets
+    the Scheduler open the read-model worker's own dedicated connection
+    to the SAME file without changing the Scheduler's public constructor
+    signature (still just conn + executable, as every caller/test expects)."""
+    return conn.execute("PRAGMA database_list").fetchone()[2]
 
 
 class Scheduler:
@@ -43,6 +52,10 @@ class Scheduler:
         self._is_leader = False
         self._repo_tasks: dict[int, asyncio.Task] = {}
         self._lease_task: Optional[asyncio.Task] = None
+        # Off-thread lease-owned writer (ADR-27 decision 8): its own
+        # dedicated connection to the same file, so no SQLite write this
+        # Scheduler causes ever executes on the ASGI event loop's thread.
+        self._worker = ReadModelWorker(_db_path_of(conn))
 
     def is_leader(self) -> bool:
         return self._is_leader
@@ -52,6 +65,7 @@ class Scheduler:
 
     def start(self) -> None:
         if self._lease_task is None:
+            self._worker.start()
             self._lease_task = asyncio.create_task(self._lease_loop())
 
     async def stop(self) -> None:
@@ -64,6 +78,7 @@ class Scheduler:
             self._lease_task = None
         await self._stop_all_repo_tasks()
         self._is_leader = False
+        await self._worker.stop()
 
     async def _stop_all_repo_tasks(self) -> None:
         tasks = list(self._repo_tasks.values())
@@ -84,7 +99,12 @@ class Scheduler:
     async def _lease_loop(self) -> None:
         try:
             while True:
-                acquired = lease.acquire_or_renew(self._conn, self._owner_token)
+                # Priority lane: a backed-up ordinary (page/backfill) queue
+                # must never delay this heartbeat past the 10s TTL.
+                acquired = await self._worker.submit(
+                    lambda conn: lease.acquire_or_renew(conn, self._owner_token),
+                    priority=True,
+                )
                 if acquired:
                     self._is_leader = True
                     self._reconcile_repo_tasks()
@@ -138,8 +158,11 @@ class Scheduler:
         try:
             while True:
                 try:
+                    async def _persist(fn, _worker=self._worker):
+                        return await _worker.submit(fn)
                     outcome = await ingest_repository_tick(
-                        self._conn, repo_id, self._observer_executable, log_path)
+                        self._conn, repo_id, self._observer_executable, log_path,
+                        persist=_persist)
                     needs_backoff = self._tick_needs_backoff(repo_id, outcome)
                 except asyncio.CancelledError:
                     raise

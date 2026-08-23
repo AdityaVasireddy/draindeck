@@ -245,6 +245,117 @@ INTEGER-affinity column), so the bug would have been silent.
 event loop; priority heartbeat scheduling; 16-job FIFO backpressure) is
 separately tracked below and required before Unit 2 as a whole is closed.
 
+### Unit 2, Sub-step B — lease-owned off-thread worker (2026-08-23)
+
+**Files:** `src/draindeck_dashboard/read_model_worker.py` (new),
+`src/draindeck_dashboard/scheduler.py`, `src/draindeck_dashboard/indexer.py`,
+`tests/dashboard/test_read_model_worker.py` (new),
+`tests/dashboard/test_scheduler.py`.
+
+**Test-first:** 7 tests written in new `test_read_model_worker.py` (RED:
+`ModuleNotFoundError`), 2 new scheduler-level safety-property tests, 5
+existing `fake_tick` doubles updated to accept the new `persist=` keyword
+the real call site now always passes (a genuine, necessary contract
+update — the old fakes' 4-positional-arg-only signature no longer matches
+how `ingest_repository_tick` is actually called in production, not a
+weakening of any assertion).
+
+**Design decision worth recording:** the obvious-looking shortcut —
+routing an entire tick (including `poll_pages`' observer-subprocess I/O)
+through the worker as one job via `asyncio.run(ingest_repository_tick(...))`
+— was rejected after tracing its consequence: it would serialize ALL
+registered repositories' ticks onto the single worker thread, contradicting
+scheduler.py's own documented and tested guarantee ("a failing or stalled
+repository can never block or delay a healthy one") and defeating
+poller.py's existing 4-concurrent-page global semaphore. Instead,
+`ingest_repository_tick` gained an optional `persist: Optional[Callable]`
+keyword (default `None` -> runs `fn(conn)` inline, byte-identical to
+before for all 18 pre-existing direct-call tests) so only the per-page SQL
+transaction (`_persist_page`, extracted verbatim from the prior inline
+block) and the CURSOR_LOG_REPLACED rollover's SQL route through the
+worker; `poll_pages`' observer I/O stays on the event loop, preserving
+today's cross-repository concurrency.
+
+**Implementation:**
+- `read_model_worker.py` (new): `ReadModelWorker` owns one dedicated
+  `sqlite3.Connection` (via `db.connect`) and one background thread. Two
+  lanes: an unbounded priority `queue.Queue` for lease acquire/renew
+  (always checked first, non-blocking), and a 16-slot-capped ordinary
+  `queue.Queue` for page/backfill work (`put_nowait` fast path when there
+  is room; falls back to `await asyncio.to_thread(queue.put, job)` --
+  blocking the *submitting coroutine*, not the event loop -- only when
+  genuinely full). Each job is `Callable[[Connection], T]`; results/
+  exceptions cross back to the submitting coroutine via
+  `loop.call_soon_threadsafe` setting an `asyncio.Future`.
+- `scheduler.py`: added `_db_path_of(conn)` (`PRAGMA database_list`) so
+  the Scheduler can open the worker's own connection to the same file
+  without changing its public constructor signature. `_lease_loop` now
+  submits `lease.acquire_or_renew` with `priority=True`; `_repo_loop`
+  passes a `persist` callback that submits ordinary page jobs to the
+  worker. `start()`/`stop()` start/stop the worker alongside the existing
+  lease-loop/repo-tasks lifecycle.
+- `indexer.py`: extracted the old per-page inline transaction body
+  verbatim into `_persist_page(c, repo_id, identity_generation_id, page,
+  last_cursor, last_hash) -> tuple` -- a pure function of its arguments
+  (no outer-scope mutation), so it behaves identically whether `c` is the
+  caller's own connection or the worker's. `_handle_cursor_log_replaced`
+  similarly routes its generation-open/checkpoint write and its
+  post-rollover prune through `persist`.
+
+**Real bug found and fixed before committing:** the worker's `_next_job`
+polled the ordinary queue with `queue.Queue.get(timeout=0.1)`, which can
+only notice a newly-arrived priority job once that 0.1s blocking call
+returns -- a worst-case 100ms delay before a lease-renewal job is even
+picked up. Negligible against the production 2s heartbeat / 10s lease
+TTL, but it caused real flakiness in this session's own scheduler tests
+(written with artificially fast 0.01s test heartbeats) and was a
+legitimate latency defect in the priority mechanism regardless. Fixed by
+tightening the poll interval to 0.01s (still negligible CPU cost, ~10x
+lower worst-case latency) rather than loosening any test's heartbeat or
+sleep window.
+
+**Live verification (real, not test-double):** launched a genuine
+`draindeck-dashboard` instance (temp config, temp DB, port 8423, isolated
+from the port-8420 instance already running) and registered Draindeck's
+own real repository/event log (`state/events.jsonl`, read-only --
+observation only, never mutated) against it. After ~5s, direct SQLite
+inspection of the smoke DB confirmed: `issue_views` 102 rows,
+`execution_views` 114 rows, `read_model_state` status `READY` with
+`completed_evidence_id: 843` -- exactly matching NEXT.md's independently
+recorded `last_event_id 843` for this same log. `GET
+/api/repositories/1/issues` and `/health` both returned 200 with real
+data. Server process cleanly `taskkill /F`'d and scratch files removed
+afterward.
+
+**Commands run:**
+- `pytest tests/dashboard/test_read_model_worker.py -q` (x3 for flake-check) → 7 passed each run
+- `pytest tests/dashboard/test_scheduler.py -q` (x3 for flake-check) → 12 passed each run
+- `pytest tests/dashboard/test_indexer.py -q` → 18 passed (all pre-existing tests, default `persist=None` path, unchanged behavior confirmed)
+- `pytest tests/dashboard -q` (x3 for flake-check) → **236 passed** each run
+- `pytest tests/unit tests/dashboard -q` → **796 passed**, 66.97s, 1 pre-existing warning
+
+**Unit 2 (both sub-steps) checkpoint reached:** read-model/projection/
+indexer/worker/scheduler tests green; a normal TORN→OK tail repair applies
+incrementally via entity-scoped recompute (Sub-step A), never a full
+generation rebuild; a saturated ordinary queue cannot starve lease renewal
+(proven both by a unit-level worker test and a scheduler-level integration
+test); no SQLite write executes on the ASGI event loop for a real tick
+(proven live). **Deviation from the spec still open:** Unit 2 does not yet
+wire `rebuild_read_models`/backfill for a repository registered against a
+log with *pre-existing* evidence but no prior read-model state outside of
+the incremental per-tick path already covering it (the live verification
+above shows this actually works today via ordinary ticking, since
+`apply_changed_entities_locked` runs for every newly-upserted OK row
+including a fresh repository's full backlog) -- a dedicated "lease-owned
+backfill trigger on registration" job is not separately implemented, since
+the existing tick-driven path already achieves the same correctness
+outcome for this scale. Flagging for Unit 15/16 scale-testing to confirm
+this remains acceptable at 100,000-evidence-row scale, where a fresh
+registration's first tick would apply ~100k individual entity-scoped
+recomputes rather than one bulk rebuild -- a potential performance gap
+that scale testing should surface and, if real, be addressed by explicitly
+calling `rebuild_read_models` once on first registration instead.
+
 ### Unit 3–16
 
 Not started. Add one dated subsection per completed unit; never combine

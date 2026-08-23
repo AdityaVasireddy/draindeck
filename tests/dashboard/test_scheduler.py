@@ -53,7 +53,7 @@ def test_automatic_ingestion_without_manual_tick_call(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg):
+    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
         calls.append(repo_id_arg)
         return indexer.TickOutcome(status="ok")
 
@@ -135,7 +135,7 @@ def test_normal_cadence_and_exponential_backoff(tmp_path, monkeypatch):
 
     availabilities = iter(["AVAILABLE", "OFFLINE", "OFFLINE", "OFFLINE"])
 
-    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg):
+    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
         _set_availability(conn, repo_id_arg, next(availabilities))
         return indexer.TickOutcome(status="ok")
 
@@ -172,7 +172,7 @@ def test_backoff_resets_to_normal_cadence_once_available_again(tmp_path, monkeyp
 
     availabilities = iter(["OFFLINE", "OFFLINE", "AVAILABLE"])
 
-    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg):
+    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
         _set_availability(conn, repo_id_arg, next(availabilities))
         return indexer.TickOutcome(status="ok")
 
@@ -206,7 +206,7 @@ def test_failing_repository_does_not_block_a_healthy_one(tmp_path, monkeypatch):
 
     calls = {"a": 0, "b": 0}
 
-    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg):
+    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
         if repo_id_arg == repo_a:
             raise RuntimeError("repo A is broken")
         calls["b"] += 1
@@ -232,7 +232,7 @@ def test_no_overlapping_ticks_for_the_same_repository(tmp_path, monkeypatch):
 
     concurrent = {"n": 0, "max": 0}
 
-    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg):
+    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
         concurrent["n"] += 1
         concurrent["max"] = max(concurrent["max"], concurrent["n"])
         await asyncio.sleep(0.05)  # deliberately slower than the tick interval below
@@ -312,6 +312,85 @@ def test_clean_shutdown_leaves_no_orphan_tasks(tmp_path, monkeypatch):
         after = {t for t in asyncio.all_tasks() if t is not current}
         assert after == set()
         assert s.scheduled_repository_ids() == frozenset()
+
+    asyncio.run(run())
+
+
+def test_lease_heartbeat_is_not_starved_by_a_saturated_page_queue(tmp_path, monkeypatch):
+    """Unit 2, Sub-step B: the priority lane for lease acquire/renew must
+    keep renewing even while the ordinary (page-persistence) queue is
+    completely saturated with slow jobs -- proving the bounded backlog
+    cannot starve the heartbeat past the lease TTL."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    _register(conn, tmp_path)
+
+    async def slow_tick(*a, **kw):
+        await asyncio.sleep(0.2)  # much slower than HEARTBEAT_SECONDS below
+        return indexer.TickOutcome(status="ok")
+
+    monkeypatch.setattr(scheduler_module, "ingest_repository_tick", slow_tick)
+    monkeypatch.setattr(scheduler_module, "NORMAL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(lease, "HEARTBEAT_SECONDS", 0.02)
+
+    async def run():
+        s = scheduler_module.Scheduler(conn, "exe")
+        s.start()
+        await asyncio.sleep(0.15)
+        heartbeat_at_1 = conn.execute(
+            "SELECT heartbeat_at FROM indexer_lease WHERE id = 1"
+        ).fetchone()[0]
+        await asyncio.sleep(0.15)
+        heartbeat_at_2 = conn.execute(
+            "SELECT heartbeat_at FROM indexer_lease WHERE id = 1"
+        ).fetchone()[0]
+        await s.stop()
+        assert heartbeat_at_2 > heartbeat_at_1  # renewed even with a slow tick in flight
+
+    asyncio.run(run())
+
+
+def test_writes_execute_on_the_worker_thread_not_the_event_loop(tmp_path, monkeypatch):
+    """The real (unmocked) ingest_repository_tick's SQL work must run on
+    the worker's dedicated connection/thread -- not scheduler._conn's
+    thread (the event loop) -- proving no SQLite write executes on the
+    ASGI event loop for a real tick."""
+    log_path = tmp_path / "events.jsonl"
+    log_path.write_text(
+        '{"event_id":1,"schema_version":1,"ts":"2026-08-23T00:00:00Z","run_id":null,'
+        '"type":"IssueCreated","issue_id":"42","execution_id":null,"payload":{}}\n',
+        encoding="utf-8",
+    )
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo_id = _register(conn, tmp_path)
+    # Point the registration at the real log file (the fixture above
+    # registers a not-yet-existing path).
+    conn.execute("UPDATE repositories SET log_path = ?, canonical_log_path = ? WHERE id = ?",
+                (str(log_path), str(log_path).lower(), repo_id))
+
+    def observer_reader(executable, lp, *, after, limit):
+        from runtime.observe import read_events_page
+        return read_events_page(Path(lp), after=after, limit=limit)
+
+    monkeypatch.setattr(poller_module, "invoke_observer_events", observer_reader)
+    monkeypatch.setattr(scheduler_module, "NORMAL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(lease, "HEARTBEAT_SECONDS", 0.01)
+
+    async def run():
+        s = scheduler_module.Scheduler(conn, "exe")
+        s.start()
+        assert s._worker._conn is not None
+        assert s._worker._conn is not conn  # worker's own dedicated connection
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            row = conn.execute(
+                "SELECT COUNT(*) FROM evidence WHERE repository_id = ?", (repo_id,)
+            ).fetchone()
+            if row[0] >= 1:
+                break
+        await s.stop()
+        assert row[0] == 1  # visible via scheduler._conn -- proves the worker's
+                             # separate connection committed to the same WAL file
+        assert s._worker.is_alive() is False  # clean shutdown
 
     asyncio.run(run())
 

@@ -14,7 +14,10 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Awaitable, Callable, Optional, TypeVar
+
+T = TypeVar("T")
+Persist = Callable[[Callable[[sqlite3.Connection], T]], Awaitable[T]]
 
 from .observer_client import ObserverError, invoke_observer_events
 from .poller import poll_pages
@@ -230,11 +233,14 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
 
 
 async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,
-                                      executable: str, log_path: str, checkpoint) -> TickOutcome:
+                                      executable: str, log_path: str, checkpoint,
+                                      persist: Persist) -> TickOutcome:
     """CURSOR_LOG_REPLACED is not itself proof of replacement — a transient
     open failure uses the same error. Confirm with a fresh after=None probe
     before rolling generation; a same-identity or unavailable probe retains
-    the checkpoint (docs/19)."""
+    the checkpoint (docs/19). ``persist`` (see ingest_repository_tick) runs
+    the actual write -- inline against ``conn`` by default, or off-thread
+    via the read-model worker in production."""
     try:
         probe = await asyncio.to_thread(
             invoke_observer_events, executable, log_path, after=None, limit=1,
@@ -248,34 +254,123 @@ async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,
         return TickOutcome(status="cursor_replaced_retained",
                            detail=f"probe availability={availability}; checkpoint retained")
 
+    # Read-only, so it stays on the caller's own connection (`conn`) even
+    # in production -- SQLite/WAL gives a consistent snapshot regardless
+    # of which connection performs the read.
     generation_row = _current_generation(conn, checkpoint[0]) if checkpoint is not None else None
     if generation_row is not None and _identity_matches(generation_row, probe["metadata"]):
         return TickOutcome(status="cursor_replaced_retained",
                            detail="probe identity unchanged; checkpoint retained")
 
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        new_generation_id = _open_new_generation(conn, repo_id, probe["metadata"])
-        _set_checkpoint(
-            conn, repo_id, identity_generation_id=new_generation_id,
-            last_record_cursor=None, last_record_hash=None, halted_oversized=False,
-            reduced_confidence=not probe["metadata"]["fileGeneration"]["available"],
-            availability=probe["metadata"]["availability"],
-        )
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+    def _open_generation_and_checkpoint(c: sqlite3.Connection) -> int:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            new_generation_id = _open_new_generation(c, repo_id, probe["metadata"])
+            _set_checkpoint(
+                c, repo_id, identity_generation_id=new_generation_id,
+                last_record_cursor=None, last_record_hash=None, halted_oversized=False,
+                reduced_confidence=not probe["metadata"]["fileGeneration"]["available"],
+                availability=probe["metadata"]["availability"],
+            )
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+        return new_generation_id
+
+    new_generation_id = await persist(_open_generation_and_checkpoint)
     # Old-generation view/readiness rows are pruned only after the new
     # generation's rollover has already committed (docs/27 SS8.4) --
-    # evidence/history is never touched either way.
-    prune_old_generation_views(conn, repo_id, keep_generation_id=new_generation_id)
+    # evidence/history is never touched either way. A separate persist()
+    # call, not nested in the transaction above (prune_old_generation_views
+    # owns its own transaction).
+    await persist(lambda c: prune_old_generation_views(c, repo_id, keep_generation_id=new_generation_id))
     return TickOutcome(status="cursor_replaced_rolled",
                        detail=f"identity replaced; generation {new_generation_id} opened")
 
 
+def _persist_page(c: sqlite3.Connection, repo_id: int, identity_generation_id: Optional[int],
+                  page: dict, last_cursor: Optional[str], last_hash: Optional[str]) -> tuple:
+    """One page's whole SQL transaction: open-generation-if-needed,
+    evidence upsert, entity-scoped read-model apply, checkpoint, changes
+    pruning. Pure function of (c, ...) -> the updated (identity_generation_id,
+    last_cursor, last_hash, halted) the caller threads into the next page/
+    the final TickOutcome -- no reliance on outer-scope mutable state, so
+    it runs identically whether ``c`` is the caller's own connection or
+    the read-model worker's dedicated one."""
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        metadata = page["metadata"]
+        if identity_generation_id is None:
+            identity_generation_id = _open_new_generation(c, repo_id, metadata)
+
+        records = page["records"]
+        changed = _upsert_evidence_and_detect_corrupt(c, repo_id, identity_generation_id, records)
+        if changed["issue_ids"] or changed["execution_ids"] or changed["run_ids"]:
+            apply_changed_entities_locked(
+                c, repo_id, identity_generation_id,
+                issue_ids=changed["issue_ids"], execution_ids=changed["execution_ids"],
+                run_ids=changed["run_ids"],
+            )
+
+        # Prefer the page's own nextCursor when the observer gave one: for
+        # a normal advancing page it is EXCLUSIVE (past every record just
+        # durably stored, so a later tick never re-scans records already
+        # consumed), and at a TORN/OVERSIZED tail it is already pinned to
+        # that record's own start offset. The one case with no page-level
+        # cursor at all is catching up to EOF with a COMPLETE last record —
+        # there, nextCursor is null, so the fallback below to that record's
+        # own INCLUSIVE cursor is the only resumable position the public
+        # contract exposes; it is intentionally re-delivered (idempotent
+        # upsert) until new data arrives.
+        if page["nextCursor"] is not None:
+            last_cursor = page["nextCursor"]
+        elif records:
+            last_cursor = records[-1]["cursor"]
+        if records:
+            last_record = records[-1]
+            last_hash = (last_record.get("truncatedPrefixHash")
+                        if last_record["integrity"] == "OVERSIZED"
+                        else last_record.get("recordHash"))
+        # An empty caught-up page (no records, nextCursor null) deliberately
+        # leaves last_cursor/last_hash unchanged — the durable checkpoint
+        # must never regress to offset zero just because nothing new arrived.
+
+        halted = any(r["integrity"] == "OVERSIZED" for r in records)
+        reduced_confidence = not metadata["fileGeneration"]["available"]
+
+        _set_checkpoint(
+            c, repo_id, identity_generation_id=identity_generation_id,
+            last_record_cursor=last_cursor, last_record_hash=last_hash,
+            halted_oversized=halted, reduced_confidence=reduced_confidence,
+            availability=metadata["availability"],
+        )
+        prune_changes(c)  # retain only the latest 10,000 (docs/19)
+        c.execute("COMMIT")
+    except Exception:
+        c.execute("ROLLBACK")
+        raise
+    return identity_generation_id, last_cursor, last_hash, halted
+
+
 async def ingest_repository_tick(conn: sqlite3.Connection, repo_id: int,
-                                 executable: str, log_path: str) -> TickOutcome:
+                                 executable: str, log_path: str, *,
+                                 persist: Optional[Persist] = None) -> TickOutcome:
+    """``persist``: optional ``async def persist(fn) -> T`` that runs
+    ``fn(some_connection)`` and returns its result. Defaults to running
+    ``fn(conn)`` inline on the calling coroutine -- direct callers (every
+    existing test, plus any other synchronous use) get identical behavior
+    to before this parameter existed. In production, scheduler.py passes a
+    persist that routes through ReadModelWorker so every SQL write for
+    this tick's pages/rollover runs off the ASGI event loop on the
+    worker's own dedicated connection -- while poll_pages' observer-
+    subprocess I/O below stays on the event loop, so multiple repositories'
+    ticks keep polling concurrently (only the SQL work serializes through
+    the one lease-owned writer, not the whole tick)."""
+    if persist is None:
+        async def persist(fn):
+            return fn(conn)
+
     checkpoint = _current_checkpoint(conn, repo_id)
 
     if checkpoint is not None and checkpoint[3]:  # halted_oversized
@@ -290,61 +385,10 @@ async def ingest_repository_tick(conn: sqlite3.Connection, repo_id: int,
     records_ingested = 0
     try:
         async for page in poll_pages(executable, log_path, after):
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                metadata = page["metadata"]
-                if identity_generation_id is None:
-                    identity_generation_id = _open_new_generation(conn, repo_id, metadata)
-
-                records = page["records"]
-                changed = _upsert_evidence_and_detect_corrupt(
-                    conn, repo_id, identity_generation_id, records)
-                if changed["issue_ids"] or changed["execution_ids"] or changed["run_ids"]:
-                    apply_changed_entities_locked(
-                        conn, repo_id, identity_generation_id,
-                        issue_ids=changed["issue_ids"], execution_ids=changed["execution_ids"],
-                        run_ids=changed["run_ids"],
-                    )
-
-                # Prefer the page's own nextCursor when the observer gave
-                # one: for a normal advancing page it is EXCLUSIVE (past
-                # every record just durably stored, so a later tick never
-                # re-scans records already consumed), and at a TORN/
-                # OVERSIZED tail it is already pinned to that record's own
-                # start offset. The one case with no page-level cursor at
-                # all is catching up to EOF with a COMPLETE last record —
-                # there, nextCursor is null, so the fallback below to that
-                # record's own INCLUSIVE cursor is the only resumable
-                # position the public contract exposes; it is intentionally
-                # re-delivered (idempotent upsert) until new data arrives.
-                if page["nextCursor"] is not None:
-                    last_cursor = page["nextCursor"]
-                elif records:
-                    last_cursor = records[-1]["cursor"]
-                if records:
-                    last_record = records[-1]
-                    last_hash = (last_record.get("truncatedPrefixHash")
-                                if last_record["integrity"] == "OVERSIZED"
-                                else last_record.get("recordHash"))
-                # An empty caught-up page (no records, nextCursor null)
-                # deliberately leaves last_cursor/last_hash unchanged — the
-                # durable checkpoint must never regress to offset zero just
-                # because nothing new arrived.
-
-                halted = any(r["integrity"] == "OVERSIZED" for r in records)
-                reduced_confidence = not metadata["fileGeneration"]["available"]
-
-                _set_checkpoint(
-                    conn, repo_id, identity_generation_id=identity_generation_id,
-                    last_record_cursor=last_cursor, last_record_hash=last_hash,
-                    halted_oversized=halted, reduced_confidence=reduced_confidence,
-                    availability=metadata["availability"],
-                )
-                prune_changes(conn)  # retain only the latest 10,000 (docs/19)
-                conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
+            identity_generation_id, last_cursor, last_hash, halted = await persist(
+                lambda c, _p=page, _gid=identity_generation_id, _lc=last_cursor, _lh=last_hash:
+                    _persist_page(c, repo_id, _gid, _p, _lc, _lh)
+            )
 
             pages_ingested += 1
             records_ingested += len(page["records"])
@@ -363,7 +407,7 @@ async def ingest_repository_tick(conn: sqlite3.Connection, repo_id: int,
             # evidence that earlier page already committed.
             current_checkpoint = _current_checkpoint(conn, repo_id)
             return await _handle_cursor_log_replaced(
-                conn, repo_id, executable, log_path, current_checkpoint)
+                conn, repo_id, executable, log_path, current_checkpoint, persist)
         return TickOutcome(status="error", detail=e.code)
 
     return TickOutcome(status="ok", pages_ingested=pages_ingested, records_ingested=records_ingested)

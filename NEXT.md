@@ -17,12 +17,20 @@
   ADR-27 (docs/08 §5i), `docs/27-dashboard-redesign-spec.md`, and
   `tasks/plan.md` were explicitly accepted 2026-08-23 (commit `1828f58`),
   with local per-unit checkpoint commits authorized and merge/push still
-  prohibited. Unit 0 (baseline/context/CLI/browser-automation gate) and
-  Unit 1 (transactional SQLite v1→v2 migration: `migrations.py`, six new
-  read-model/attention tables, five new evidence indexes, transactional
-  `delete_repository` cleanup) are complete — 767/767 combined suite green.
-  **Next action:** continue with Unit 2 (lease-owned off-thread read
-  models). Full running evidence log, commands, and per-unit detail:
+  prohibited. Unit 0 (baseline/context/CLI/browser-automation gate),
+  Unit 1 (transactional SQLite v1-v2 migration), and Unit 2
+  (containment-generation modeling, entity-scoped incremental read-model
+  persistence, and a lease-owned off-thread write worker so no SQLite
+  write executes on the ASGI event loop) are complete — 796/796 combined
+  suite green, plus a live smoke test against Draindeck's own real
+  843-event log confirming 102 issues / 114 executions correctly
+  persisted via the worker. A flagged, non-blocking deviation: fresh-
+  registration backfill relies on the existing incremental per-tick path
+  rather than a dedicated `rebuild_read_models` bulk call -- acceptable at
+  today's scale, to be confirmed or fixed during Unit 15 scale testing
+  (100k evidence rows). **Next action:** continue with Unit 3 (attention
+  detection history). Full running evidence log, commands, and per-unit
+  detail:
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
   `tasks/todo.md`.
 
