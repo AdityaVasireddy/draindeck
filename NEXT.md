@@ -13,30 +13,27 @@
 ## 1. Current state (verified 2026-08-22)
 
 - **Dashboard redesign: ACCEPTED and IN PROGRESS (build-auto).** Branch
-  `dashboard-redesign`, baseline `4052fef97dbb90b52ae91fc01832557bc348cab8`.
-  ADR-27 (docs/08 §5i), `docs/27-dashboard-redesign-spec.md`, and
-  `tasks/plan.md` were explicitly accepted 2026-08-23 (commit `1828f58`),
-  with local per-unit checkpoint commits authorized and merge/push still
-  prohibited. Backend/data layer (Units 0-5) plus Unit 6 (stable UI
-  routing) are complete. Units 7 (design tokens, shell, themes, shared JS
-  primitives) and 8 (API client with abort-aware request coordination,
-  SSE connection state/invalidation coalescing) are now also done —
-  899/899 combined suite green, including new plain-Node `.mjs` tests
-  (docs/27 bans any new JS dependency, so pure JS logic is tested with
-  `node:assert`, driven from pytest via subprocess; verified against real
-  Node/browser `fetch`/`AbortController`/`EventSource`). The shell is
-  live-verified in a real browser (correct rail active-state, deep-link
-  reload works, theme toggle persists, zero console errors); the
-  pre-existing Part 2 page logic still runs, unmodified, underneath the
-  new shell chrome so the app stays genuinely working at every checkpoint
-  — Units 9-14 replace it incrementally, page by page. Known gap
-  disclosed in the build evidence: this session's browser-resize tool
-  doesn't change the tab's actual viewport, so 768px/320px breakpoint
-  screenshots are deferred to Unit 15. Two flagged, non-blocking residual
-  items remain from Units 2/4, also carried to Unit 15. **Next action:**
-  continue with Unit 9 (home, repository registry, add flow, repository
-  overview) — the first real redesigned page. Full running evidence log,
-  commands, and per-unit detail:
+  `dashboard-redesign`, baseline `4052fef97dbb90b52ae91fc01832557bc348cab8`,
+  ADR-27/docs/27/tasks/plan accepted 2026-08-23 (commit `1828f58`), local
+  per-unit commits authorized, merge/push still prohibited. Units 0-9 are
+  complete (backend/data layer, UI routing, design tokens/shell/themes,
+  API client + SSE primitives, client-side router, and the first three
+  real redesigned pages: Home, Repository Registry/Add, Repository
+  Overview with unregister) — 902/902 combined suite green. The old Part
+  2 static UI is now fully retired (replaced by the router-driven page
+  modules). Extensively live-verified end-to-end against a real browser
+  and Draindeck's own real event log: register → view real
+  identity/health/attention/analytics data → unregister, zero console
+  errors throughout. Two real bugs were caught and fixed mid-unit (a
+  `dom.js` attribute-reflection bug affecting `colspan` and boolean
+  attributes; a connection-status regression from retiring old
+  `/app.js` without replacing its SSE wiring) — both documented with
+  root cause in the build evidence log. Known gap: 768px/320px
+  responsive-breakpoint screenshots remain deferred to Unit 15 (browser
+  resize tool doesn't change the tab's actual viewport in this session).
+  Two further flagged residual items from Units 2/4 also carried to Unit
+  15. **Next action:** continue with Unit 10 (Attention Center and global
+  search). Full running evidence log, commands, and per-unit detail:
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
   `tasks/todo.md`.
 

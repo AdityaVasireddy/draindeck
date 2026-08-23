@@ -25,10 +25,10 @@ def _client(tmp_path: Path):
     return TestClient(create_app(_cfg(tmp_path)), base_url="http://127.0.0.1")
 
 
-_NEW_STYLESHEETS = ["tokens.css", "base.css", "shell.css", "components.css"]
+_NEW_STYLESHEETS = ["tokens.css", "base.css", "shell.css", "components.css", "pages.css"]
 _NEW_JS_MODULES = [
     "app.js", "dom.js", "format.js", "state.js", "components/shell.js", "api.js", "stream.js",
-    "router.js",
+    "router.js", "pages/home.js", "pages/repositories.js", "pages/repository-detail.js",
 ]
 
 

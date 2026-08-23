@@ -869,7 +869,135 @@ proof and zero console errors.
 - `pytest tests/dashboard -q` → **340 passed**
 - `pytest tests/unit tests/dashboard -q` → **900 passed**, 70.48s, 1 pre-existing warning
 
-### Unit 9–16
+### Unit 9 — Home, repository registry, add flow, and repository overview (2026-08-23)
+
+**Files:** `static/js/pages/home.js`, `repositories.js`,
+`repository-detail.js` (all new), `static/js/app.js` (rewritten dispatch),
+`static/js/dom.js` (bug fix), `static/index.html` (Part 2 markup
+retired), `static/styles/pages.css` (new),
+`tests/dashboard/js/test_home_page.mjs`,
+`test_repositories_page.mjs` (both new),
+`tests/dashboard/test_app_shell_contract.py`.
+
+**Test-first:** pure view-model/query-parsing functions tested via
+plain-Node scripts (5 for `home.js`'s `buildHomeViewModel`, 5 for
+`repositories.js`'s `parseRegistryQuery`/`registryQueryToUrl`), all
+passed on first run; full page behavior (data fetching, DOM rendering,
+form submission, dialog interaction) verified live in a real browser
+instead, since DOM-dependent code isn't Node-testable without a
+disallowed new dependency (jsdom).
+
+**Real bug caught and fixed while building this unit's pages, before it
+could spread further:** `dom.js`'s `el()` helper set most attributes via
+plain property assignment (`node[key] = value`). For `colspan` this is
+silently wrong -- the DOM property is `colSpan` (camelCase); the
+lowercase assignment creates an inert ad-hoc property that never reflects
+to the actual HTML attribute, so a table cell's colspan would just not
+work. There was also a latent boolean-attribute bug: `setAttribute(name,
+"false")` still means the attribute is PRESENT (true) per HTML's
+presence-based boolean-attribute semantics, so `{disabled: false}` would
+have incorrectly disabled a control instead of leaving it enabled. Fixed
+by switching `el()`'s default path to `setAttribute` (correct for
+`colspan`/`rowspan`/`value`/etc.) with an explicit allowlist of
+presence-based boolean attributes (`disabled`, `required`, `checked`,
+etc.) that are only set when truthy. This is a foundational primitive
+every later page unit depends on -- worth catching now rather than
+inheriting a silent per-page workaround.
+
+**Second real issue caught and fixed live, mid-unit:** retiring the old
+`/app.js` (which owned the only SSE-connection-status wiring) without
+replacing that responsibility left `#connection-status` permanently
+stuck on "Connecting…" -- a genuine regression from previously-working
+Part 2 behavior. Fixed by wiring Unit 8's `stream.js` primitives
+(`connectChangeStream`/`connectionStatusLabel`) into the new `app.js`
+boot, with `onInvalidate` re-running the current route's own render (a
+correct, if not maximally surgical, baseline -- each page's own
+coordinator-backed fetches already supersede any still-in-flight
+request). Live-verified afterward: status correctly read "Updates
+connected".
+
+**Third issue found and correctly diagnosed as NOT a code bug:** two
+separate `computer` tool physical clicks (the Add-repository submit
+button, then the Unregister confirm button) appeared not to fire their
+handlers. Rather than assume the application code was broken, isolated
+the cause with a direct `element.click()` call (a real, trusted DOM
+click dispatch, not a bypass) -- both fired correctly and the underlying
+flows worked. Traced the actual submit-button non-response separately to
+an ambiguous `document.querySelector('form')` in one of MY diagnostic
+scripts matching the header's global-search form (also a `<form>`) ahead
+of the page's own form in document order -- a real reminder that this
+page now has two forms, not evidence of an application defect.
+
+**Implementation:**
+- `home.js`: `buildHomeViewModel` is a pure transform (Node-tested) from
+  four real API responses into a view-model; `render()` shows the
+  cross-repository ledger, an attention preview (capped at 5, with a
+  "View all" link when the real total exceeds that), an analytics band
+  (text/table equivalents per category -- SVG chart visuals are
+  explicitly Unit 13's "final chart/topology polish" per the plan's own
+  unit naming, not silently skipped), and recent observed activity in
+  evidence-ID-order with paired absolute+relative timestamps. Separates
+  "no repositories registered" from "registered; no data yet" per docs/27
+  SS6.1.
+- `repositories.js`: the registry is a real `<table>` (never a card
+  grid), with search/availability/attention filters and page-size/sort
+  state round-tripped through the URL (`parseRegistryQuery`/
+  `registryQueryToUrl`, Node-tested for exact round-trip fidelity and
+  safe fallback on invalid/out-of-range values). `renderAdd()` is the Add
+  Repository form -- required project path, optional log path, inline +
+  form-level typed error rendering, redirects to the new repository's
+  overview on success.
+- `repository-detail.js`: identity block, health panel (availability,
+  reduced-confidence, corrupt/unknown-type counts, lease status),
+  attention panel (linked to each condition's target), navigation into
+  the not-yet-built Runs/Issues/Executions/Evidence sub-views, and the
+  unregister flow -- a real `role="alertdialog"` with the EXACT docs/27
+  SS6.2 confirmation copy, Escape-to-close, and delete-then-redirect on
+  confirm.
+- `app.js`: route-name-to-page-module dispatch table; a route the router
+  matches but with no registered page module yet renders an honest "not
+  available yet" state rather than a blank page or an error. Focus moves
+  to `#main-content` on every non-initial navigation (WCAG landing
+  behavior), skipped on first load so it doesn't steal focus from
+  wherever the browser already placed it.
+- `index.html`/`pages.css`: the old Part 2 static markup and its
+  `/styles.css`/`/app.js` `<link>`/`<script>` references are removed
+  (the legacy compatibility ROUTES themselves, required by Unit 6, still
+  serve those files if requested directly -- only the references from
+  the live page are gone, since old `styles.css` defined colliding
+  class names like `.field`/`.register-form` that would have silently
+  overridden the new token-based `components.css` rules).
+
+**Live verification (real browser, extensive, not simulated):**
+registered Draindeck's own real repository end-to-end through the actual
+Add Repository form; confirmed the resulting Repository Overview page
+showed real identity/health/attention data (5 real current conditions:
+3× `ISSUE_NEEDS_DECOMPOSITION`, 2× `ISSUE_NEEDS_HUMAN`, matching every
+earlier independent check this build has made); confirmed Home's
+repository ledger, attention preview, and analytics band (74 DONE / 21
+NEEDS_DECOMPOSITION / 7 NEEDS_HUMAN issues, 843 OK evidence -- exact
+matches again) and recent-activity feed (real commit/review/validation
+events from Draindeck's own history with correct relative+absolute
+timestamps) all rendered correctly; ran the full unregister flow
+(dialog open → exact confirmation text → Escape closes it → reopen →
+confirm → real DELETE → redirect to `/repositories` → registry
+correctly shows 0 repositories again). Zero console errors throughout
+every step. Confirmed the sticky utility bar's mid-scroll screenshot
+oddity was a capture-timing artifact, not a real rendering bug (DOM
+inspection showed exactly one rail/utility bar element throughout).
+
+**Commands run:**
+- `node tests/dashboard/js/test_home_page.mjs` / `test_repositories_page.mjs` → both passed
+- `pytest tests/dashboard -q` → **342 passed**
+- `pytest tests/unit tests/dashboard -q` → **902 passed**, 68.90s, 1 pre-existing warning
+
+**Checkpoint:** routes work end-to-end against a real running server with
+real data (not just TestClient fixtures); keyboard interaction (Escape)
+verified; no illustrative count/status remains anywhere in these three
+pages -- every value shown was independently cross-checked against prior
+units' live verifications.
+
+### Unit 10–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

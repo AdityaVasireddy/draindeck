@@ -5,9 +5,20 @@
 // existing rows in place rather than clearing and recreating them, so
 // focus/scroll on an unaffected row survives a background refresh.
 
+// Boolean HTML attributes are presence-based: setAttribute(name, "false")
+// still means true. {checked: false}/{disabled: false} must OMIT the
+// attribute entirely, never set it to the string "false".
+const _BOOLEAN_ATTRS = new Set([
+  "disabled", "required", "checked", "selected", "hidden", "readonly", "multiple", "autofocus", "open",
+]);
+
 /** Creates `tag` with attributes from `props` (never `innerHTML`,
     `style`, or an `on*` attribute -- use addEventListener) and appends
-    `children` (strings become text nodes; null/undefined are skipped). */
+    `children` (strings become text nodes; null/undefined are skipped).
+    Every prop is applied via `setAttribute` (correct HTML reflection for
+    things like `colspan`/`rowspan`/`for`/`value`, where naive property
+    assignment either does nothing or uses the wrong casing) except
+    `className`/`textContent`, which have no attribute equivalent. */
 export function el(tag, props, children) {
   const node = document.createElement(tag);
   if (props) {
@@ -15,11 +26,10 @@ export function el(tag, props, children) {
       if (value === null || value === undefined) continue;
       if (key === "className") node.className = value;
       else if (key === "textContent") node.textContent = value;
-      else if (key.startsWith("aria-") || key.startsWith("data-") || key === "role"
-               || key === "for" || key === "tabindex" || key === "type" || key === "href") {
-        node.setAttribute(key, String(value));
+      else if (_BOOLEAN_ATTRS.has(key)) {
+        if (value) node.setAttribute(key, "");
       } else {
-        node[key] = value;
+        node.setAttribute(key, String(value));
       }
     }
   }
