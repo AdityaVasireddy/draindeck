@@ -207,18 +207,24 @@ def mark_rebuilding(conn: sqlite3.Connection, repo_id: int) -> None:
     )
 
 
-def mark_failed(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int,
+def mark_error(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int,
                error_code: str) -> None:
     """A rebuild attempt raised -- own transaction (called standalone from
     the scheduler after a worker job fails, never nested in the failed
     rebuild's own already-rolled-back transaction). Never regresses a
     READY snapshot for a DIFFERENT (newer) generation that might have
-    completed in the meantime -- only marks failure for the exact
-    generation that was actually attempted."""
+    completed in the meantime -- only marks the error for the exact
+    generation that was actually attempted.
+
+    Status value is ``ERROR`` -- docs/27 SS8.4's frozen contract:
+    "Status is `PREPARING|READY|REBUILDING|ERROR`." An earlier,
+    undocumented deviation used ``FAILED`` instead; corrected everywhere
+    (schema value, this helper's name, callers, tests, evidence) as part
+    of this session's merge-blocker review."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
-            "UPDATE read_model_state SET status = 'FAILED', error_code = ? "
+            "UPDATE read_model_state SET status = 'ERROR', error_code = ? "
             "WHERE repository_id = ? AND identity_generation_id = ?",
             (error_code, repo_id, identity_generation_id),
         )

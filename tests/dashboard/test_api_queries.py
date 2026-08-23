@@ -234,13 +234,13 @@ def test_repository_scoped_runs_query_raises_index_preparing_while_status_is_pre
         api_queries.cross_repository_runs(conn, limit=50, offset=0, repository_id=repo_id)
 
 
-def test_repository_scoped_executions_query_raises_index_preparing_on_failed_status(tmp_path):
+def test_repository_scoped_executions_query_raises_index_preparing_on_error_status(tmp_path):
     conn = _setup(tmp_path)
     repo_id, gen_id = _repo(conn, "a")
     conn.execute(
         "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
         "completed_evidence_id, started_at, completed_at, error_code) "
-        "VALUES (?, ?, 'FAILED', NULL, '2026-08-23T00:00:00Z', NULL, 'RuntimeError')",
+        "VALUES (?, ?, 'ERROR', NULL, '2026-08-23T00:00:00Z', NULL, 'RuntimeError')",
         (repo_id, gen_id),
     )
     with pytest.raises(IndexPreparingError):

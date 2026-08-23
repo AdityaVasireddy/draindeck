@@ -24,7 +24,7 @@ from . import attention, lease
 from .indexer import ingest_repository_tick
 from .poller import MAX_PAGES_PER_TICK, NORMAL_INTERVAL_SECONDS, next_backoff_seconds
 from .read_model_worker import ReadModelWorker
-from .read_models import LeaseLostError, mark_failed, read_model_status, rebuild_read_models
+from .read_models import LeaseLostError, mark_error, read_model_status, rebuild_read_models
 
 # Statuses that must back off even if the checkpoint's last-known
 # availability is stale (docs/19: "transient/unavailable probes retain
@@ -169,7 +169,7 @@ class Scheduler:
         indexer.py) or an unsafe OK-row mutation (mark_rebuilding, indexer.py)
         both need a real full-generation rebuild to reach READY -- the
         incremental path deliberately never sets READY itself. REBUILDING/
-        FAILED are urgent (a previously-complete snapshot is now compromised
+        ERROR are urgent (a previously-complete snapshot is now compromised
         or a prior rebuild attempt failed) and retried on every tick
         regardless of catch-up state; PREPARING (initial backfill) waits
         for this tick to have caught up (or halted, meaning no further
@@ -182,11 +182,11 @@ class Scheduler:
         needs_rebuild = (
             status is None
             or status["identityGenerationId"] != generation_id
-            or status["status"] in ("PREPARING", "REBUILDING", "FAILED")
+            or status["status"] in ("PREPARING", "REBUILDING", "ERROR")
         )
         if not needs_rebuild:
             return
-        urgent = status is not None and status["status"] in ("REBUILDING", "FAILED")
+        urgent = status is not None and status["status"] in ("REBUILDING", "ERROR")
         caught_up = outcome.status == "ok" and outcome.pages_ingested < MAX_PAGES_PER_TICK
         if not urgent and not (caught_up or outcome.status == "halted"):
             return
@@ -197,7 +197,7 @@ class Scheduler:
             )
         except LeaseLostError:
             # This process is no longer the indexer -- it must not write
-            # ANYTHING further for this repository (mark_failed included:
+            # ANYTHING further for this repository (mark_error included:
             # that write is exactly as illegitimate post-lease-loss as
             # publishing the rebuild itself would have been). The new
             # lease holder owns this repository's rebuild lifecycle now;
@@ -207,7 +207,7 @@ class Scheduler:
         except Exception as exc:
             await self._worker.submit(
                 lambda c, _rid=repo_id, _gid=generation_id, _code=type(exc).__name__:
-                    mark_failed(c, _rid, _gid, _code)
+                    mark_error(c, _rid, _gid, _code)
             )
 
     def _tick_needs_backoff(self, repo_id: int, outcome) -> bool:

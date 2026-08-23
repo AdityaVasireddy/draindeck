@@ -19,7 +19,7 @@ from draindeck_dashboard.projections import build_projection
 from draindeck_dashboard.read_models import (
     LeaseLostError,
     apply_changed_entities,
-    mark_failed,
+    mark_error,
     mark_preparing,
     mark_rebuilding,
     prune_old_generation_views,
@@ -258,19 +258,19 @@ def test_mark_rebuilding_is_a_no_op_when_status_is_still_preparing(tmp_path):
     assert status["status"] == "PREPARING"
 
 
-def test_mark_failed_records_error_code(tmp_path):
+def test_mark_error_records_error_code(tmp_path):
     conn, gen_id = _setup(tmp_path)
     mark_preparing(conn, 1, gen_id)
-    mark_failed(conn, 1, gen_id, "REBUILD_CRASHED")
+    mark_error(conn, 1, gen_id, "REBUILD_CRASHED")
     status = read_model_status(conn, 1)
-    assert status["status"] == "FAILED"
+    assert status["status"] == "ERROR"
     assert status["errorCode"] == "REBUILD_CRASHED"
 
 
-def test_mark_failed_for_a_stale_generation_id_does_not_overwrite_a_newer_ready_status(tmp_path):
-    """A failure report that arrives for an OLD generation_id (e.g. a
+def test_mark_error_for_a_stale_generation_id_does_not_overwrite_a_newer_ready_status(tmp_path):
+    """An error report that arrives for an OLD generation_id (e.g. a
     retried worker job racing a newer rollover) must never regress the
-    CURRENT generation's real status -- mark_failed is scoped by
+    CURRENT generation's real status -- mark_error is scoped by
     (repo_id, identity_generation_id), not repo_id alone."""
     conn, gen_id = _setup(tmp_path)
     mark_preparing(conn, 1, gen_id)
@@ -282,7 +282,7 @@ def test_mark_failed_for_a_stale_generation_id_does_not_overwrite_a_newer_ready_
     _insert_evidence(conn, 1, new_gen_id, 1, "IssueCreated", issue_id="42")
     rebuild_read_models(conn, 1, new_gen_id, _OWNER)  # current generation is READY
 
-    mark_failed(conn, 1, gen_id, "REBUILD_CRASHED")  # a stale report for the OLD generation
+    mark_error(conn, 1, gen_id, "REBUILD_CRASHED")  # a stale report for the OLD generation
 
     status = read_model_status(conn, 1)
     assert status["status"] == "READY"

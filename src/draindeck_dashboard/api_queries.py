@@ -44,11 +44,11 @@ def check_read_model_readiness(conn: sqlite3.Connection, repository_id: Optional
     snapshot exists but is now known out of date (REBUILDING) -- callers
     serve the existing rows anyway, just labelled. Raises
     `IndexPreparingError` when no complete snapshot exists at all
-    (PREPARING, FAILED, or no read_model_state row yet)."""
+    (PREPARING, ERROR, or no read_model_state row yet)."""
     if repository_id is None:
         return None
     status = read_model_status(conn, repository_id)
-    if status is None or status["status"] in ("PREPARING", "FAILED"):
+    if status is None or status["status"] in ("PREPARING", "ERROR"):
         raise IndexPreparingError()
     if status["status"] == "REBUILDING":
         return {"stale": True}
@@ -68,7 +68,7 @@ def projection_state_summary(conn: sqlite3.Connection) -> dict:
     preparing = [row[0] for row in conn.execute(
         "SELECT r.id FROM repositories r LEFT JOIN read_model_state rms "
         "ON rms.repository_id = r.id "
-        "WHERE rms.repository_id IS NULL OR rms.status IN ('PREPARING', 'FAILED')"
+        "WHERE rms.repository_id IS NULL OR rms.status IN ('PREPARING', 'ERROR')"
     ).fetchall()]
     stale = [row[0] for row in conn.execute(
         "SELECT repository_id FROM read_model_state WHERE status = 'REBUILDING'"

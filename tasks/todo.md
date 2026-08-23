@@ -114,7 +114,9 @@ No dependency installed. No merge, no push.
 
 - **Items 1/2 (INDEX_PREPARING/REBUILDING/READY + production rebuild
   caller):** `read_models.py` gained `mark_preparing`/`mark_rebuilding`/
-  `mark_failed`; the pre-existing bug where every incremental write
+  `mark_failed` (renamed `mark_error` in a later pass this session --
+  see the merge-blocker entry below; `FAILED` was never the documented
+  status value); the pre-existing bug where every incremental write
   immediately marked READY (fabricating completeness) was removed.
   `scheduler.py`'s new `_maybe_rebuild` submits `rebuild_read_models`
   through the lease-owned `ReadModelWorker` on generation rollover/

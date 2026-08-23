@@ -438,14 +438,14 @@ def test_lease_loss_rejects_publication_instead_of_permitting_it(tmp_path, monke
     monkeypatch.setattr(scheduler_module, "NORMAL_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(lease, "HEARTBEAT_SECONDS", 0.01)
 
-    mark_failed_calls = []
-    real_mark_failed = scheduler_module.mark_failed
+    mark_error_calls = []
+    real_mark_error = scheduler_module.mark_error
 
-    def spy_mark_failed(conn_arg, repo_id_arg, gen_id_arg, error_code_arg):
-        mark_failed_calls.append(error_code_arg)
-        return real_mark_failed(conn_arg, repo_id_arg, gen_id_arg, error_code_arg)
+    def spy_mark_error(conn_arg, repo_id_arg, gen_id_arg, error_code_arg):
+        mark_error_calls.append(error_code_arg)
+        return real_mark_error(conn_arg, repo_id_arg, gen_id_arg, error_code_arg)
 
-    monkeypatch.setattr(scheduler_module, "mark_failed", spy_mark_failed)
+    monkeypatch.setattr(scheduler_module, "mark_error", spy_mark_error)
 
     async def run():
         s = scheduler_module.Scheduler(conn, "exe")
@@ -463,10 +463,10 @@ def test_lease_loss_rejects_publication_instead_of_permitting_it(tmp_path, monke
     ).fetchone()
     assert row is None  # the candidate rebuild's view rows were never published
 
-    # And lease loss must never trigger a mark_failed() write either --
+    # And lease loss must never trigger a mark_error() write either --
     # that write would be exactly as illegitimate post-loss as publishing
     # the rebuild itself; the new lease holder owns this repository now.
-    assert mark_failed_calls == []
+    assert mark_error_calls == []
 
 
 def test_rebuild_read_models_rejects_publication_when_lease_changes_before_publish(tmp_path, monkeypatch):
