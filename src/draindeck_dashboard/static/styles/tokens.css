@@ -1,0 +1,199 @@
+/* Design tokens (DESIGN.md) -- "The Operator's Field Journal".
+   Raw palette values, then semantic aliases used by every other
+   stylesheet. Theme resolution: `data-theme="light"|"dark"` on <html>
+   wins when set (app.js writes it from the stored system|light|dark
+   preference); otherwise `prefers-color-scheme` decides. Focus tokens are
+   surface-aware, not theme-only (DESIGN.md "Proofreader Teal"/"Focus on
+   Dark"): the forest rail always uses --focus-on-dark, even in light
+   theme, because #006E75 does not stand out on Binding Forest. */
+
+:root {
+  /* --- raw palette (DESIGN.md Colors) --- */
+  --forest-rail: #153C31;
+  --forest-deep: #0B2E25;
+  --paper-canvas: #F6F1E8;
+  --paper-surface: #FCF9F3;
+  --ink-primary: #23332E;
+  --ink-muted: #52645E;
+  --rule-light: #CFC7B8;
+  --field-border-light: #81796C;
+  --sage-action: #386B46;
+  --sage-wash: #E2EBDF;
+  --bronze-attention: #7A5B2E;
+  --bronze-wash: #F1E5CD;
+  --clay-danger: #9B432E;
+  --clay-wash: #F5DDD6;
+  --focus-teal: #006E75;
+  --focus-on-dark: #6EDAE0;
+  --night-canvas: #14241E;
+  --night-surface: #1D3028;
+  --night-ink: #F5EFE6;
+  --night-muted: #B8C9C0;
+  --night-rule: #42554B;
+  --field-border-dark: #82998D;
+  --night-sage: #A6D6B0;
+  --night-bronze: #F2C57C;
+  --night-clay: #FFB4A5;
+
+  /* Chart Encoding Rule: complete eight-position, contrast-alternating,
+     never recycled -- more than eight categories collapse into "Other". */
+  --chart-light-1: #153C31; --chart-light-2: #007F87; --chart-light-3: #6B2F24;
+  --chart-light-4: #5F7F36; --chart-light-5: #3D4972; --chart-light-6: #8A6A2F;
+  --chart-light-7: #65405E; --chart-light-8: #52645E;
+  --chart-dark-1: #A6D6B0; --chart-dark-2: #9D71A1; --chart-dark-3: #6EDAE0;
+  --chart-dark-4: #C36E5B; --chart-dark-5: #F2C57C; --chart-dark-6: #6888C9;
+  --chart-dark-7: #FFB4A5; --chart-dark-8: #7D8A3F;
+
+  /* --- typography (DESIGN.md Typography) --- */
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, monospace;
+
+  --text-display-size: clamp(2rem, 3vw, 3.25rem);
+  --text-display-weight: 400;
+  --text-display-line: 1.08;
+  --text-display-tracking: -0.025em;
+
+  --text-headline-size: clamp(1.5rem, 2vw, 2rem);
+  --text-headline-weight: 400;
+  --text-headline-line: 1.2;
+
+  --text-title-size: 1rem;
+  --text-title-weight: 650;
+  --text-title-line: 1.35;
+
+  --text-body-size: 0.9375rem;
+  --text-body-weight: 400;
+  --text-body-line: 1.55;
+
+  --text-label-size: 0.75rem;
+  --text-label-weight: 700;
+  --text-label-line: 1.25;
+  --text-label-tracking: 0.055em;
+
+  --text-mono-size: 0.8125rem;
+  --text-mono-weight: 400;
+  --text-mono-line: 1.5;
+
+  /* --- shape / spacing (DESIGN.md Elevation / Components) --- */
+  --radius-control: 4px;
+  --radius-surface-md: 8px;
+  --radius-surface-lg: 12px;
+  --radius-pill: 999px;
+
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 48px;
+
+  --shadow-sticky-plane: 0 1px 0 rgba(11, 46, 37, 0.12);
+  --shadow-floating-menu: 0 8px 24px rgba(11, 46, 37, 0.14);
+  --shadow-dialog: 0 18px 50px rgba(11, 46, 37, 0.22);
+
+  --rail-width-expanded: 240px;
+  --rail-width-collapsed: 72px;
+
+  /* --- semantic tokens: light theme (default) --- */
+  --color-canvas: var(--paper-canvas);
+  --color-surface: var(--paper-surface);
+  --color-text-primary: var(--ink-primary);
+  --color-text-muted: var(--ink-muted);
+  --color-divider: var(--rule-light);
+  --color-control-border: var(--field-border-light);
+  --color-focus-on-paper: var(--focus-teal);
+  --color-focus-on-dark-surface: var(--focus-on-dark);
+
+  --color-rail-bg: var(--forest-rail);
+  --color-rail-bg-pressed: var(--forest-deep);
+  --color-rail-text: var(--paper-surface);
+
+  --color-action-primary-bg: var(--forest-rail);
+  --color-action-primary-bg-pressed: var(--forest-deep);
+  --color-action-primary-text: var(--paper-surface);
+
+  --color-success-fg: var(--sage-action);
+  --color-success-bg: var(--sage-wash);
+  --color-attention-fg: var(--bronze-attention);
+  --color-attention-bg: var(--bronze-wash);
+  --color-danger-fg: var(--clay-danger);
+  --color-danger-bg: var(--clay-wash);
+
+  --color-chart-1: var(--chart-light-1); --color-chart-2: var(--chart-light-2);
+  --color-chart-3: var(--chart-light-3); --color-chart-4: var(--chart-light-4);
+  --color-chart-5: var(--chart-light-5); --color-chart-6: var(--chart-light-6);
+  --color-chart-7: var(--chart-light-7); --color-chart-8: var(--chart-light-8);
+
+  --shadow-plane-color: rgba(11, 46, 37, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-canvas: var(--night-canvas);
+    --color-surface: var(--night-surface);
+    --color-text-primary: var(--night-ink);
+    --color-text-muted: var(--night-muted);
+    --color-divider: var(--night-rule);
+    --color-control-border: var(--field-border-dark);
+
+    --color-rail-bg: var(--night-surface);
+    --color-rail-bg-pressed: var(--night-canvas);
+    --color-rail-text: var(--night-ink);
+
+    --color-action-primary-bg: var(--night-sage);
+    --color-action-primary-bg-pressed: var(--night-sage);
+    --color-action-primary-text: var(--night-canvas);
+
+    --color-success-fg: var(--night-sage);
+    --color-success-bg: var(--night-surface);
+    --color-attention-fg: var(--night-bronze);
+    --color-attention-bg: var(--night-surface);
+    --color-danger-fg: var(--night-clay);
+    --color-danger-bg: var(--night-surface);
+
+    --color-chart-1: var(--chart-dark-1); --color-chart-2: var(--chart-dark-2);
+    --color-chart-3: var(--chart-dark-3); --color-chart-4: var(--chart-dark-4);
+    --color-chart-5: var(--chart-dark-5); --color-chart-6: var(--chart-dark-6);
+    --color-chart-7: var(--chart-dark-7); --color-chart-8: var(--chart-dark-8);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-canvas: var(--night-canvas);
+  --color-surface: var(--night-surface);
+  --color-text-primary: var(--night-ink);
+  --color-text-muted: var(--night-muted);
+  --color-divider: var(--night-rule);
+  --color-control-border: var(--field-border-dark);
+
+  --color-rail-bg: var(--night-surface);
+  --color-rail-bg-pressed: var(--night-canvas);
+  --color-rail-text: var(--night-ink);
+
+  --color-action-primary-bg: var(--night-sage);
+  --color-action-primary-bg-pressed: var(--night-sage);
+  --color-action-primary-text: var(--night-canvas);
+
+  --color-success-fg: var(--night-sage);
+  --color-success-bg: var(--night-surface);
+  --color-attention-fg: var(--night-bronze);
+  --color-attention-bg: var(--night-surface);
+  --color-danger-fg: var(--night-clay);
+  --color-danger-bg: var(--night-surface);
+
+  --color-chart-1: var(--chart-dark-1); --color-chart-2: var(--chart-dark-2);
+  --color-chart-3: var(--chart-dark-3); --color-chart-4: var(--chart-dark-4);
+  --color-chart-5: var(--chart-dark-5); --color-chart-6: var(--chart-dark-6);
+  --color-chart-7: var(--chart-dark-7); --color-chart-8: var(--chart-dark-8);
+}
+
+/* Forced colors (Windows High Contrast): keep borders/selected/focus/
+   links/status text using system colors; DESIGN.md's paper texture (if
+   ever added) must be disabled here too. */
+@media (forced-colors: active) {
+  :root {
+    forced-color-adjust: none;
+  }
+}

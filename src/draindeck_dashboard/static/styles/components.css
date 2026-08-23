@@ -1,0 +1,319 @@
+/* Shared component primitives (DESIGN.md Components). Tactile, precise:
+   squared editorial controls, restrained rounding, visible borders, state
+   changes that never move surrounding content (Flat-by-Default Rule). */
+
+/* --- buttons --- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-height: 44px;
+  padding: 10px var(--space-md);
+  border-radius: var(--radius-control);
+  border: 1px solid transparent;
+  font-family: var(--font-body);
+  font-size: var(--text-title-size);
+  font-weight: var(--text-title-weight);
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn:active { transform: none; }
+}
+
+.btn-primary {
+  background: var(--color-action-primary-bg);
+  color: var(--color-action-primary-text);
+}
+
+.btn-primary:hover {
+  background: var(--color-action-primary-bg-pressed);
+}
+
+.btn-secondary {
+  background: var(--color-surface);
+  color: var(--color-action-primary-bg);
+  border-color: var(--color-control-border);
+  padding: 9px 15px;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-action-primary-bg);
+  text-decoration: underline;
+  min-height: auto;
+  padding: var(--space-xxs) var(--space-xs);
+}
+
+.btn-destructive {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-fg);
+  border-color: var(--color-danger-fg);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* --- chips (status/filter) --- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  padding: 4px var(--space-xs);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-body);
+  font-size: var(--text-label-size);
+  font-weight: var(--text-label-weight);
+  letter-spacing: var(--text-label-tracking);
+}
+
+.chip--ok { background: var(--color-success-bg); color: var(--color-success-fg); }
+.chip--warn { background: var(--color-attention-bg); color: var(--color-attention-fg); }
+.chip--danger { background: var(--color-danger-bg); color: var(--color-danger-fg); }
+.chip--muted { background: var(--color-divider); color: var(--color-text-muted); }
+
+.chip-icon {
+  font-size: 0.85em;
+}
+
+/* Filter chips (selected vs unselected -- DESIGN.md: never outline vs
+   solid alone, the text label always states the fact). */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  padding: 4px var(--space-sm);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-control-border);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--text-label-size);
+  cursor: pointer;
+}
+
+.filter-chip[aria-pressed="true"] {
+  background: var(--color-action-primary-bg);
+  color: var(--color-action-primary-text);
+  border-color: transparent;
+}
+
+/* --- cards / containers --- */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-surface-md);
+  padding: var(--space-md);
+}
+
+.card--prominent {
+  border-radius: var(--radius-surface-lg);
+  padding: var(--space-xl);
+}
+
+/* --- fields --- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  margin-bottom: var(--space-sm);
+}
+
+.field label {
+  font-size: var(--text-label-size);
+  font-weight: var(--text-label-weight);
+  letter-spacing: var(--text-label-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.field input, .field select, .field textarea {
+  background: var(--color-surface);
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius-control);
+  padding: 10px var(--space-sm);
+  color: var(--color-text-primary);
+}
+
+.field.has-error input {
+  border-color: var(--color-danger-fg);
+}
+
+.field-error-text {
+  color: var(--color-danger-fg);
+  font-size: var(--text-label-size);
+}
+
+.field-hint {
+  color: var(--color-text-muted);
+  font-size: var(--text-label-size);
+}
+
+/* --- ledger table --- */
+
+.ledger-table-wrapper {
+  overflow-x: auto;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-surface-md);
+}
+
+table.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--color-surface);
+}
+
+.ledger-table caption {
+  text-align: left;
+  padding: var(--space-sm);
+  font-family: var(--font-display);
+  font-size: var(--text-headline-size);
+}
+
+.ledger-table th, .ledger-table td {
+  text-align: left;
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-divider);
+  vertical-align: top;
+}
+
+.ledger-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sticky-plane);
+  font-size: var(--text-label-size);
+  font-weight: var(--text-label-weight);
+  letter-spacing: var(--text-label-tracking);
+  text-transform: uppercase;
+  scroll-margin-top: 4rem;
+}
+
+.ledger-table .sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-transform: uppercase;
+  letter-spacing: var(--text-label-tracking);
+}
+
+.ledger-table .sort-direction-text {
+  font-size: 0.7em;
+}
+
+.ledger-table tbody tr:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+}
+
+.ledger-table a.row-title {
+  text-decoration: underline;
+  font-weight: 650;
+}
+
+/* --- pagination --- */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0;
+  flex-wrap: wrap;
+}
+
+.pagination-status {
+  color: var(--color-text-muted);
+  font-size: var(--text-label-size);
+}
+
+.pagination-controls {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+/* --- dialog / drawer --- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(11, 46, 37, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-surface-lg);
+  box-shadow: var(--shadow-dialog);
+  padding: var(--space-lg);
+  max-width: 32rem;
+  width: calc(100% - var(--space-lg) * 2);
+}
+
+/* --- skeletons --- */
+
+.skeleton {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--color-divider) 60%, transparent) 25%,
+    color-mix(in srgb, var(--color-divider) 30%, transparent) 37%,
+    color-mix(in srgb, var(--color-divider) 60%, transparent) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+  border-radius: var(--radius-control);
+  min-height: 1em;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
+
+/* --- error / empty states --- */
+
+.state-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  padding: var(--space-xl);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-surface-lg);
+  background: var(--color-surface);
+}
+
+.state-panel--error {
+  border-color: var(--color-danger-fg);
+}
+
+.state-panel-title {
+  font-family: var(--font-display);
+  font-size: var(--text-headline-size);
+}
+
+/* --- live region (connection/status announcements) --- */
+
+.live-region {
+  font-size: var(--text-label-size);
+}

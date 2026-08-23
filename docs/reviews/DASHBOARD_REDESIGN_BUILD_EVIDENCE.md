@@ -634,7 +634,127 @@ verification deferred to Unit 7+, once the new visible shell exists --
 verifying route plumbing against the still-unreplaced Part 2 UI would not
 be a meaningful visual check yet.
 
-### Unit 7–16
+### Unit 7 — Design tokens, shell, themes, and shared primitives (2026-08-23)
+
+**Files:** `static/styles/tokens.css`, `base.css`, `shell.css`,
+`components.css` (all new), `static/js/app.js` (rewritten), `dom.js`,
+`format.js`, `state.js`, `components/shell.js` (all new),
+`static/index.html`, `tests/dashboard/js/test_format.mjs`,
+`test_state.mjs`, `test_shell_component.mjs` (all new),
+`tests/dashboard/test_static_js_contracts.py` (new),
+`tests/dashboard/test_app_shell_contract.py` (new).
+
+**Test-first, adapted to a vanilla-JS-only stack:** since docs/27 SS10
+prohibits any new dependency (no Jest/Vitest/npm install), pure JS logic
+(format.js's label/date functions, state.js's theme-preference resolution,
+shell.js's active-route matching) is tested via plain-Node `.mjs` scripts
+using only `node:assert` -- written and run RED-then-GREEN exactly like
+every Python test this build has produced (e.g. the relative-time test
+failed first with `'5s ago' !== 'just now'` at an off-by-one boundary,
+fixed by adjusting the test's fixture time, not the function). A new
+`test_static_js_contracts.py` drives every `tests/dashboard/js/test_*.mjs`
+file as a subprocess so `pytest tests/dashboard` remains the single
+command that proves everything, Python and JS alike. DOM-dependent code
+(actual rendering, real click/keyboard interaction) is verified live in a
+real browser instead of simulated -- documented below -- since a
+dependency-free in-Node DOM is not realistically available.
+
+**Implementation:**
+- `tokens.css`: every DESIGN.md palette/typography/spacing/radius/shadow
+  value as a raw CSS custom property, then semantic aliases
+  (`--color-canvas`, `--color-text-primary`, `--color-focus-on-paper`,
+  `--color-focus-on-dark-surface`, etc.) redefined under
+  `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])`
+  and again under `:root[data-theme="dark"]` so an explicit user choice
+  always wins over the system preference in both directions. Complete
+  eight-position light/dark chart sequences included verbatim.
+- `base.css`: reset, the six-level typography scale as utility classes,
+  surface-aware `:focus-visible` (a `.on-dark-surface` scope switches to
+  `--color-focus-on-dark-surface`, since Proofreader Teal does not clear
+  3:1 on Binding Forest), skip-link, `prefers-reduced-motion` global kill
+  switch.
+- `shell.css`: 240px rail / 72px tablet-collapsed (768-1023px, visible
+  short labels retained, never tooltip-only) / compact top nav below
+  768px (320px accessibility reflow, explicitly not a separate mobile
+  product per DESIGN.md); sticky utility bar with `scroll-padding-top` on
+  `#main-content` so a focused control is never obscured beneath it
+  (WCAG 2.2 Focus Not Obscured).
+- `components.css`: buttons (44px target, primary/secondary/ghost/
+  destructive), status/filter chips (never color-alone -- every chip
+  pairs a wash background with visible text), fields with error/hint
+  states, a sticky-header ledger table with a `.sort-button`/
+  `.sort-direction-text` pattern for accessible sort controls, pagination,
+  dialog/backdrop, a reduced-motion-respecting skeleton shimmer, and
+  error/empty state panels.
+- `dom.js`: `el`/`text`/`clear` safe node builders (every attribute path
+  explicitly excludes `innerHTML`/`style`/`on*`), `statusChip` (icon +
+  text, never color alone), and a generalized `syncList` keyed-patch
+  helper extracted from the pre-existing Part 2 `app.js`'s `syncList`
+  (same in-place-update/no-clear-and-recreate behavior, now reusable by
+  every future page module instead of duplicated per page).
+- `format.js`: exact status vocabulary (`NO_CONTROLLED_FINISH_TEXT`,
+  `RUN_METADATA_UNAVAILABLE_TEXT`, `NOT_YET_OBSERVED_TEXT`,
+  `NO_INCONSISTENCY_TEXT`), `displayName` (final path segment, both
+  separator styles), absolute/relative timestamp formatting (a relative
+  label is never produced without also being able to render the exact
+  absolute one alongside it), severity ranking, and offset/page mapping.
+- `state.js`: `resolveStoredTheme`/`themeAttributeFor`/`loadThemePreference`/
+  `saveThemePreference` (corrupted/absent storage defaults safely to
+  "system"; a full storage quota never throws out of a preference
+  change) and a minimal `createStore` pub-sub primitive.
+- `components/shell.js`: renders the exact eight stable rail destinations
+  (Home/Repositories/Attention/Runs/Issues/Executions/Evidence/About,
+  order-verified by test), active-route highlighting via `aria-current`,
+  a three-state theme control (system → light → dark cycle, persisted),
+  and the tablet expand/collapse toggle.
+- `app.js` (rewritten): boots only the shell chrome now; the pre-existing
+  Part 2 page logic (repository registration/list/detail, still at
+  `/app.js`) is intentionally left running underneath, unmodified, via
+  its own legacy compatibility route -- Units 8-14 replace it
+  incrementally with the real router and page modules, so the app stays
+  genuinely working end-to-end at every intermediate checkpoint rather
+  than going dark mid-redesign.
+- `index.html`: full shell markup (skip link, `<noscript>` fallback,
+  rail, utility bar with search/connection-status/theme control,
+  breadcrumb landmark, `#main-content` with the unmodified Part 2 content
+  still nested inside for now).
+
+**Live browser verification (real, not simulated):** launched a temp
+instance, navigated to `/`: forest rail with all 8 destinations rendered,
+correct active-state highlighting on Home. Deep-linked directly to
+`/repositories/5/issues/42` (an unregistered repo/issue -- proving this
+is route-pattern-level, not existence-level): app shell served correctly,
+"Repositories" rail item correctly active, zero console errors. Clicked
+the theme control twice (system → light → dark): utility bar/rail visibly
+re-themed via the token system; reloaded the page and confirmed
+`localStorage` (`draindeck-dashboard-theme: "dark"`) and
+`document.documentElement.dataset.theme === "dark"` both persisted.
+Captured all 12 network requests on a fresh load: every new
+stylesheet/JS module returned 200, zero 404s. Server cleanly
+`taskkill /F`'d and scratch files removed afterward.
+
+**Known limitation, disclosed rather than glossed over:** this session's
+`resize_window` browser tool call did not change the tab's actual
+`window.innerWidth` (confirmed via direct JS inspection), so the
+768px/320px responsive breakpoints could not be live-verified narrow in
+this unit. The CSS media queries are written and structurally reviewed,
+but full multi-viewport screenshot verification (320/768/1024/1440) is
+explicitly Unit 15's dedicated acceptance pass, not claimed here.
+
+**Commands run:**
+- `node tests/dashboard/js/test_format.mjs` / `test_state.mjs` / `test_shell_component.mjs` → all passed directly
+- `pytest tests/dashboard/test_static_js_contracts.py -q` → 3 passed (Node subprocess wrapper)
+- `pytest tests/dashboard/test_app_shell_contract.py -q` → 7 passed
+- `pytest tests/dashboard -q` → **337 passed**
+- `pytest tests/unit tests/dashboard -q` → **897 passed**, 69.24s, 1 pre-existing warning
+
+**Checkpoint:** static/JS-contract tests green; no remote asset, inline
+handler, unsafe HTML, or unapproved visual token (verified directly via
+`test_index_html_has_no_inline_style_or_script_csp_violation`); live
+browser confirms zero console errors and correct theme/routing behavior.
+320px/768px breakpoint screenshots deferred to Unit 15, disclosed above.
+
+### Unit 8–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

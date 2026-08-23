@@ -17,23 +17,25 @@
   ADR-27 (docs/08 §5i), `docs/27-dashboard-redesign-spec.md`, and
   `tasks/plan.md` were explicitly accepted 2026-08-23 (commit `1828f58`),
   with local per-unit checkpoint commits authorized and merge/push still
-  prohibited. Backend/data layer (Units 0-5) is complete and twice
-  live-verified against Draindeck's own real 843-event log. Unit 6
-  (stable UI routing: explicit 18-route allowlist serving the app shell,
-  /assets-only static mount, legacy /styles.css and /app.js compat
-  routes, unknown paths retain FastAPI's normal 404) is now also done —
-  887/887 combined suite green. User confirmed (2026-08-23, mid-build
-  check-in) continuing autonomously through the remaining frontend units.
-  Two flagged, non-blocking residual items carried to Unit 15's
-  scale/query-count check: Unit 2's fresh-registration backfill relying
-  on the incremental per-tick path rather than a dedicated bulk rebuild,
-  and Unit 4's `groupBy=issue` bounded-but-N+1 query pattern. Real
-  browser verification of the route plumbing is deferred to Unit 7+, once
-  the new visible shell exists (checking it against the still-unreplaced
-  Part 2 UI now would not be meaningful). **Next action:** continue with
-  Unit 7 (design tokens, shell, themes, shared primitives) — the actual
-  visual redesign begins here. Full running evidence log, commands, and
-  per-unit detail:
+  prohibited. Backend/data layer (Units 0-5) plus Unit 6 (stable UI
+  routing) are complete. Unit 7 (design tokens, shell, themes, shared
+  JS primitives) is now also done — 897/897 combined suite green,
+  including new plain-Node `.mjs` tests (docs/27 bans any new JS
+  dependency, so pure JS logic is tested with `node:assert`, driven from
+  pytest via subprocess). Live-verified in a real browser: forest rail
+  with correct active-route highlighting, deep-link reload to a nested
+  route works, theme toggle re-themes the shell and persists across
+  reload, all 12 asset requests return 200, zero console errors. Known
+  gap disclosed in the build evidence: this session's browser-resize tool
+  did not actually change the tab's viewport width, so 768px/320px
+  responsive-breakpoint screenshots are deferred to Unit 15's dedicated
+  multi-viewport pass rather than claimed now. The pre-existing Part 2
+  page logic still runs, unmodified, underneath the new shell chrome —
+  Units 8-14 replace it incrementally so the app stays genuinely working
+  at every checkpoint. Two flagged, non-blocking residual items remain
+  from Units 2/4, carried to Unit 15. **Next action:** continue with
+  Unit 8 (API client, connection stream, and focus-safe reconciliation).
+  Full running evidence log, commands, and per-unit detail:
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
   `tasks/todo.md`.
 

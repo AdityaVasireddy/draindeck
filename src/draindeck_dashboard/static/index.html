@@ -4,80 +4,115 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Draindeck Dashboard</title>
+  <link rel="stylesheet" href="/assets/styles/tokens.css">
+  <link rel="stylesheet" href="/assets/styles/base.css">
+  <link rel="stylesheet" href="/assets/styles/shell.css">
+  <link rel="stylesheet" href="/assets/styles/components.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="app-header">
-    <h1>Draindeck Dashboard</h1>
-    <p id="connection-status" class="status-pill" role="status" aria-live="polite">Connecting…</p>
-  </header>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
 
   <noscript>
     <p class="no-js-notice">Draindeck Dashboard requires JavaScript to display registered
       repositories, runs, issues, executions, and evidence.</p>
   </noscript>
 
-  <main>
-    <section aria-labelledby="repos-heading" class="panel">
-      <h2 id="repos-heading">Repositories</h2>
+  <div class="app-shell">
+    <nav id="app-rail" class="app-rail on-dark-surface" aria-label="Primary">
+      <div class="app-rail-brand">Draindeck</div>
+      <ul id="rail-nav-list" class="app-rail-nav" aria-label="Primary destinations"></ul>
+      <button id="rail-expand-toggle" type="button" class="app-rail-expand-toggle"
+              aria-pressed="false">Expand</button>
+    </nav>
 
-      <form id="register-form" class="register-form">
-        <div class="field">
-          <label for="project-path">Project path</label>
-          <input id="project-path" name="projectPath" required
-                 placeholder="C:\Projects\StockPhotoAgent" autocomplete="off">
-        </div>
-        <div class="field">
-          <label for="log-path">Log path (optional)</label>
-          <input id="log-path" name="logPath"
-                 placeholder="C:\Projects\StockPhotoAgent\.draindeck\state\events.jsonl"
+    <div class="app-workspace">
+      <header class="app-utility-bar">
+        <form id="global-search-form" class="app-search" role="search">
+          <label for="global-search-input" class="visually-hidden">
+            Search repositories, issues, runs, executions, evidence
+          </label>
+          <input id="global-search-input" type="search" name="q" placeholder="Search…"
                  autocomplete="off">
+        </form>
+        <div class="app-utility-actions">
+          <p id="connection-status" role="status" aria-live="polite" class="text-label">
+            Connecting…
+          </p>
+          <button id="theme-toggle" type="button" class="theme-toggle">Theme: System</button>
         </div>
-        <button type="submit">Register</button>
-        <p id="register-error" class="error-text" role="alert"></p>
-      </form>
+      </header>
 
-      <ul id="repo-list" class="repo-list" aria-label="Registered repositories">
-        <li class="empty-state" data-empty-placeholder>No repositories registered yet.</li>
-      </ul>
-    </section>
+      <nav class="app-breadcrumbs" aria-label="Breadcrumb">
+        <ol id="breadcrumb-list"></ol>
+      </nav>
 
-    <section id="repo-detail" class="panel" hidden aria-labelledby="detail-heading">
-      <h2 id="detail-heading">Repository <span id="detail-repo-id"></span></h2>
+      <main id="main-content" tabindex="-1">
+        <div id="page-root">
+          <section aria-labelledby="repos-heading" class="panel">
+            <h2 id="repos-heading">Repositories</h2>
 
-      <div id="health-panel" class="health-panel" aria-live="polite"></div>
+            <form id="register-form" class="register-form">
+              <div class="field">
+                <label for="project-path">Project path</label>
+                <input id="project-path" name="projectPath" required
+                       placeholder="C:\Projects\StockPhotoAgent" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="log-path">Log path (optional)</label>
+                <input id="log-path" name="logPath"
+                       placeholder="C:\Projects\StockPhotoAgent\.draindeck\state\events.jsonl"
+                       autocomplete="off">
+              </div>
+              <button type="submit">Register</button>
+              <p id="register-error" class="error-text" role="alert"></p>
+            </form>
 
-      <div class="runs-block">
-        <h3>Runs</h3>
-        <ul id="runs-list" class="entity-list" aria-label="Runs">
-          <li class="empty-state" data-empty-placeholder>No runs observed yet.</li>
-        </ul>
-      </div>
+            <ul id="repo-list" class="repo-list" aria-label="Registered repositories">
+              <li class="empty-state" data-empty-placeholder>No repositories registered yet.</li>
+            </ul>
+          </section>
 
-      <div class="columns">
-        <div>
-          <h3>Issues</h3>
-          <ul id="issues-list" class="entity-list" aria-label="Issues">
-            <li class="empty-state" data-empty-placeholder>No issues observed yet.</li>
-          </ul>
+          <section id="repo-detail" class="panel" hidden aria-labelledby="detail-heading">
+            <h2 id="detail-heading">Repository <span id="detail-repo-id"></span></h2>
+
+            <div id="health-panel" class="health-panel" aria-live="polite"></div>
+
+            <div class="runs-block">
+              <h3>Runs</h3>
+              <ul id="runs-list" class="entity-list" aria-label="Runs">
+                <li class="empty-state" data-empty-placeholder>No runs observed yet.</li>
+              </ul>
+            </div>
+
+            <div class="columns">
+              <div>
+                <h3>Issues</h3>
+                <ul id="issues-list" class="entity-list" aria-label="Issues">
+                  <li class="empty-state" data-empty-placeholder>No issues observed yet.</li>
+                </ul>
+              </div>
+              <div>
+                <h3>Executions</h3>
+                <ul id="executions-list" class="entity-list" aria-label="Executions">
+                  <li class="empty-state" data-empty-placeholder>No executions observed yet.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div>
+              <h3>Evidence</h3>
+              <ul id="evidence-list" class="entity-list evidence-list" aria-label="Evidence">
+                <li class="empty-state" data-empty-placeholder>No evidence observed yet.</li>
+              </ul>
+            </div>
+          </section>
         </div>
-        <div>
-          <h3>Executions</h3>
-          <ul id="executions-list" class="entity-list" aria-label="Executions">
-            <li class="empty-state" data-empty-placeholder>No executions observed yet.</li>
-          </ul>
-        </div>
-      </div>
+      </main>
+    </div>
+  </div>
 
-      <div>
-        <h3>Evidence</h3>
-        <ul id="evidence-list" class="entity-list evidence-list" aria-label="Evidence">
-          <li class="empty-state" data-empty-placeholder>No evidence observed yet.</li>
-        </ul>
-      </div>
-    </section>
-  </main>
-
+  <script type="module" src="/assets/js/app.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

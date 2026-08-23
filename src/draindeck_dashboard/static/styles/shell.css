@@ -1,0 +1,239 @@
+/* App shell: forest rail, utility bar, breadcrumbs, main content plane.
+   DESIGN.md Navigation: 240px expanded rail / 72px collapsed (768-1023px)
+   with visible short labels at every width -- never tooltip-only. Below
+   768px a compact top navigation satisfies 320px accessibility reflow
+   (not a separate mobile feature set). */
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* --- rail --- */
+
+.app-rail {
+  flex: 0 0 var(--rail-width-expanded);
+  width: var(--rail-width-expanded);
+  background: var(--color-rail-bg);
+  color: var(--color-rail-text);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-md) var(--space-sm);
+  gap: var(--space-lg);
+}
+
+.app-rail-brand {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  padding: var(--space-xs) var(--space-xs);
+}
+
+.app-rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  flex: 1;
+}
+
+.app-rail-nav a {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border-radius: var(--radius-control);
+  text-decoration: none;
+  color: var(--color-rail-text);
+  min-height: 44px;
+}
+
+.app-rail-nav a[aria-current="page"] {
+  background: color-mix(in srgb, var(--color-rail-text) 16%, transparent);
+  font-weight: 650;
+}
+
+.app-rail-nav a .rail-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.app-rail-nav a .rail-label {
+  white-space: nowrap;
+}
+
+.app-rail-expand-toggle {
+  background: transparent;
+  border: 1px solid var(--color-control-border);
+  color: var(--color-rail-text);
+  border-radius: var(--radius-control);
+  padding: var(--space-xs) var(--space-sm);
+  display: none;
+}
+
+/* Tablet: 768-1023px collapses to 72px -- labels stay visible beneath/
+   beside the icon (compact), never hidden behind a tooltip. */
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .app-rail {
+    flex-basis: var(--rail-width-collapsed);
+    width: var(--rail-width-collapsed);
+    align-items: center;
+  }
+  .app-rail-brand {
+    font-size: 0.9rem;
+    text-align: center;
+  }
+  .app-rail-nav a {
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-xs) 2px;
+    text-align: center;
+  }
+  .app-rail-nav a .rail-label {
+    font-size: 0.625rem;
+    white-space: normal;
+  }
+  .app-rail-expand-toggle {
+    display: block;
+  }
+  .app-rail.is-expanded {
+    flex-basis: var(--rail-width-expanded);
+    width: var(--rail-width-expanded);
+    align-items: stretch;
+  }
+  .app-rail.is-expanded .app-rail-nav a {
+    flex-direction: row;
+    text-align: left;
+  }
+  .app-rail.is-expanded .app-rail-nav a .rail-label {
+    font-size: var(--text-title-size);
+  }
+}
+
+/* Below 768px: compact top navigation/disclosure, single-column reflow
+   (WCAG 2.2 AA 320px accessibility mode -- not a separate mobile product). */
+@media (max-width: 767.98px) {
+  .app-shell {
+    flex-direction: column;
+  }
+  .app-rail {
+    flex: 0 0 auto;
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    padding: var(--space-xs) var(--space-sm);
+    gap: var(--space-sm);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    box-shadow: var(--shadow-sticky-plane);
+  }
+  .app-rail-brand {
+    padding: 0;
+    font-size: 1rem;
+  }
+  .app-rail-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-xxs);
+  }
+  .app-rail-nav a {
+    padding: var(--space-xxs) var(--space-xs);
+    min-height: 36px;
+  }
+  .app-rail-nav a .rail-label {
+    font-size: 0.75rem;
+  }
+  .app-rail-expand-toggle {
+    display: none;
+  }
+}
+
+/* --- workspace: utility bar, breadcrumbs, main --- */
+
+.app-workspace {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-utility-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sticky-plane);
+  scroll-margin-top: 0;
+}
+
+@media (max-width: 767.98px) {
+  .app-utility-bar {
+    top: 0;
+    flex-wrap: wrap;
+    padding: var(--space-xs) var(--space-sm);
+  }
+}
+
+.app-search {
+  flex: 1;
+  max-width: 32rem;
+  position: relative;
+}
+
+.app-search input[type="search"] {
+  width: 100%;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius-control);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.app-utility-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.app-breadcrumbs {
+  padding: var(--space-xs) var(--space-lg);
+}
+
+.app-breadcrumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xxs);
+  font-size: var(--text-label-size);
+  color: var(--color-text-muted);
+}
+
+.app-breadcrumbs li:not(:last-child)::after {
+  content: "/";
+  margin-left: var(--space-xxs);
+}
+
+.app-breadcrumbs a {
+  text-decoration: underline;
+}
+
+#main-content {
+  flex: 1;
+  padding: var(--space-lg);
+  /* Sticky utility bar establishes scroll-padding so a keyboard focus
+     target never lands obscured beneath it (WCAG 2.2 Focus Not Obscured). */
+  scroll-padding-top: 4rem;
+}
+
+@media (max-width: 767.98px) {
+  #main-content {
+    padding: var(--space-sm);
+  }
+}
+
+#main-content:focus-visible {
+  outline: none; /* programmatic focus target on route change; not a user-facing control */
+}
