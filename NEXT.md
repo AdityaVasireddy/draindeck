@@ -17,26 +17,23 @@
   ADR-27 (docs/08 §5i), `docs/27-dashboard-redesign-spec.md`, and
   `tasks/plan.md` were explicitly accepted 2026-08-23 (commit `1828f58`),
   with local per-unit checkpoint commits authorized and merge/push still
-  prohibited. Units 0-4 are complete — 849/849 combined suite green, plus
-  a live smoke test against Draindeck's own real 843-event log confirming
-  102 issues / 114 executions correctly persisted via the off-thread
-  worker. Unit 3 resolved a real spec ambiguity around "only the
-  lease-owning writer persists attention changes" and explicitly defers
-  the LEASE_UNCLAIMED 10s startup-flash visibility gate and
-  `repository_health` SSE invalidations to Unit 4's query layer -- Unit 4
-  itself (bounded cross-repository query layer: repository summaries,
-  overview aggregates, current-generation-scoped issues/runs/executions
-  incl. groupBy=issue, evidence keyset pagination, entity timeline/
-  topology, legacy evidence offset cap tightened to 100k) is now done,
-  and flags its own residual item: `groupBy=issue`'s bounded (page-size,
-  never unbounded) N+1 query pattern, for Unit 15's query-count check to
-  evaluate. A flagged, non-blocking Unit 2 deviation also remains:
-  fresh-registration backfill relies on the existing incremental per-tick
-  path rather than a dedicated `rebuild_read_models` bulk call --
-  acceptable at today's scale, to be confirmed or fixed during Unit 15
-  scale testing (100k evidence rows). **Next action:** continue with
-  Unit 5 (search and REST route surface). Full running evidence log,
-  commands, and per-unit detail:
+  prohibited. Units 0-5 are complete — 877/877 combined suite green.
+  Backend/data layer (Units 0-4: migration, off-thread read models,
+  attention, bounded query layer) and now Unit 5 (search.py plus the full
+  additive REST route surface: overview, repository-summaries, attention,
+  search, cross-repo issues/runs/executions/evidence, single-entity
+  detail routes, timeline/topology) are all done and live-verified twice
+  against Draindeck's own real 843-event log -- most recently
+  `/api/overview` matching NEXT.md's independently recorded backlog
+  counts exactly (74 DONE / 21 NEEDS_DECOMPOSITION / 7 NEEDS_HUMAN issues,
+  28 attention warnings = 21+7, 114 executions). Two flagged, non-blocking
+  residual items carried to Unit 15's scale/query-count check: Unit 2's
+  fresh-registration backfill relying on the incremental per-tick path
+  rather than a dedicated bulk rebuild, and Unit 4's `groupBy=issue`
+  bounded-but-N+1 query pattern. **Next action:** continue with Unit 6
+  (stable UI routing and security preservation) -- this is where the
+  frontend build begins. Full running evidence log, commands, and
+  per-unit detail:
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
   `tasks/todo.md`.
 

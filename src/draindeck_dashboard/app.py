@@ -5,6 +5,7 @@ imports from here or from FastAPI/Starlette/Uvicorn directly.
 """
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -14,11 +15,13 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
+from . import api_queries
 from .artifacts import artifact_root_for_log, resolve_contained_artifact
+from .attention import derive_repository_conditions
 from .config import DashboardConfig
 from .db import connect_and_init
 from .diffs import compute_diff
-from .errors import NotFoundError, register_error_handlers
+from .errors import InvalidFilterError, NotFoundError, register_error_handlers
 from .health import build_health
 from .repositories import (
     delete_repository,
@@ -27,6 +30,7 @@ from .repositories import (
     register_repository,
 )
 from .scheduler import Scheduler
+from .search import search as run_search
 from .security import (
     DEFAULT_MAX_BODY_BYTES,
     LoopbackOnlyMiddleware,
@@ -41,6 +45,7 @@ from .views import (
     list_issues,
     list_runs,
 )
+
 
 _PAGE_LIMIT_DEFAULT = 50
 _PAGE_LIMIT_MAX = 200
@@ -182,6 +187,236 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             raise NotFoundError("no ExecutionFinished evidence found for this execution")
         return compute_diff(
             repo["projectPath"], payload.get("start_commit"), payload.get("end_commit"))
+
+    # --- ADR-27 additive cross-repository/search/detail routes (Unit 5) ---
+    # Thin wrappers only -- all business SQL lives in api_queries.py/
+    # search.py/attention.py; a DashboardApiError subclass raised by any of
+    # them (InvalidSort/InvalidFilter/QueryTooShort/PageOutOfRange/...) is
+    # converted to its typed envelope by the existing generic handler.
+
+    @app.get("/api/overview")
+    async def api_overview() -> dict:
+        return api_queries.overview(app.state.db)
+
+    @app.get("/api/repository-summaries")
+    async def api_repository_summaries(
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        offset: int = Query(default=0, ge=0),
+        q: Optional[str] = None, availability: Optional[str] = None,
+        hasAttention: Optional[bool] = None, sort: str = "name", direction: str = "asc",
+    ) -> dict:
+        return api_queries.repository_summaries(
+            app.state.db, limit=limit, offset=offset, q=q, availability=availability,
+            has_attention=hasAttention, sort=sort, direction=direction,
+        )
+
+    @app.get("/api/attention")
+    async def api_attention(
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        offset: int = Query(default=0, ge=0), status: str = "current",
+        severity: Optional[str] = None, repositoryId: Optional[int] = None,
+    ) -> dict:
+        api_queries.check_offset_cap(offset, cap=api_queries.NEW_ROUTE_OFFSET_CAP)
+        where = ["1=1"]
+        params: list = []
+        if status == "current":
+            where.append("resolved_at IS NULL")
+        elif status == "resolved":
+            where.append("resolved_at IS NOT NULL")
+        elif status != "all":
+            raise InvalidFilterError(f"unsupported status {status!r}")
+        if severity is not None:
+            where.append("severity = ?")
+            params.append(severity)
+        if repositoryId is not None:
+            where.append("repository_id = ?")
+            params.append(repositoryId)
+        where_sql = " AND ".join(where)
+        total = app.state.db.execute(
+            f"SELECT COUNT(*) FROM attention_conditions WHERE {where_sql}", params
+        ).fetchone()[0]
+        rows = app.state.db.execute(
+            f"SELECT condition_key, kind, severity, repository_id, subject_type, subject_id, "
+            f"message, target_url, first_detected_at, last_detected_at, resolved_at "
+            f"FROM attention_conditions WHERE {where_sql} "
+            "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, "
+            "first_detected_at LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        items = [
+            {"conditionId": key, "kind": kind, "severity": sev,
+             "repository": ({"id": repo_id} if repo_id is not None else None),
+             "subject": ({"type": st, "id": sid} if st is not None else None),
+             "message": msg, "targetUrl": url, "firstDetectedAt": first, "lastDetectedAt": last,
+             "resolvedAt": resolved}
+            for (key, kind, sev, repo_id, st, sid, msg, url, first, last, resolved) in rows
+        ]
+        return {"items": items, "limit": limit, "offset": offset, "total": total}
+
+    @app.get("/api/search")
+    async def api_search(q: str, limit: int = Query(default=5, ge=1, le=10)) -> dict:
+        return run_search(app.state.db, q, limit=limit)
+
+    @app.get("/api/issues")
+    async def api_cross_repository_issues(
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        offset: int = Query(default=0, ge=0), repositoryId: Optional[int] = None,
+        state: Optional[str] = None, sort: str = "issueId", direction: str = "asc",
+    ) -> dict:
+        return api_queries.cross_repository_issues(
+            app.state.db, limit=limit, offset=offset, repository_id=repositoryId, state=state,
+            sort=sort, direction=direction,
+        )
+
+    @app.get("/api/runs")
+    async def api_cross_repository_runs(
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        offset: int = Query(default=0, ge=0), repositoryId: Optional[int] = None,
+        outcome: Optional[str] = None, sort: str = "runId", direction: str = "asc",
+    ) -> dict:
+        return api_queries.cross_repository_runs(
+            app.state.db, limit=limit, offset=offset, repository_id=repositoryId, outcome=outcome,
+            sort=sort, direction=direction,
+        )
+
+    @app.get("/api/executions")
+    async def api_cross_repository_executions(
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        offset: int = Query(default=0, ge=0), repositoryId: Optional[int] = None,
+        state: Optional[str] = None, groupBy: str = "execution", sort: str = "executionId",
+        direction: str = "asc",
+    ) -> dict:
+        return api_queries.cross_repository_executions(
+            app.state.db, limit=limit, offset=offset, repository_id=repositoryId, state=state,
+            group_by=groupBy, sort=sort, direction=direction,
+        )
+
+    @app.get("/api/evidence")
+    async def api_cross_repository_evidence(
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        beforeEvidenceId: Optional[int] = None, afterEvidenceId: Optional[int] = None,
+        direction: str = "desc", repositoryId: Optional[int] = None,
+    ) -> dict:
+        return api_queries.evidence_keyset(
+            app.state.db, limit=limit, before_evidence_id=beforeEvidenceId,
+            after_evidence_id=afterEvidenceId, direction=direction, repository_id=repositoryId,
+        )
+
+    @app.get("/api/repositories/{repo_id}/overview")
+    async def api_repository_overview(repo_id: int) -> dict:
+        registration = get_repository(app.state.db, repo_id)  # 404 if missing
+        health = build_health(app.state.db, repo_id)
+        conditions = derive_repository_conditions(app.state.db, repo_id)
+        return {
+            "registration": registration, "health": health,
+            "attention": {
+                "current": len(conditions),
+                "items": [
+                    {"kind": c.kind, "severity": c.severity, "message": c.message,
+                     "targetUrl": c.target_url}
+                    for c in conditions[:5]
+                ],
+            },
+        }
+
+    @app.get("/api/repositories/{repo_id}/issues/{issue_id}")
+    async def api_issue_detail(repo_id: int, issue_id: str) -> dict:
+        get_repository(app.state.db, repo_id)
+        row = app.state.db.execute(
+            "SELECT iv.issue_id, iv.state, iv.title, iv.inconsistent, iv.last_event_id "
+            "FROM issue_views iv JOIN checkpoints c ON c.repository_id = iv.repository_id "
+            "AND c.identity_generation_id = iv.identity_generation_id "
+            "WHERE iv.repository_id = ? AND iv.issue_id = ?", (repo_id, issue_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"issue {issue_id} not found in repository {repo_id}")
+        return {"issueId": row[0], "state": row[1], "title": row[2], "inconsistent": bool(row[3]),
+               "lastEventId": row[4]}
+
+    @app.get("/api/repositories/{repo_id}/runs/{run_id}")
+    async def api_run_detail(repo_id: int, run_id: str) -> dict:
+        get_repository(app.state.db, repo_id)
+        row = app.state.db.execute(
+            "SELECT rv.run_id, rv.engine_provider, rv.engine_model, rv.reviewer_provider, "
+            "rv.reviewer_model, rv.budget_json, rv.config_digest, rv.outcome, rv.inconsistent, "
+            "rv.last_event_id, rv.observed_started_at, rv.observed_finished_at FROM run_views rv "
+            "JOIN checkpoints c ON c.repository_id = rv.repository_id "
+            "AND c.identity_generation_id = rv.identity_generation_id "
+            "WHERE rv.repository_id = ? AND rv.run_id = ?", (repo_id, run_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"run {run_id} not found in repository {repo_id}")
+        return {
+            "runId": row[0], "engineProvider": row[1], "engineModel": row[2],
+            "reviewerProvider": row[3], "reviewerModel": row[4],
+            "budget": json.loads(row[5]) if row[5] else {}, "configDigest": row[6],
+            "outcome": row[7], "displayOutcome": row[7] or "no controlled finish observed",
+            "inconsistent": bool(row[8]), "lastEventId": row[9],
+            "observedStartedAt": row[10], "observedFinishedAt": row[11],
+        }
+
+    @app.get("/api/repositories/{repo_id}/executions/{execution_id}")
+    async def api_execution_detail(repo_id: int, execution_id: str) -> dict:
+        get_repository(app.state.db, repo_id)
+        row = app.state.db.execute(
+            "SELECT ev.execution_id, ev.issue_id, ev.state, ev.inconsistent, ev.last_event_id, "
+            "ev.run_id FROM execution_views ev JOIN checkpoints c "
+            "ON c.repository_id = ev.repository_id AND c.identity_generation_id = ev.identity_generation_id "
+            "WHERE ev.repository_id = ? AND ev.execution_id = ?", (repo_id, execution_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"execution {execution_id} not found in repository {repo_id}")
+        containment_rows = app.state.db.execute(
+            "SELECT cv.containment_generation, cv.workspace_key, cv.state, cv.inconsistent "
+            "FROM containment_views cv JOIN checkpoints c ON c.repository_id = cv.repository_id "
+            "AND c.identity_generation_id = cv.identity_generation_id "
+            "WHERE cv.repository_id = ? AND cv.execution_id = ? ORDER BY cv.containment_generation",
+            (repo_id, execution_id),
+        ).fetchall()
+        return {
+            "executionId": row[0], "issueId": row[1], "state": row[2], "inconsistent": bool(row[3]),
+            "lastEventId": row[4], "runId": row[5],
+            "containments": [
+                {"containmentGeneration": gen, "workspaceKey": wk, "state": st,
+                 "inconsistent": bool(inc)}
+                for gen, wk, st, inc in containment_rows
+            ],
+        }
+
+    @app.get("/api/repositories/{repo_id}/evidence/{evidence_id}")
+    async def api_evidence_detail(repo_id: int, evidence_id: int) -> dict:
+        get_repository(app.state.db, repo_id)
+        row = app.state.db.execute(
+            "SELECT e.id, e.record_cursor, e.integrity, e.event_id, e.event_type, "
+            "e.schema_version, e.issue_id, e.execution_id, e.run_id, e.event_ts, e.record_hash, "
+            "e.length_bytes FROM evidence e JOIN checkpoints c ON c.repository_id = e.repository_id "
+            "AND c.identity_generation_id = e.identity_generation_id "
+            "WHERE e.repository_id = ? AND e.id = ?", (repo_id, evidence_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"evidence {evidence_id} not found in repository {repo_id}")
+        return {
+            "evidenceId": row[0], "cursor": row[1], "integrity": row[2], "eventId": row[3],
+            "eventType": row[4], "schemaVersion": row[5], "issueId": row[6], "executionId": row[7],
+            "runId": row[8], "ts": row[9], "recordHash": row[10], "lengthBytes": row[11],
+        }
+
+    @app.get("/api/repositories/{repo_id}/{entity_type}/{entity_id}/timeline")
+    async def api_entity_timeline(
+        repo_id: int, entity_type: str, entity_id: str,
+        limit: int = Query(default=_PAGE_LIMIT_DEFAULT, ge=1, le=_PAGE_LIMIT_MAX),
+        offset: int = Query(default=0, ge=0), direction: str = "asc",
+    ) -> dict:
+        get_repository(app.state.db, repo_id)
+        return api_queries.entity_timeline(
+            app.state.db, repo_id, entity_type, entity_id, limit=limit, offset=offset,
+            direction=direction,
+        )
+
+    @app.get("/api/repositories/{repo_id}/{entity_type}/{entity_id}/topology")
+    async def api_entity_topology(repo_id: int, entity_type: str, entity_id: str) -> dict:
+        get_repository(app.state.db, repo_id)
+        return api_queries.entity_topology(app.state.db, repo_id, entity_type, entity_id)
 
     @app.get("/api/events")
     async def events(request: Request, after: Optional[int] = None) -> StreamingResponse:

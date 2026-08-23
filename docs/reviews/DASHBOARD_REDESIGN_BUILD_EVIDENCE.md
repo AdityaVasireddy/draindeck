@@ -519,7 +519,83 @@ whether it needs collapsing into a single query at 100k-evidence scale.
 the test suite; current-generation scoping verified directly (not just
 assumed); evidence keyset structurally guaranteed offset-free.
 
-### Unit 5–16
+### Unit 5 — Search and REST route surface (2026-08-23)
+
+**Files:** `src/draindeck_dashboard/search.py` (new),
+`src/draindeck_dashboard/app.py`,
+`tests/dashboard/test_app_redesign_api.py` (new),
+`tests/dashboard/test_search.py` (new).
+
+**Test-first:** 10 tests in new `test_search.py` (RED: `ImportError`), 18
+tests in new `test_app_redesign_api.py` (RED: 15 failed with 404s for
+routes that did not exist yet).
+
+**Real bug caught and fixed before committing:** `search.py`'s first
+draft of `_search_evidence` wrapped the query in a subquery aliased `e`
+while the inner `FROM evidence e` used the SAME alias `e` for a different
+table reference, producing `sqlite3.OperationalError: ambiguous column
+name`. Simplified to a single flat query (the subquery wrapper was
+unnecessary) -- caught immediately by the first test run, not discovered
+later.
+
+**Implementation:**
+- `search.py` (new): `search(conn, q, *, limit)` validates 2-200 trimmed
+  characters (`QueryTooShortError` otherwise), returns five grouped
+  result lists (repositories/issues/runs/executions/evidence), each
+  capped at `limit` (max 10). Repository/issue/run/execution matching is
+  a case-insensitive substring over project_path/title/run_id/
+  execution_id (SQLite's built-in `LIKE` is ASCII-case-insensitive by
+  default); issues additionally match by exact ID. Evidence matching is
+  limited to exactly the metadata docs/27 SS7.1 allows: Dashboard
+  evidenceId, cursor substring, integer eventId, and event_type
+  substring -- verified directly that no result item ever contains a
+  `payload`/`recordBytes` key.
+- `app.py`: added `/api/overview`, `/api/repository-summaries`,
+  `/api/attention` (status/severity/repositoryId filters, closed
+  severity-then-first-detected ordering), `/api/search`,
+  `/api/issues`/`/api/runs`/`/api/executions` (cross-repo, `groupBy`
+  supported on executions) /`/api/evidence` (keyset, confirmed via test
+  that the response has no `offset` key), single-entity detail routes
+  (`/api/repositories/{id}/overview`, `.../issues/{issueId}`,
+  `.../runs/{runId}`, `.../executions/{executionId}` with its full
+  containment-generation list, `.../evidence/{evidenceId}`), and generic
+  `/api/repositories/{id}/{entityType}/{entityId}/{timeline|topology}`.
+  Every route is a thin wrapper over `api_queries.py`/`search.py`/
+  `attention.py` -- no business SQL added directly in `app.py` except the
+  small `/api/attention` listing query (closed status/severity/
+  repositoryId filter set, matching the same allowlisted-fragment
+  pattern used throughout `api_queries.py`). Confirmed no route
+  collision between the new generic 6-segment `{entityType}/{entityId}/
+  {timeline|topology}` pattern and the existing literal
+  `executions/{id}/transcript`/`.../diff` routes (different final literal
+  segment, so Starlette's structural matching never conflates them) and
+  between the new 5-segment single-entity routes and the new 6-segment
+  generic ones (different segment counts).
+
+**Live verification (real, not test-double), against a temporary
+instance registered to Draindeck's own real 843-event log:**
+`/api/overview` returned `issues.byState` exactly `{DONE: 74,
+NEEDS_DECOMPOSITION: 21, NEEDS_HUMAN: 7}` and `attention.warning: 28`
+(21+7, an independent cross-check that attention derivation is wired
+correctly end-to-end) -- matching NEXT.md's independently recorded
+backlog state exactly. `executions.byState` matched the earlier Unit 2
+live check (114 total). `/api/repository-summaries`, `/api/search`,
+`/api/attention`, and `/api/executions?groupBy=issue` all returned real,
+correctly-shaped data. Server cleanly `taskkill /F`'d and scratch files
+removed afterward.
+
+**Commands run:**
+- `pytest tests/dashboard/test_search.py -q` → 10 passed
+- `pytest tests/dashboard/test_app_redesign_api.py -q` → 18 passed
+- `pytest tests/dashboard -q` → **317 passed**
+- `pytest tests/unit tests/dashboard -q` → **877 passed**, 75.99s, 1 pre-existing warning
+
+**Checkpoint:** focused API/search tests and all pre-existing API tests
+green; representative live JSON inspected and cross-checked against an
+independent source (NEXT.md's recorded backlog counts) for exact truth
+language -- no illustrative/placeholder values anywhere in the responses.
+
+### Unit 6–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.
