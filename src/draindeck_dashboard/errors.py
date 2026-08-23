@@ -43,6 +43,50 @@ class ForbiddenError(DashboardApiError):
         super().__init__("FORBIDDEN", message, **kw)
 
 
+# docs/27 SS7.5: typed codes for the new bounded query layer's own
+# parsing/range errors, distinct from FastAPI's own path/body 422 shapes.
+class InvalidQueryError(DashboardApiError):
+    status_code = 422
+
+    def __init__(self, message: str = "invalid query", **kw) -> None:
+        super().__init__("INVALID_QUERY", message, **kw)
+
+
+class InvalidFilterError(DashboardApiError):
+    status_code = 422
+
+    def __init__(self, message: str = "invalid filter", **kw) -> None:
+        super().__init__("INVALID_FILTER", message, **kw)
+
+
+class InvalidSortError(DashboardApiError):
+    status_code = 422
+
+    def __init__(self, message: str = "invalid sort", **kw) -> None:
+        super().__init__("INVALID_SORT", message, **kw)
+
+
+class QueryTooShortError(DashboardApiError):
+    status_code = 422
+
+    def __init__(self, message: str = "query too short", **kw) -> None:
+        super().__init__("QUERY_TOO_SHORT", message, **kw)
+
+
+class PageOutOfRangeError(DashboardApiError):
+    status_code = 422
+
+    def __init__(self, message: str = "page out of range", **kw) -> None:
+        super().__init__("PAGE_OUT_OF_RANGE", message, **kw)
+
+
+class IndexPreparingError(DashboardApiError):
+    status_code = 503
+
+    def __init__(self, message: str = "indexed views are still preparing", **kw) -> None:
+        super().__init__("INDEX_PREPARING", message, **kw)
+
+
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(DashboardApiError)
     async def _handle_dashboard_api_error(request: Request, exc: DashboardApiError):

@@ -160,6 +160,23 @@ def test_evidence_pagination_slices_correctly(tmp_path, monkeypatch):
     assert page1["total"] == 5
 
 
+def test_evidence_offset_above_100k_is_rejected(tmp_path):
+    """docs/27 SS7.4: the one documented pre-GA narrowing of an existing
+    query range -- offsets above 100,000 on the legacy repository-scoped
+    evidence endpoint are now rejected."""
+    client, _ = _client_and_app(tmp_path)
+    repo = _git_worktree(tmp_path)
+    created = client.post("/api/repositories", json={"projectPath": str(repo)})
+    repo_id = created.json()["id"]
+
+    resp = client.get(f"/api/repositories/{repo_id}/evidence?limit=1&offset=100001")
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "PAGE_OUT_OF_RANGE"
+
+    ok = client.get(f"/api/repositories/{repo_id}/evidence?limit=1&offset=100000")
+    assert ok.status_code == 200
+
+
 # ── /runs (Phase 7 follow-up: paginated Runs resource) ──────────────────
 _RUN_ID_A = "run-20260821T060512Z-3fa85f64-5717-4562-b3fc-2c963f66afa6"
 

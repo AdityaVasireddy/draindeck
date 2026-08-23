@@ -11,6 +11,7 @@ import json
 import sqlite3
 from typing import Optional
 
+from .api_queries import LEGACY_EVIDENCE_OFFSET_CAP, check_offset_cap
 from .projections import (
     RUN_METADATA_UNAVAILABLE,
     RUN_NO_CONTROLLED_FINISH_OBSERVED,
@@ -113,6 +114,9 @@ def list_runs(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: int
 
 
 def list_evidence(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: int) -> dict:
+    # docs/27 SS7.4: the one documented pre-GA narrowing of this endpoint's
+    # existing range -- its order/shape remain otherwise unchanged.
+    check_offset_cap(offset, cap=LEGACY_EVIDENCE_OFFSET_CAP)
     generation_id = _current_generation_id(conn, repo_id)
     if generation_id is None:
         return _paginate([], limit=limit, offset=offset)

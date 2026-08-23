@@ -9,7 +9,7 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
 - [x] Unit 1 — Transactional SQLite v2 migration
 - [x] Unit 2 — Lease-owned off-thread read models, containment generations, backfill/rebuild
 - [x] Unit 3 — Attention detection history
-- [ ] Unit 4 — Bounded query layer and aggregates
+- [x] Unit 4 — Bounded query layer and aggregates
 - [ ] Unit 5 — Search and additive REST routes
 - [ ] Unit 6 — Stable UI routing and security preservation
 - [ ] Unit 7 — Design tokens, shell, themes, shared primitives

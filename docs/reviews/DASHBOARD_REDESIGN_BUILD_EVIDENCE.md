@@ -445,7 +445,81 @@ is idempotent and does not create duplicate open occurrences (verified
 directly). No `repository_health`/TTL-visibility work remains outstanding
 for Unit 3 itself -- both are explicitly Unit 4 scope per above.
 
-### Unit 4–16
+### Unit 4 — Bounded query layer and aggregates (2026-08-23)
+
+**Files:** `src/draindeck_dashboard/api_queries.py` (new),
+`src/draindeck_dashboard/views.py`, `src/draindeck_dashboard/errors.py`,
+`tests/dashboard/test_api_queries.py` (new),
+`tests/dashboard/test_app_views_api.py`.
+
+**Test-first:** 27 tests written in new `test_api_queries.py` (RED:
+`ImportError`), 1 new test in `test_app_views_api.py` for the legacy
+evidence offset cap (RED: `assert 200 == 422`).
+
+**Implementation:**
+- `errors.py`: added `InvalidQueryError`, `InvalidFilterError`,
+  `InvalidSortError`, `QueryTooShortError`, `PageOutOfRangeError` (422),
+  `IndexPreparingError` (503) -- docs/27 SS7.5's typed codes, all
+  subclasses of the existing `DashboardApiError` so the app's single
+  generic exception handler picks them up automatically.
+- `api_queries.py` (new): `check_offset_cap` (shared 10,000/100,000 cap
+  primitive); `repository_summaries` (search/availability/hasAttention
+  filters, name/createdAt/availability/latestRunAt/attentionCount sorts,
+  displayName derived client-side from the final path segment);
+  `overview` (cross-repo aggregate counts by availability/state/outcome/
+  integrity, attention-by-severity, `projectionState` from
+  `read_model_state`); `cross_repository_issues`/`_runs`/`_executions`
+  (every query joins `checkpoints.identity_generation_id` so only
+  current-generation rows are ever returned -- verified directly with a
+  test that seeds a stale-generation row and confirms it's excluded);
+  `cross_repository_executions(groupBy="issue")` paginates ISSUE groups
+  server-side (not a client-page join), each with exact total/by-state
+  counts and up to 5 newest execution IDs plus `executionsTruncated`;
+  `evidence_keyset` (ordered by globally unique `evidence.id`, `next`/
+  `previous`/`hasMore` from one over-fetch-by-one query, no `offset`
+  parameter exists on the function signature at all -- a test asserts
+  this structurally via `__code__.co_varnames` so a future edit can't
+  quietly reintroduce one); `entity_timeline` (metadata-only columns
+  only, ordered by logical `event_id` not raw evidence-arrival order,
+  scoped via the entity's own id column so it never touches other
+  entities' evidence); `entity_topology` (bounded node/edge caps,
+  `issue|run|execution|evidence` node kinds, `run_has_execution|
+  issue_has_execution|entity_has_evidence` edge kinds, `truncated=true`
+  once either cap is hit, from stored identifiers only -- no physics
+  layout, no whole-portfolio scope).
+- `views.py`: `list_evidence` (the legacy repository-scoped endpoint) now
+  calls `check_offset_cap(offset, cap=LEGACY_EVIDENCE_OFFSET_CAP)` --
+  docs/27 SS7.4's one documented pre-GA narrowing of an existing range;
+  order/shape otherwise unchanged.
+
+**Real bug caught and fixed before committing:** an early draft of
+`repository_summaries` left a first, broken SQL-string draft assigned to
+`sql` and then immediately overwritten by a second, correct version --
+dead but confusing code with ad-hoc `.replace()` string surgery on SQL
+fragments. Rewritten cleanly: `where` clauses are built once with a
+single named `attn_expr` (`COALESCE(ac.attention_count, 0)`) substituted
+consistently into WHERE/ORDER BY/SELECT, no dead code, no string-replace
+hacks.
+
+**Deviation flagged (not hidden), for Unit 15's query-count check:**
+`cross_repository_executions(groupBy="issue")` issues two additional
+queries per issue group on the current page (bounded by `limit`, max
+200 -- never unbounded, never a full evidence scan) rather than one
+single JOIN query. This is a real, bounded N+1 relative to page size;
+Unit 15's explicit query-count/N+1 acceptance check should evaluate
+whether it needs collapsing into a single query at 100k-evidence scale.
+
+**Commands run:**
+- `pytest tests/dashboard/test_api_queries.py -q` → 27 passed
+- `pytest tests/dashboard/test_app_views_api.py -q` → 11 passed
+- `pytest tests/dashboard -q` → **289 passed**
+- `pytest tests/unit tests/dashboard -q` → **849 passed**, 70.11s, 1 pre-existing warning
+
+**Checkpoint:** query tests green on multi-repository fixtures built in
+the test suite; current-generation scoping verified directly (not just
+assumed); evidence keyset structurally guaranteed offset-free.
+
+### Unit 5–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.
