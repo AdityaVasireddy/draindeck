@@ -1753,24 +1753,90 @@ with a clear rationale for each. This is the final implementation unit;
 see the handoff summary below for outcome, files changed, and residual
 risk.
 
+## 2026-08-23 continuation: closing the 8 unchecked definition-of-done gates
+
+Unit 16 (above) closed its own review round but left 8 `tasks/todo.md`
+definition-of-done checkboxes unchecked and explicitly documented 6 residual
+gaps, several of them spec-required rather than optional polish. This
+continuation, resuming `/build-auto` from baseline `7cdb23b`, closed every
+one of them. Full narrative, exact commands, and exact numbers are in
+`tasks/todo.md`'s "2026-08-23 continuation" evidence-log entry; this section
+summarizes outcome and disposition only.
+
+- **INDEX_PREPARING/REBUILDING/READY (was: "unwired end-to-end", the single
+  largest documented gap):** now wired end-to-end. A real, pre-existing bug
+  was found and fixed en route — every incremental write was immediately
+  marking the read-model state READY, which fabricated completeness and is
+  the reason this contract was never observable in practice even though the
+  supporting error type (`IndexPreparingError`) already existed.
+- **`rebuild_read_models()` production caller (was: "confirmed unreachable
+  from any production code path"):** now has a real lease-owned caller in
+  `scheduler.py`, preserving atomic publication and lease-loss protection,
+  with 9 new integration test scenarios.
+- **LEASE_UNCLAIMED 10s gate (was: "unimplemented"):** implemented, scoped
+  correctly (LEASE_STALE never delayed), tested, and — after this session's
+  own independent review caught a gap — also applied to `/api/overview`'s
+  attention aggregate for parity with `/api/attention`.
+- **Nested run metadata (was: "not surfaced"):** surfaced, with the exact
+  spec-required fallback text.
+- **Repository Overview attention-count divergence (was: documented as a
+  self-correcting P2 cosmetic issue):** the data source itself was
+  corrected, not just the timing window narrowed.
+- **Focus/scroll survival on SSE refresh (was: "`syncList` is used by 2 of 7
+  list pages; the other 5 do a full clear+rebuild"):** all 7 list pages now
+  use `syncList` via a `render`/`refresh` split in `app.js`, and a second,
+  more subtle bug in `syncList` itself (reorder churn around a focused row)
+  was caught by this session's own independent code review and fixed.
+- **320/768px + 200% text resize + reduced-motion + forced-colors (was:
+  "not independently verified -- tooling limitation"):** 320/768/1024/1440px
+  and 200% text resize are now live-verified against the real running app
+  via a working alternate mechanism (a local CSP-relaxing reverse-proxy +
+  iframe harness, since `resize_window` remains unreliable and
+  `frame-ancestors 'none'` otherwise blocks iframe-based testing).
+  `prefers-reduced-motion` is now live-verified via rule injection.
+  `forced-colors: active` remains code-review-only — true browser-level
+  media-feature emulation was not achievable via any tooling this session
+  had access to (see `tasks/todo.md` for the specific constraints ruled
+  out); this is the one item in this list that is still verified by code
+  reading rather than live pixels, and is called out as such rather than
+  marked fully closed.
+- **Tablist keyboard behavior:** not in Unit 16's original 6-item gap list,
+  but flagged as a P2 accessibility finding at the time; closed this session
+  with the standard WAI-ARIA APG roving-tabindex pattern.
+- **Event-loop responsiveness / lease-starvation proof (was: "not
+  independently re-instrumented/re-measured... Unit 15 measured post-seed
+  query latency, not live event-loop responsiveness during an active
+  backfill tick"):** a new measurement script now proves both a 100,000-row
+  rebuild and a maximum 2,000-record tick complete well within budget
+  without starving lease renewal, against the real production worker class.
+
+**Checkpoint:** 2 fresh-context independent reviews (code-reviewer,
+security-auditor) ran against this continuation's full diff before its
+final commit. Security: 0 findings. Code review: 2 Important findings, both
+real, both fixed test-first and live-verified (the `syncList` reorder bug
+above, and the `/api/overview` LEASE_UNCLAIMED gate gap above); 2 low-
+severity suggestions reviewed and accepted as-is. Full combined suite: 960
+passed (958 -> 960 after the 2 new review-fix regression tests), 0 failed.
+No merge, no push, no `src/runtime` modification.
+
 ## Final handoff
 
-- **Outcome:** Units 0-16 of the Dashboard Redesign (docs/27, ADR-27) are
-  complete on branch `dashboard-redesign`. 921/921 combined `tests/unit
+- **Outcome:** Units 0-16 plus the 2026-08-23 continuation (above) of the
+  Dashboard Redesign (docs/27, ADR-27) are complete on branch
+  `dashboard-redesign`. 960/960 combined `tests/unit
   tests/dashboard` suite green at the final commit. The old Part 2 static
   UI is fully retired; every route in docs/27 §4/§9.1 is implemented,
   tested, and live-verified against a real browser and Draindeck's own
   real event/execution history plus a 100,000-row scale fixture.
 - **Files changed:** every commit from Unit 0 (`1828f58`-adjacent) through
-  this unit's final commit is scoped to `src/draindeck_dashboard/`,
-  `tests/dashboard/`, `docs/27-dashboard-redesign-spec.md`,
+  this continuation's final commit (`6f8246f`) is scoped to
+  `src/draindeck_dashboard/`, `tests/dashboard/`,
+  `docs/27-dashboard-redesign-spec.md`,
   `docs/08-session-0-closure-and-adr-amendments.md` §5i,
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`, `tasks/`,
   `PRODUCT.md`, `DESIGN.md`, and `NEXT.md`. **`src/runtime` was never
-  touched** (confirmed: every unit's diff is reviewable per-commit; no
-  commit message or diff in this branch's history touches `src/runtime`).
-  No dependency was installed (`dashboard` extras were already declared
-  by ADR-26; nothing new added to `pyproject.toml` this branch).
+  touched** (confirmed: `git diff 7cdb23b..HEAD --stat -- src/runtime` is
+  empty). No dependency was installed.
 - **Migration/compatibility:** the v1->v2 SQLite migration
   (`migrations.py`) is additive-only, applied automatically on next
   connect, tested for concurrent-start safety, idempotent restart, and
@@ -1779,70 +1845,80 @@ risk.
   migration or by any new query. The legacy Phase 5 per-repository
   endpoints and the old static UI's server-side routes remain unchanged
   and still pass their original tests.
-- **Test results:** `pytest tests/unit tests/dashboard -q` → 921 passed
-  (560 unit baseline + 361 dashboard). Every Node `.mjs` frontend contract
-  test passes standalone and via the `test_static_js_contracts.py`
-  subprocess wrapper. Scale/performance acceptance
-  (`tests/dashboard/scale/measure_performance.py`) passes all 12 measured
-  endpoints against docs/27 SS14's budgets on the 20/1,000/2,000/10,000/
-  100,000-row fixture (see Unit 15's entry for exact figures).
+- **Test results:** `pytest tests/unit tests/dashboard -q` → **960 passed**
+  (560 unit + 398 dashboard), run twice for consistency, 0 failed. Scale/
+  performance acceptance (`tests/dashboard/scale/measure_performance.py`)
+  passes all 12 measured endpoints against docs/27 SS14's budgets on the
+  20/1,000/2,000/10,000/100,000-row fixture (Unit 15). Event-loop/lease-
+  starvation acceptance (`tests/dashboard/scale/measure_event_loop_
+  responsiveness.py`, new this continuation) passes both scenarios (a
+  100,000-row single-repo rebuild and a maximum 2,000-record tick) against
+  a real `ReadModelWorker`, run twice for consistency (see the 2026-08-23
+  continuation entry above for exact figures).
 - **Browser/accessibility/security results:** extensive real-browser
-  verification across Units 6-16 (see each unit's dated entry for
-  specifics) covering every route's populated/empty/loading/error/
-  reconnecting states, keyboard-only interaction (search, dialogs, tabs,
-  filters), zero console errors throughout, CSP/security headers on every
-  route, and the security/accessibility fixes in this unit. **Known,
-  honestly-carried gap**: pixel-exact 320/768/1024/1440 screenshots and a
-  200% text-resize/forced-colors/reduced-motion live spot-check were not
-  independently verified -- the browser automation tool's `resize_window`
-  does not reliably change the tab's actual `window.innerWidth` in this
-  session (confirmed repeatedly across Units 9-15); the underlying CSS
-  for these states was code-reviewed and, for forced-colors specifically,
-  corrected this unit. Four independent fresh-context reviews (security,
-  contract-honesty, accessibility, code-quality) ran against the full
-  diff; their findings and dispositions are recorded above.
-- **Independent review findings and dispositions:** see this unit's
-  entry above in full -- 0 security findings; 8 real defects fixed
-  test-first and live-verified; 6 findings evaluated and explicitly
-  deferred with rationale (most significantly, the `INDEX_PREPARING`
-  staleness contract, which is unwired end-to-end and is the single
-  largest piece of genuinely unfinished spec-required behavior in this
-  branch).
+  verification across Units 6-16 plus this continuation covering every
+  route's populated/empty/loading/error/reconnecting/preparing/stale
+  states, keyboard-only interaction (search, dialogs, tabs, tablist arrow
+  keys, filters), focus-not-obscured-by-sticky-header, zero console errors
+  throughout, and CSP/security headers on every route. 320/768/1024/1440
+  CSS px and 200% text resize are now live-verified against the real
+  running app (a local CSP-relaxing reverse-proxy + iframe harness, since
+  `resize_window` remains unreliable this session and `frame-ancestors
+  'none'` otherwise blocks iframe-based testing); `prefers-reduced-motion`
+  is live-verified via rule injection. **One honestly-carried gap
+  remains**: `forced-colors: active` is verified by code review only
+  (`.chart-bar` System Colors override) — true browser-level forced-colors
+  media-feature emulation was not achievable via any tooling available
+  this session (no working DevTools/CDP Emulation access; OS-level
+  high-contrast toggling is out of scope as a system-settings change).
+- **Independent review findings and dispositions:** Unit 16's own review
+  round (above) found 0 security defects and 8 real contract/accessibility/
+  quality defects, all fixed; 6 further findings were deferred with
+  rationale — this continuation closed every one of those 6 (see the
+  2026-08-23 continuation entry above). This continuation then ran its own
+  fresh 2-reviewer round (code-reviewer, security-auditor) against its own
+  diff: 0 security findings; 2 Important code-quality findings, both real,
+  both fixed test-first and live-verified/tested (a `syncList` reorder-
+  churn bug and a missing LEASE_UNCLAIMED gate on `/api/overview`); 2
+  low-severity suggestions reviewed and accepted as-is. No open P0/P1/P2
+  finding remains from either review round.
 - **Residual risks:**
-  1. The `INDEX_PREPARING` staleness contract gap (above) means a
-     freshly-registered or rebuilding repository's list/detail endpoints
-     can return misleadingly-empty results instead of the spec's typed
-     signal -- functionally works (no crash, no wrong data), just not
-     honestly labeled as "still preparing" the way the approved spec
-     requires.
-  2. `LEASE_UNCLAIMED`'s no-flash gate is unimplemented -- a brief
-     startup window before an indexer claims the lease can show an
-     immediate, avoidable warning.
-  3. Execution Detail's nested run metadata is not surfaced.
-  4. Repository Overview's live-vs-persisted attention-count divergence
-     window (P2, cosmetic, self-correcting within one reconciliation
-     tick).
-  5. The 320/768px live-pixel/forced-colors/reduced-motion verification
-     gap (tooling limitation, not a known code defect -- the CSS was
-     reviewed and one real forced-colors bug was found and fixed this
-     unit via code reading rather than live pixel testing).
-  6. `rebuild_read_models()` remains unreachable in production; whether
-     that's intentional (per its own module's "incremental handles this
-     by construction" reasoning) or a real gap against docs/27 SS8.4's
-     specific wording is an open architectural question for a future ADR
-     discussion, not resolved in this branch.
-- **Git status:** working tree clean at each unit's commit boundary;
-  every unit ended at its own local checkpoint commit exactly as
+  1. `forced-colors: active` true browser-level rendering is verified by
+     code review only, not live pixels — a tooling limitation of this
+     session's available browser-automation access (see above), not a
+     known code defect.
+  2. `dom.js`'s `syncList` intentionally lags a focused row's *content*
+     behind newly-arrived data until focus moves elsewhere (it never
+     reorders or re-renders a currently-focused row's interior) — a
+     disclosed, reviewed tradeoff against the alternative of yanking focus
+     out from under an actively-focused control on every SSE update, not
+     a defect.
+- **Git status:** working tree clean at each unit/continuation commit
+  boundary; every commit is its own local checkpoint exactly as
   authorized. **No merge, no push, and no `src/runtime` modification at
   any point in this branch's history.**
 
 ## Final verification
 
-- Focused tests: not run
-- Dashboard suite: not run
-- Combined unit + Dashboard suite: not run
-- Real-browser/accessibility review: not run
-- Scale/performance review: not run
-- Security review: not run
-- Independent reviews: not run
-- Final working tree / commit list: not recorded
+- Focused tests: run throughout (TDD per item, failing-first where
+  applicable — see the 2026-08-23 continuation entry for the specific new
+  test files/counts per item)
+- Dashboard suite: `pytest tests/dashboard -q` → **398 passed**
+- Combined unit + Dashboard suite: `pytest tests/unit tests/dashboard -q`
+  → **960 passed**, run twice for consistency, 0 failed
+- Real-browser/accessibility review: run — 320/768/1024/1440px, 200% text
+  resize, keyboard-only, focus-not-obscured, and reduced-motion all
+  live-verified against the real running app this continuation;
+  forced-colors verified by code review only (see Residual risks above)
+- Scale/performance review: run —
+  `tests/dashboard/scale/measure_performance.py` (Unit 15, pre-existing,
+  still passing) and `tests/dashboard/scale/measure_event_loop_
+  responsiveness.py` (new this continuation, 2 runs, both PASS)
+- Security review: run — fresh-context security-auditor pass this
+  continuation, 0 findings at any severity
+- Independent reviews: run — code-reviewer + security-auditor this
+  continuation; 2 Important findings, both fixed and verified; see above
+- Final working tree / commit list: clean; `7cdb23b..HEAD` is 10 commits
+  (`143625f`, `0ac006c`, `f4343c5`, `0d9a42a`, `553032e`, `0fd6f82`,
+  `28312d1`, `f053e4e`, `6f8246f`, plus this documentation commit), each
+  scoped to exactly the item(s) it names in its message

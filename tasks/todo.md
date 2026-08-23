@@ -84,15 +84,142 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
       Live-verified against the real running app via direct `changes`-table inserts plus
       DOM-attribute instrumentation: focus, active element, scroll position, and row DOM-node
       identity all survive a real SSE-triggered refresh; see the 2026-08-23 evidence log entry.
-- [x] Dashboard suite passes (361/361)
-- [x] Combined unit+Dashboard suite passes (921/921)
-- [ ] Independent contract, security, accessibility/visual, and quality reviews close all P0/P1/P2
-      findings — reviews ran and 8 real defects were fixed test-first and live-verified; 6 findings
-      were evaluated and explicitly deferred with rationale (see Unit 16's evidence log entry), not
-      all closed.
+- [x] Dashboard suite passes (398/398 as of this session's final commit; was 361/361 at Unit 16)
+- [x] Combined unit+Dashboard suite passes (960/960 as of this session's final commit; was 921/921
+      at Unit 16 — this session added 37 dashboard tests: read-model state machinery, scheduler
+      rebuild integration, readiness gating, LEASE_UNCLAIMED gate, run metadata, overview parity)
+- [x] Independent contract, security, accessibility/visual, and quality reviews close all P0/P1/P2
+      findings — this session ran 2 fresh-context reviews (code-reviewer, security-auditor) against
+      the full session diff (items 1-9). Security: 0 findings at any severity. Code review: 2
+      Important-severity findings (a `syncList` reordering-churn bug and a missing LEASE_UNCLAIMED
+      gate on `/api/overview`'s attention aggregate), both fixed test-first, live-verified, and
+      committed; 2 low-severity suggestions reviewed and accepted as-is (readiness-gate-before-
+      param-validation ordering is intentional; `readiness.js`'s thin DOM helpers have no dedicated
+      unit test but were live-verified via screenshots during Item 1's frontend work). See the
+      2026-08-23 evidence log entry. (Unit 16's own prior review round, from the session before this
+      continuation, is unrelated and already closed per its own entry above.)
 - [x] Final docs, screenshots, measurements, and exact test evidence are recorded
 - [x] Authorized per-unit local commits, working tree, and no-merge/no-push state are reported
 
 ## Implementation evidence log
 
 Add dated, concise command/result entries here during build-auto; do not pre-check items based on intent.
+
+### 2026-08-23 continuation: closing the 8 unchecked definition-of-done gates
+
+Baseline: `7cdb23b` (Unit 16's final commit). All 9 items from the resuming
+`/build-auto` directive closed; final commit `6f8246f`. `src/runtime`
+untouched throughout (`git diff 7cdb23b..HEAD --stat -- src/runtime` empty).
+No dependency installed. No merge, no push.
+
+- **Items 1/2 (INDEX_PREPARING/REBUILDING/READY + production rebuild
+  caller):** `read_models.py` gained `mark_preparing`/`mark_rebuilding`/
+  `mark_failed`; the pre-existing bug where every incremental write
+  immediately marked READY (fabricating completeness) was removed.
+  `scheduler.py`'s new `_maybe_rebuild` submits `rebuild_read_models`
+  through the lease-owned `ReadModelWorker` on generation rollover/
+  catch-up/unsafe-mutation. `api_queries.py` gained
+  `check_read_model_readiness`/`projection_state_summary`, wired into
+  `cross_repository_issues/runs/executions`, `entity_topology`, and all
+  three detail endpoints in `app.py`. Frontend: `readiness.js` (new),
+  Preparing panel/stale/projection-incomplete banners rendered on every
+  affected list/detail page. Commits `143625f`, `0ac006c`, `f4343c5`.
+  New tests: `test_scheduler_rebuild.py` (9 integration scenarios:
+  initial backfill, multi-page backfill, unsafe mutation, generation
+  rollover, preparing/rebuilding/ready visibility, failure+retry,
+  lease-loss consistency), plus unit/API-level readiness tests.
+- **Item 3 (LEASE_UNCLAIMED 10s gate):** WHERE-clause gate added to
+  `/api/attention` in `app.py`, scoped to `kind='LEASE_UNCLAIMED'` only
+  (LEASE_STALE never delayed; resolved rows never hidden). Commit
+  `0d9a42a`. 4 new tests, all pass.
+- **Item 4 (nested run metadata):** `_run_metadata_field` in `app.py`;
+  `execution-detail`'s response gained `runMetadata`, rendered with the
+  exact fallback `"run metadata unavailable (legacy/ambiguous)"`. Commit
+  `0ac006c`. Live-verified: `GET /repositories/1/executions/1-e1`
+  screenshot shows "Run metadata: run metadata unavailable
+  (legacy/ambiguous)".
+- **Item 5 (Repository Overview attention-count source):**
+  `repository_attention_summary` in `api_queries.py` now reads
+  `attention_conditions` directly (same source as `/api/attention`),
+  replacing the old `derive_repository_conditions` live-recompute call
+  in `app.py`. Commit `553032e`. 1 new parity test.
+- **Item 6 (focus/scroll survive SSE refresh):** `app.js`'s
+  `onInvalidate` now calls each page's `refresh()` (reuses the mounted
+  DOM shell) instead of `render()` (full `clear(root)` teardown) for
+  every list route; all 7 list pages (`home`, `repositories`,
+  `attention`, `runs`, `issues`, `executions`, `evidence`) gained a
+  `refresh()`. `dom.js`'s `syncList` skips `renderFn` AND repositioning
+  for a row that currently holds focus (`insertBefore` blurs an element
+  even when only repositioning it within the same parent — verified via
+  an isolated, framework-free `<ul>/<li>` test). Commit `0fd6f82`.
+  Live-verified against the real running smoke server (not just
+  fixtures): direct SQL inserts into the `changes` table (bypassing the
+  poller, confirmed via sequential `change_sequence` values), followed
+  by DOM-attribute-based instrumentation (world-agnostic — a
+  `console.log`/`window` override set from the browser-automation tool
+  runs in an isolated JS world that does NOT share state with the page's
+  own script, which cost significant debugging time before this was
+  understood) — focus, active element, scroll position, and a hand-set
+  marker attribute on the row all survived a real SSE-triggered refresh.
+  **A later independent code review caught a second-order bug in this
+  same commit**: the focused-row skip didn't advance the loop's
+  `previousEl` anchor, causing every row *after* the focused one to be
+  force-repositioned in front of it on every subsequent refresh (traced
+  and confirmed, then fixed and re-verified live). Commit `6f8246f`.
+- **Item 7 (viewport/resize/motion/keyboard acceptance):** `resize_window`
+  remains unreliable in this session (confirmed again); used a local
+  CSP-relaxing reverse-proxy (rewrites `frame-ancestors`/`X-Frame-Options`
+  only, all other content passes through unmodified — throwaway,
+  scratchpad-only, never committed) plus a fixed-width `<iframe>` harness
+  instead. Verified against the real running app: no horizontal overflow
+  at 320/768/1024/1440 CSS px or at 200% root-font-size resize (1280px
+  viewport); table wrappers scroll independently via their own
+  `overflow-x:auto`. `prefers-reduced-motion`: base.css's global
+  animation/transition kill rule, forced unconditionally via injected
+  `<style>`, produced no visual regression (live-tested) — matches the
+  existing code review. `forced-colors: active`: code-reviewed only
+  (`.chart-bar` System Colors override in components.css) — true
+  browser-level forced-colors rendering could not be exercised (F12/
+  DevTools does not open in this browser-automation context; no CDP
+  Emulation domain access available; OS-level high-contrast toggling is
+  out of scope as a system-settings change per this session's operating
+  rules). Keyboard-only Tab traversal and focus-not-obscured-by-sticky-
+  utility-bar re-verified live (focused row lands well clear of the
+  64px-tall sticky bar even after a multi-row scroll-into-view).
+- **Item 8 (tablist keyboard):** roving `tabindex` + ArrowLeft/ArrowRight
+  (wrapping) + Home/End added to the execution artifact Transcript/Diff
+  tablist in `executions.js`, matching the WAI-ARIA APG automatic-
+  activation pattern. Commit `28312d1`. Live-verified: a JS-only
+  `.focus()` call did not establish keyboard-routable focus in this
+  browser-automation session (a real click was required for the keydown
+  handler to fire) — noted as a tooling quirk, not an app defect.
+- **Item 9 (100k-row rebuild / 2,000-record tick event-loop
+  responsiveness, lease-renewal starvation):** new
+  `tests/dashboard/scale/measure_event_loop_responsiveness.py`, run
+  against a real `ReadModelWorker`. Scenario A (100,000-row single-repo
+  `rebuild_read_models`, the worst case — one un-chunked transaction):
+  job elapsed ~126-127ms, max event-loop probe gap 28-39ms (50ms
+  budget), max lease-renewal latency 0.004-0.127s (5s budget, half the
+  10s TTL) — 2 runs, both PASS. Scenario B (2,000-record tick as 4 x
+  500-row page-persist jobs, matching indexer.py's real per-page
+  `await persist(...)` shape): job elapsed ~12.6-12.8ms, max event-loop
+  gap 22-26ms, max lease-renewal latency 0.004-0.012s — 2 runs, both
+  PASS. Commit `f053e4e`.
+- **Independent reviews:** 2 fresh-context reviews (code-reviewer,
+  security-auditor) against the full `7cdb23b..HEAD` diff before the
+  final commit. Security: 0 findings (SQL injection, cross-repo/raw-
+  evidence leakage, INDEX_PREPARING fail-open, XSS, tablist a11y, and
+  the LEASE_UNCLAIMED gate scope all explicitly checked and clean).
+  Code review: 2 Important findings (the Item 6 `syncList` reorder bug
+  above, and a missing LEASE_UNCLAIMED gate on `/api/overview`'s
+  attention aggregate — a latent cross-endpoint inconsistency, not
+  currently user-visible since `home.js` sources its total from the
+  separately-gated `/api/attention`), both fixed test-first and
+  live-verified/tested; 2 low-severity suggestions reviewed and accepted
+  as-is. Commit `6f8246f`.
+- **Full suite, final commit `6f8246f`:**
+  `pytest tests/unit tests/dashboard -q` → 960 passed (560 unit + 398
+  dashboard), 0 failed, run twice for consistency.
+- **Git status:** working tree clean at each commit boundary; every item
+  ended at its own local checkpoint commit exactly as authorized. No
+  merge, no push, no `src/runtime` modification at any point.
