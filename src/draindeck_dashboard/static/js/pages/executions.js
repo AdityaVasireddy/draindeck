@@ -82,8 +82,14 @@ export async function render(root, params, ctx) {
                               "aria-pressed": String(pressed) }, [label]);
     chip.addEventListener("click", () => {
       const url = value === "execution" ? "/executions" : "/executions?groupBy=issue";
-      window.history.pushState({}, "", url);
-      window.dispatchEvent(new PopStateEvent("popstate"));
+      // Same-page toggle -- keep focus on the equivalent new chip (the
+      // old one is destroyed by render()'s synchronous rebuild), not the
+      // main landmark.
+      if (ctx && ctx.navigate) {
+        ctx.navigate(url, { preserveFocus: true });
+        const newChip = root.querySelector('.filter-chip[aria-pressed="true"]');
+        if (newChip) newChip.focus();
+      } else { window.history.pushState({}, "", url); window.dispatchEvent(new PopStateEvent("popstate")); }
     });
     toggleBar.appendChild(chip);
   }

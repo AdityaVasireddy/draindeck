@@ -89,8 +89,22 @@ function renderUnregisterDialog(root, repoId, repoDisplayName, triggerEl) {
     document.removeEventListener("keydown", onKeydown);
     if (returnFocus && triggerEl && triggerEl.isConnected) triggerEl.focus();
   }
+  // A minimal manual focus trap: this dialog only ever has these two
+  // focusable elements, so cycling between them directly is simpler and
+  // more robust than computing the full focusable-descendant set. Without
+  // this, Tab/Shift+Tab from the last/first button escapes into the
+  // underlying page while the modal backdrop is still shown.
   function onKeydown(event) {
-    if (event.key === "Escape") close();
+    if (event.key === "Escape") {
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    const next = event.shiftKey
+      ? (document.activeElement === cancelBtn ? confirmBtn : cancelBtn)
+      : (document.activeElement === confirmBtn ? cancelBtn : confirmBtn);
+    next.focus();
   }
   document.addEventListener("keydown", onKeydown);
   cancelBtn.addEventListener("click", () => close());

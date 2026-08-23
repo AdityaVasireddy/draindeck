@@ -72,13 +72,21 @@ def repository_summaries(conn: sqlite3.Connection, *, limit: int = 50, offset: i
     # joined-column expressions for ORDER BY.
     order_column = {"attention_count": attn_expr, "latest_run_at": "lr.latest_run_at"}.get(column, column)
 
-    joins = (
+    # count_joins omits the "latest run" window-function subquery below --
+    # neither the WHERE clause nor a plain COUNT(*) ever reference `lr`,
+    # so joining it would needlessly re-materialize a ROW_NUMBER() window
+    # over every run on every page-count call, reintroducing the exact
+    # per-request cost the tie-break fix (above) was written to avoid.
+    count_joins = (
         "FROM repositories r "
         "LEFT JOIN checkpoints c ON c.repository_id = r.id "
         "LEFT JOIN ("
         "  SELECT repository_id, COUNT(*) AS attention_count FROM attention_conditions "
         "  WHERE resolved_at IS NULL GROUP BY repository_id"
-        ") ac ON ac.repository_id = r.id "
+        ") ac ON ac.repository_id = r.id"
+    )
+    joins = (
+        count_joins + " "
         "LEFT JOIN ("
         "  SELECT repository_id, latest_outcome, latest_run_at FROM ("
         "    SELECT rv.repository_id, rv.outcome AS latest_outcome, "
@@ -103,7 +111,7 @@ def repository_summaries(conn: sqlite3.Connection, *, limit: int = 50, offset: i
         f"ORDER BY {order_column} {direction.upper()}, r.id "
         "LIMIT ? OFFSET ?"
     )
-    count_sql = f"SELECT COUNT(*) {joins} WHERE {where_sql}"
+    count_sql = f"SELECT COUNT(*) {count_joins} WHERE {where_sql}"
     total = conn.execute(count_sql, params).fetchone()[0]
     rows = conn.execute(sql, [*params, limit, offset]).fetchall()
     items = []

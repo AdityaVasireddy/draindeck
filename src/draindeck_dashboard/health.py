@@ -61,9 +61,11 @@ def build_health(conn: sqlite3.Connection, repo_id: int) -> dict:
         "identityGeneration": generation,
         "corruptCount": corrupt_count,
         "unknownEventTypeCount": unknown_event_type_count,
+        # ownerToken is deliberately never included (docs/27 SS11: "Do not
+        # expose ... lease owner token ... in cross-repository UI
+        # summaries") -- no consumer needs it, only its status/age.
         "lease": {
             "status": lease_state.status,
-            "ownerToken": lease_state.owner_token,
             "ageSeconds": lease_state.age_seconds,
         },
     }

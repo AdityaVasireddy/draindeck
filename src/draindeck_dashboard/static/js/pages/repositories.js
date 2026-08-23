@@ -124,8 +124,20 @@ export async function render(root, params, ctx) {
   searchForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const q = new FormData(searchForm).get("q") || "";
-    window.history.pushState({}, "", registryQueryToUrl({ ...query, q: String(q), page: 1 }));
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    const url = registryQueryToUrl({ ...query, q: String(q), page: 1 });
+    // Same-page filter -- keep focus on the search field, not the main
+    // landmark, so the user can keep typing/correcting their query.
+    // render()'s synchronous rebuild replaces the input node itself, so
+    // the old (focused) one must be explicitly replaced with its
+    // successor rather than relying on preserveFocus alone.
+    if (ctx && ctx.navigate) {
+      ctx.navigate(url, { preserveFocus: true });
+      const newInput = root.querySelector("#registry-search");
+      if (newInput) {
+        newInput.focus();
+        newInput.setSelectionRange(newInput.value.length, newInput.value.length);
+      }
+    } else { window.history.pushState({}, "", url); window.dispatchEvent(new PopStateEvent("popstate")); }
   });
 }
 

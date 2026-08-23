@@ -12,53 +12,26 @@
 
 ## 1. Current state (verified 2026-08-23)
 
-- **Dashboard redesign: ACCEPTED and IN PROGRESS (build-auto).** Branch
-  `dashboard-redesign`, baseline `4052fef97dbb90b52ae91fc01832557bc348cab8`,
-  ADR-27/docs/27/tasks/plan accepted 2026-08-23 (commit `1828f58`), local
-  per-unit commits authorized, merge/push still prohibited. Units 0-15
-  are complete (backend/data layer, UI routing, design tokens/shell/
-  themes, API client + SSE primitives, client-side router, Home/
-  Repositories/Add/Repository-Overview, Attention Center + global search,
-  Runs/Issues explorers + detail + shared timeline/topology, Executions
-  explorer with groupBy + detail with Transcript/Diff tabs, Evidence
-  explorer/detail with keyset pagination plus Home-page bar charts, About
-  & Safety plus an exhaustive-states/hardening audit, and now a
-  20/1,000/2,000/10,000/100,000 scale fixture with full performance
-  acceptance) - 917/917 combined suite green. The old Part 2 static UI is
-  fully retired. Extensively live-verified end-to-end against a real
-  browser, Draindeck's own real event/execution history (843 evidence
-  records), and the seeded 100,000-row scale fixture, including honest
-  real-world edge cases (legacy relative artifact paths, unresolvable
-  historical commit refs) correctly surfacing through the designed error
-  states rather than being masked. Several real bugs were caught and
-  fixed mid-build (a `dom.js` attribute-reflection bug; a connection-
-  status regression from retiring old `/app.js`; a `replace_all`-missed
-  sibling call site; a visually-hidden analytics `<dl>` that should have
-  stayed visible; a dialog that never returned keyboard focus to its
-  trigger on close; an N+1 query pattern in `executions?groupBy=issue`;
-  and a row-multiplying JOIN fan-out in `repository-summaries`'s "latest
-  run" lookup that only the scale fixture surfaced) - each documented
-  with root cause in the build evidence log. Units 13-15 each hit
-  automation-tool artifacts (not app bugs) while live-verifying - a click
-  that silently failed to navigate, a stale screenshot frame during a
-  resize - both root-caused via direct DOM checks
-  (`read_network_requests`, `scrollWidth`/`activeElement`/`innerWidth`
-  assertions) rather than taken at face value. **Open item for Unit 16:**
-  docs/27 SS8.4 describes a specific "previously-OK row mutation
-  schedules an off-thread scoped rebuild" trigger that is not wired
-  anywhere in `indexer.py` (`rebuild_read_models` is unreachable outside
-  its own tests) - `read_models.py`'s own docstring says the incremental
-  path handles this safely by construction regardless, but the DoD item
-  "unsafe OK mutation rebuild is lease-owned/off-thread" should not be
-  marked done without Unit 16 explicitly adjudicating this discrepancy.
-  Known gap: 768px/320px responsive-breakpoint screenshots remain
-  unverified (the browser resize tool still doesn't reliably change the
-  tab's actual viewport in this session - reconfirmed again in Unit 15);
-  the underlying CSS was code-reviewed and confirmed present. **Next
-  action:** continue with Unit 16 (independent reviews and final
-  handoff). Full running evidence log, commands, and per-unit detail:
-  `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
-  `tasks/todo.md`.
+- **Dashboard redesign: BUILD-AUTO COMPLETE (Units 0-16), pending user
+  review before merge/push.** Branch `dashboard-redesign`, baseline
+  `4052fef97dbb90b52ae91fc01832557bc348cab8` through the final Unit 16
+  commit. 921/921 combined `tests/unit tests/dashboard` suite green;
+  every docs/27 route implemented and live-verified, including a
+  100,000-row scale fixture and four independent fresh-context reviews
+  (0 security findings; 8 real defects fixed test-first; 6 findings
+  explicitly deferred with rationale). The old Part 2 static UI is fully
+  retired. **No merge or push has occurred.** Full outcome, files
+  changed, migration/compatibility statement, test/browser/security
+  results, independent-review dispositions, and residual risks (most
+  notably: the `INDEX_PREPARING` staleness contract is unwired end-to-end,
+  and 320/768px live-pixel verification was not possible this session due
+  to a tooling limitation) are recorded in the **Final handoff** section
+  at the bottom of `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` --
+  read that before deciding what (if anything) still needs doing before
+  merge. Per-unit checklist: `tasks/todo.md`. **Next action is a user
+  decision**, not an autonomous next step: review the handoff, then
+  either request fixes for the deferred/residual items above or approve
+  merge.
 
 - **Dashboard Part 2 (ADR-26): Phase 7 (run lifecycle events) complete on
   branch `dashboard`** (2026-08-21, commits `fd2b9eb`..`7ff1033`, on top of

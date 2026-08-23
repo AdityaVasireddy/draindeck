@@ -24,15 +24,17 @@ from draindeck_dashboard.read_models import (
 
 
 def _insert_evidence(conn, repo_id, gen_id, event_id, event_type, *, issue_id=None,
-                     execution_id=None, run_id=None, payload=None, integrity="OK"):
+                     execution_id=None, run_id=None, payload=None, integrity="OK",
+                     event_ts="2026-08-23T00:00:00Z"):
     conn.execute(
         "INSERT INTO evidence (repository_id, identity_generation_id, record_cursor, "
         "integrity, event_id, event_type, schema_version, issue_id, execution_id, run_id, "
         "event_ts, payload_json, record_hash, length_bytes, stored_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, '2026-08-23T00:00:00Z', ?, 'h', 1, "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'h', 1, "
         "'2026-08-23T00:00:00Z')",
         (repo_id, gen_id, f"cursor-{gen_id}-{event_id}", integrity, event_id, event_type,
-         issue_id, execution_id, run_id, json.dumps(payload) if payload is not None else None),
+         issue_id, execution_id, run_id, event_ts,
+         json.dumps(payload) if payload is not None else None),
     )
 
 
@@ -107,6 +109,59 @@ def test_rebuild_read_models_persists_executions_runs_and_containments(tmp_path)
         "identity_generation_id=? AND run_id='run-1'", (gen_id,)
     ).fetchone()
     assert run_row == ("anthropic", "a" * 64)
+
+
+def test_run_view_persists_real_observed_started_and_finished_timestamps(tmp_path):
+    """Unit 16 (fresh-context review finding): observed_started_at/
+    observed_finished_at are schema columns read by three query-layer
+    functions but were never written by _write_run_view -- confirmed by
+    running the REAL evidence -> reducer -> persisted-row path end to end
+    (not by fabricating the columns via a direct SQL insert, which is what
+    let this go undetected)."""
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "RunStarted", run_id="run-1", event_ts="2026-08-23T10:00:00Z",
+                     payload={
+                         "engine": {"provider": "anthropic", "model": "claude"},
+                         "reviewer": {"provider": "qwen", "model": None},
+                         "budget": {"max_attempts_per_issue": 1, "max_executions_per_run": 1,
+                                    "hard_stop_proxy_cost_per_run_usd": 1.0,
+                                    "proxy_pricing": "api_list_rates"},
+                         "config_digest": "a" * 64,
+                     })
+    _insert_evidence(conn, 1, gen_id, 2, "RunFinished", run_id="run-1", event_ts="2026-08-23T11:30:00Z",
+                     payload={"outcome": "COMPLETED", "detail": None})
+
+    rebuild_read_models(conn, 1, gen_id)
+
+    run_row = conn.execute(
+        "SELECT observed_started_at, observed_finished_at FROM run_views WHERE repository_id=1 "
+        "AND identity_generation_id=? AND run_id='run-1'", (gen_id,)
+    ).fetchone()
+    assert run_row == ("2026-08-23T10:00:00Z", "2026-08-23T11:30:00Z")
+
+
+def test_apply_changed_entities_also_persists_observed_run_timestamps(tmp_path):
+    """The entity-scoped incremental path (the one every real production
+    tick actually uses) must persist the same fields as the full rebuild
+    -- not just rebuild_read_models, which nothing in indexer.py calls."""
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "RunStarted", run_id="run-2", event_ts="2026-08-23T09:00:00Z",
+                     payload={
+                         "engine": {"provider": "anthropic", "model": "claude"},
+                         "reviewer": {"provider": "qwen", "model": None},
+                         "budget": {"max_attempts_per_issue": 1, "max_executions_per_run": 1,
+                                    "hard_stop_proxy_cost_per_run_usd": 1.0,
+                                    "proxy_pricing": "api_list_rates"},
+                         "config_digest": "b" * 64,
+                     })
+
+    apply_changed_entities(conn, 1, gen_id, run_ids={"run-2"})
+
+    run_row = conn.execute(
+        "SELECT observed_started_at, observed_finished_at FROM run_views WHERE repository_id=1 "
+        "AND identity_generation_id=? AND run_id='run-2'", (gen_id,)
+    ).fetchone()
+    assert run_row == ("2026-08-23T09:00:00Z", None)
 
 
 def test_rebuild_read_models_is_idempotent_and_atomically_replaces_stale_rows(tmp_path):

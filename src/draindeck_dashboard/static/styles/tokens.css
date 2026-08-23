@@ -189,11 +189,16 @@
   --color-chart-7: var(--chart-dark-7); --color-chart-8: var(--chart-dark-8);
 }
 
-/* Forced colors (Windows High Contrast): keep borders/selected/focus/
-   links/status text using system colors; DESIGN.md's paper texture (if
-   ever added) must be disabled here too. */
-@media (forced-colors: active) {
-  :root {
-    forced-color-adjust: none;
-  }
-}
+/* Forced colors (Windows High Contrast): deliberately no global
+   `forced-color-adjust: none` here -- that would tell the browser to
+   keep the authored light/dark palette everywhere instead of remapping
+   to the user's System Colors, which is the OPPOSITE of docs/27 SS10's
+   "forced-colors: active retains borders, selected state, focus, links,
+   and textual status" requirement. The browser's default forced-colors
+   behavior already remaps standard CSS color/background-color/
+   border-color properties correctly; only SVG chart geometry (which
+   forced-colors' automatic remapping doesn't reach) needs a manual
+   System Colors override, scoped to `.chart-bar` in components.css. If
+   DESIGN.md's decorative paper texture is ever added, THAT specific
+   element -- never :root -- is the right place for a scoped
+   `forced-color-adjust: none`. */

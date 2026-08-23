@@ -73,6 +73,26 @@ def test_traversal_shaped_evidence_id_on_detail_route_is_422_or_404_not_500(tmp_
     assert resp.status_code in (404, 422), resp.text
 
 
+# --- lease owner token must never reach the wire (Unit 16 fresh-context
+# contract-honesty review finding: docs/27 SS11 "Do not expose ... lease
+# owner token ... in cross-repository UI summaries") ---
+
+def test_repository_health_endpoint_never_includes_lease_owner_token(tmp_path):
+    client = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    resp = client.get(f"/api/repositories/{repo_id}/health")
+    assert resp.status_code == 200
+    assert "ownerToken" not in resp.json()["lease"]
+
+
+def test_repository_overview_endpoint_never_includes_lease_owner_token(tmp_path):
+    client = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    resp = client.get(f"/api/repositories/{repo_id}/overview")
+    assert resp.status_code == 200
+    assert "ownerToken" not in resp.json()["health"]["lease"]
+
+
 # --- free-text content (issue titles, project paths) round-trips as JSON,
 # never reflected into an HTML/templated response ---
 

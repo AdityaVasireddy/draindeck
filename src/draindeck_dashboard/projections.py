@@ -107,6 +107,13 @@ class RunView:
     # flagging the anomaly (adversarial-review finding, 2026-08-21).
     started_valid: bool = False
     finished_valid: bool = False
+    # The evidence event's own `ts` at first observation -- distinct from
+    # whether the RunStarted/RunFinished payload itself parsed cleanly.
+    # Never recomputed on a later recovery (see _apply_run_started): the
+    # first event is honestly when the run was observed to start/finish,
+    # regardless of whether that record's other fields were malformed.
+    observed_started_at: Optional[str] = None
+    observed_finished_at: Optional[str] = None
 
 
 _CONTAINMENT_EVENT_TYPES = frozenset({
@@ -177,7 +184,7 @@ def fetch_ok_evidence_rows(conn: sqlite3.Connection, repo_id: int, identity_gene
         clauses.append("run_id = ?")
         params.append(run_id)
     sql = (
-        "SELECT event_id, event_type, issue_id, execution_id, run_id, payload_json "
+        "SELECT event_id, event_type, issue_id, execution_id, run_id, payload_json, event_ts "
         "FROM evidence WHERE " + " AND ".join(clauses) + " ORDER BY event_id"
     )
     return conn.execute(sql, params).fetchall()
@@ -188,7 +195,7 @@ def apply_ok_evidence_rows(rows: list) -> ProjectionResult:
     can run over either a full generation (build_projection) or one
     entity's own scoped row set (read_models.py)."""
     result = ProjectionResult()
-    for event_id, event_type_str, issue_id, execution_id, run_id, payload_json in rows:
+    for event_id, event_type_str, issue_id, execution_id, run_id, payload_json, event_ts in rows:
         etype = _try_event_type(event_type_str)
         if etype is None:
             result.unknown_event_type_count += 1
@@ -205,9 +212,9 @@ def apply_ok_evidence_rows(rows: list) -> ProjectionResult:
         elif etype in _CONTAINMENT_EVENT_TYPES:
             _apply_containment_event(result, etype, execution_id, payload_json, event_id)
         elif etype is EventType.RUN_STARTED:
-            _apply_run_started(result, run_id, payload_json, event_id)
+            _apply_run_started(result, run_id, payload_json, event_id, event_ts)
         elif etype is EventType.RUN_FINISHED:
-            _apply_run_finished(result, run_id, payload_json, event_id)
+            _apply_run_finished(result, run_id, payload_json, event_id, event_ts)
         # CommitIntent/CommitCreated/HumanIntervention/GuidelinePromoted:
         # not modeled in Part 2's issues/executions summary view.
 
@@ -401,7 +408,8 @@ def _run_started_fields(payload: dict) -> tuple[dict, bool]:
 
 
 def _apply_run_started(result: ProjectionResult, run_id: Optional[str],
-                       payload_json: Optional[str], event_id: int) -> None:
+                       payload_json: Optional[str], event_id: int,
+                       event_ts: Optional[str] = None) -> None:
     if run_id is None:
         return  # no run_id to key metadata on -- evidence not modeled here
     payload = _load_payload(payload_json)
@@ -424,7 +432,8 @@ def _apply_run_started(result: ProjectionResult, run_id: Optional[str],
             existing.started_valid = True
         return
 
-    view = RunView(run_id, last_event_id=event_id, started_valid=complete, **fields)
+    view = RunView(run_id, last_event_id=event_id, started_valid=complete,
+                   observed_started_at=event_ts, **fields)
     # Availability (has_run_metadata) still comes from THIS entry's mere
     # presence, per the amendment's rule that availability is decided by
     # RunStarted's existence, not by whether every field parsed.
@@ -434,7 +443,8 @@ def _apply_run_started(result: ProjectionResult, run_id: Optional[str],
 
 
 def _apply_run_finished(result: ProjectionResult, run_id: Optional[str],
-                        payload_json: Optional[str], event_id: int) -> None:
+                        payload_json: Optional[str], event_id: int,
+                        event_ts: Optional[str] = None) -> None:
     if run_id is None:
         return
     view = result.runs.get(run_id)
@@ -462,6 +472,7 @@ def _apply_run_finished(result: ProjectionResult, run_id: Optional[str],
         return
 
     view.finished_seen = True
+    view.observed_finished_at = event_ts
     if valid:
         view.outcome = outcome
         view.last_event_id = event_id

@@ -1,5 +1,37 @@
 import assert from "node:assert/strict";
-import { matchRoute, ROUTES } from "../../../src/draindeck_dashboard/static/js/router.js";
+import { createRouter, matchRoute, ROUTES } from "../../../src/draindeck_dashboard/static/js/router.js";
+
+/** Minimal fake document/window implementing only what createRouter uses,
+    so the options-threading behavior (Unit 16 fresh-context accessibility
+    review: "focus the main heading unless navigation came from a
+    same-page filter", docs/27 SS9.2) is Node-testable without a real DOM. */
+function _fakeEnv(initialPath) {
+  const listeners = { document: {}, window: {} };
+  let pathname = initialPath;
+  let search = "";
+  return {
+    documentImpl: {
+      addEventListener(type, fn) { listeners.document[type] = fn; },
+      removeEventListener(type) { delete listeners.document[type]; },
+    },
+    windowImpl: {
+      location: { get pathname() { return pathname; }, get search() { return search; },
+                 get href() { return `http://x${pathname}${search}`; } },
+      history: {
+        pushState(_state, _title, url) {
+          const [p, q] = url.split("?");
+          pathname = p; search = q ? `?${q}` : "";
+        },
+        replaceState(_state, _title, url) {
+          const [p, q] = url.split("?");
+          pathname = p; search = q ? `?${q}` : "";
+        },
+      },
+      addEventListener(type, fn) { listeners.window[type] = fn; },
+      removeEventListener(type) { delete listeners.window[type]; },
+    },
+  };
+}
 
 let count = 0;
 function test(name, fn) { fn(); count += 1; }
@@ -46,6 +78,33 @@ test("every one of the 18 approved server-side UI routes has a client match", ()
 
 test("a trailing slash still matches (server and client agree on normalization)", () => {
   assert.ok(matchRoute("/repositories/", ROUTES) !== null);
+});
+
+test("navigate() forwards its options object to onNavigate as a third argument", () => {
+  const env = _fakeEnv("/attention");
+  const calls = [];
+  const router = createRouter({ ...env, onNavigate: (match, location, options) => calls.push(options) });
+  calls.length = 0; // drop the initial boot dispatch
+  router.navigate("/attention?status=resolved", { preserveFocus: true });
+  assert.deepEqual(calls, [{ preserveFocus: true }]);
+});
+
+test("navigate() with no options forwards undefined (a real navigation, not a same-page filter)", () => {
+  const env = _fakeEnv("/attention");
+  const calls = [];
+  const router = createRouter({ ...env, onNavigate: (match, location, options) => calls.push(options) });
+  calls.length = 0;
+  router.navigate("/runs");
+  assert.deepEqual(calls, [undefined]);
+});
+
+test("a same-path navigate() (query-string-only re-dispatch) still forwards options", () => {
+  const env = _fakeEnv("/attention");
+  const calls = [];
+  const router = createRouter({ ...env, onNavigate: (match, location, options) => calls.push(options) });
+  calls.length = 0;
+  router.navigate("/attention", { preserveFocus: true }); // path === current
+  assert.deepEqual(calls, [{ preserveFocus: true }]);
 });
 
 console.log(`router.js: ${count} test(s) passed`);

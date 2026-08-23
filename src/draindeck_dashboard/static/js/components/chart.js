@@ -14,10 +14,13 @@ import { el } from "../dom.js";
 export const MAX_CHART_CATEGORIES = 8;
 const _OTHER_LABEL = "Other";
 
-/** Pure: caps `entries` ([{label, value}]) at MAX_CHART_CATEGORIES,
-    collapsing the smallest remainder into one "Other" entry (never
-    silently dropped) if there were more than 8. Order is preserved for
-    the first 8; "Other" is always last. */
+/** Pure: caps `entries` ([{label, value}]) at MAX_CHART_CATEGORIES. The
+    first 7 entries are kept in the CALLER's original order (never
+    re-sorted by value -- every current caller already passes a
+    meaningful fixed categorical order, e.g. issue lifecycle states, and
+    reordering by magnitude would make that order less predictable, not
+    more honest); any remainder beyond 7 is summed into one trailing
+    "Other" entry, never silently dropped. */
 export function capChartEntries(entries) {
   const sorted = [...entries];
   if (sorted.length <= MAX_CHART_CATEGORIES) return sorted;

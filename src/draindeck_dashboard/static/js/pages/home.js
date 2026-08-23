@@ -138,7 +138,7 @@ function renderRecentActivity(listEl, items) {
     rowEl.appendChild(el("a", { href: `/repositories/${item.repositoryId}/evidence/${item.evidenceId}` },
       [`${item.eventType || "(no type)"} — ${item.repositoryDisplayName}`]));
     rowEl.appendChild(timeElement(item.ts, formatAbsoluteTimestamp(item.ts), formatRelativeTime(item.ts, now)));
-  }, "Repositories registered; no evidence observed yet.", "li");
+  }, "Repositories registered; no data observed yet.", "li");
 }
 
 export async function render(root, params, ctx) {

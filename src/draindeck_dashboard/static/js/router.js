@@ -76,21 +76,21 @@ export function createRouter({ routes, onNavigate, documentImpl, windowImpl }) {
   const doc = documentImpl || document;
   const win = windowImpl || window;
 
-  function dispatch() {
+  function dispatch(options) {
     const match = matchRoute(win.location.pathname, routes);
-    onNavigate(match, win.location);
+    onNavigate(match, win.location, options);
   }
 
   function navigate(path, options) {
     const replace = options && options.replace;
     const current = win.location.pathname + win.location.search;
     if (path === current) {
-      dispatch();
+      dispatch(options);
       return;
     }
     if (replace) win.history.replaceState({}, "", path);
     else win.history.pushState({}, "", path);
-    dispatch();
+    dispatch(options);
   }
 
   function handleClick(event) {

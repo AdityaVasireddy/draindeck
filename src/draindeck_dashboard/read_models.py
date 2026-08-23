@@ -103,17 +103,20 @@ def _write_run_view(conn, repo_id, gen_id, view: RunView) -> None:
     conn.execute(
         "INSERT INTO run_views (repository_id, identity_generation_id, run_id, engine_provider, "
         "engine_model, reviewer_provider, reviewer_model, budget_json, config_digest, outcome, "
-        "inconsistent, last_event_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "inconsistent, last_event_id, observed_started_at, observed_finished_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(repository_id, identity_generation_id, run_id) DO UPDATE SET "
         "engine_provider=excluded.engine_provider, engine_model=excluded.engine_model, "
         "reviewer_provider=excluded.reviewer_provider, reviewer_model=excluded.reviewer_model, "
         "budget_json=excluded.budget_json, config_digest=excluded.config_digest, "
         "outcome=excluded.outcome, inconsistent=excluded.inconsistent, "
-        "last_event_id=excluded.last_event_id, updated_at=excluded.updated_at",
+        "last_event_id=excluded.last_event_id, observed_started_at=excluded.observed_started_at, "
+        "observed_finished_at=excluded.observed_finished_at, updated_at=excluded.updated_at",
         (repo_id, gen_id, view.run_id, view.engine_provider, view.engine_model,
          view.reviewer_provider, view.reviewer_model,
          json.dumps(view.budget) if view.budget else None, view.config_digest, view.outcome,
-         int(view.inconsistent), view.last_event_id, _now()),
+         int(view.inconsistent), view.last_event_id, view.observed_started_at,
+         view.observed_finished_at, _now()),
     )
 
 

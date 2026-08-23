@@ -78,6 +78,7 @@ function boot() {
 
   let firstDispatch = true;
   let currentMatch = null;
+  let router = null;
 
   function renderCurrentRoute() {
     if (!pageRoot) return;
@@ -86,12 +87,13 @@ function boot() {
       return;
     }
     const pageFn = _PAGE_MODULES[currentMatch.name];
-    if (pageFn) pageFn(pageRoot, currentMatch.params, { coordinator });
+    const ctx = { coordinator, navigate: (path, options) => router.navigate(path, options) };
+    if (pageFn) pageFn(pageRoot, currentMatch.params, ctx);
     else renderNotYetAvailable(pageRoot, currentMatch.name);
   }
 
-  createRouter({
-    onNavigate(match, location) {
+  router = createRouter({
+    onNavigate(match, location, options) {
       currentMatch = match;
       if (navList) renderRailNav(navList, location.pathname);
       document.title = match ? `${match.name.replace(/-/g, " ")} — Draindeck Dashboard`
@@ -101,8 +103,14 @@ function boot() {
       // Move focus to the main landmark on a real route change so
       // keyboard/AT users land at the new content -- but not on the very
       // first dispatch (the page just loaded; stealing focus from
-      // wherever the browser already put it would be disorienting).
-      if (!firstDispatch && mainContent) mainContent.focus();
+      // wherever the browser already put it would be disorienting) and
+      // not when a same-page filter/toggle/search action explicitly asks
+      // to keep focus where the user already is (docs/27 SS9.2; a page
+      // module requests this via `ctx.navigate(path, {preserveFocus:
+      // true})` instead of a plain link click or browser back/forward,
+      // both of which remain real navigations that do focus main).
+      const preserveFocus = options && options.preserveFocus;
+      if (!firstDispatch && !preserveFocus && mainContent) mainContent.focus();
       firstDispatch = false;
     },
   });

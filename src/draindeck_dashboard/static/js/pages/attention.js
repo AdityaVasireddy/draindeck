@@ -62,8 +62,18 @@ export async function render(root, params, ctx) {
                               "aria-pressed": String(pressed) }, [filter.label]);
     chip.addEventListener("click", () => {
       const url = filter.value === "current" ? "/attention" : `/attention?status=${filter.value}`;
-      window.history.pushState({}, "", url);
-      window.dispatchEvent(new PopStateEvent("popstate"));
+      // Same-page filter -- keep focus on the equivalent new chip rather
+      // than yanking it to the main landmark (docs/27 SS9.2). render()
+      // rebuilds the filter bar synchronously before its first `await`,
+      // so the new pressed chip already exists in `root` by the time
+      // navigate() returns here -- the OLD chip node (which had focus)
+      // was destroyed by that same rebuild, so simply not-stealing-focus
+      // isn't enough; focus must be moved to its replacement explicitly.
+      if (ctx && ctx.navigate) {
+        ctx.navigate(url, { preserveFocus: true });
+        const newChip = root.querySelector('.filter-chip[aria-pressed="true"]');
+        if (newChip) newChip.focus();
+      } else { window.history.pushState({}, "", url); window.dispatchEvent(new PopStateEvent("popstate")); }
     });
     filterBar.appendChild(chip);
   }
