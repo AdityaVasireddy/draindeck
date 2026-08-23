@@ -307,6 +307,14 @@ table.ledger-table {
   border-color: var(--color-danger-fg);
 }
 
+.state-panel--warning {
+  border-color: var(--color-attention-fg);
+  background: var(--color-attention-bg);
+  padding: var(--space-sm) var(--space-md);
+  flex-direction: row;
+  align-items: center;
+}
+
 .state-panel-title {
   font-family: var(--font-display);
   font-size: var(--text-headline-size);

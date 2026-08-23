@@ -4,6 +4,9 @@ import { ApiError, apiFetch } from "../api.js";
 import { renderTimeline, renderTopology } from "../components/timeline-topology.js";
 import { clear, el } from "../dom.js";
 import { inconsistencyLabel } from "../format.js";
+import {
+  isIndexPreparingError, preparingRow, projectionIncompleteBanner, renderPreparingPanel, staleBanner,
+} from "../readiness.js";
 
 const _STATE_TONE = {
   DONE: "ok", ACCEPTED: "ok", NEEDS_HUMAN: "danger", REJECTED: "danger", CRASHED: "danger",
@@ -39,6 +42,10 @@ export async function render(root, params, ctx) {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator ? await coordinator.fetch("issues:list", url) : await apiFetch(url);
     if (data === undefined) return;
+    if (data.stale) root.insertBefore(staleBanner(), wrapper);
+    else if (data.projectionState && !data.projectionState.complete) {
+      root.insertBefore(projectionIncompleteBanner(), wrapper);
+    }
     if (data.items.length === 0) {
       tbody.appendChild(el("tr", null, [el("td", { colspan: "6" }, ["No issues observed yet."])]));
     }
@@ -58,7 +65,8 @@ export async function render(root, params, ctx) {
     }
   } catch (err) {
     clear(tbody);
-    tbody.appendChild(el("tr", null, [
+    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(6));
+    else tbody.appendChild(el("tr", null, [
       el("td", { colspan: "6", role: "alert" }, [`Could not load issues: ${err.message}`]),
     ]));
   }
@@ -75,6 +83,10 @@ export async function renderDetail(root, params) {
       apiFetch(`/api/repositories/${repoId}/issues/${encodeURIComponent(issueId)}/topology`),
     ]);
   } catch (err) {
+    if (isIndexPreparingError(err)) {
+      renderPreparingPanel(root);
+      return;
+    }
     const notFound = err instanceof ApiError && err.status === 404;
     root.appendChild(el("div", { className: "state-panel state-panel--error", role: "alert" }, [
       el("p", { className: "state-panel-title" },

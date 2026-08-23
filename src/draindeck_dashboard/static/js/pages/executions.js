@@ -6,6 +6,9 @@
 import { ApiError, apiFetch, apiFetchText } from "../api.js";
 import { clear, el } from "../dom.js";
 import { inconsistencyLabel, runMetadataText } from "../format.js";
+import {
+  isIndexPreparingError, preparingRow, projectionIncompleteBanner, renderPreparingPanel, staleBanner,
+} from "../readiness.js";
 
 const _STATE_TONE = {
   ACCEPTED: "ok", REJECTED: "danger", CRASHED: "danger", "Pending reconciliation": "warn",
@@ -116,11 +119,16 @@ export async function render(root, params, ctx) {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator ? await coordinator.fetch("executions:list", url) : await apiFetch(url);
     if (data === undefined) return;
+    if (data.stale) root.insertBefore(staleBanner(), wrapper);
+    else if (data.projectionState && !data.projectionState.complete) {
+      root.insertBefore(projectionIncompleteBanner(), wrapper);
+    }
     if (isIssueGroup) renderIssueGroups(tbody, data.items);
     else renderExecutionRows(tbody, data.items);
   } catch (err) {
     clear(tbody);
-    tbody.appendChild(el("tr", null, [
+    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(headerCells.length));
+    else tbody.appendChild(el("tr", null, [
       el("td", { colspan: String(headerCells.length), role: "alert" },
         [`Could not load executions: ${err.message}`]),
     ]));
@@ -193,6 +201,10 @@ export async function renderDetail(root, params) {
   try {
     execution = await apiFetch(`/api/repositories/${repoId}/executions/${encodeURIComponent(executionId)}`);
   } catch (err) {
+    if (isIndexPreparingError(err)) {
+      renderPreparingPanel(root);
+      return;
+    }
     const notFound = err instanceof ApiError && err.status === 404;
     root.appendChild(el("div", { className: "state-panel state-panel--error", role: "alert" }, [
       el("p", { className: "state-panel-title" },
@@ -217,6 +229,8 @@ export async function renderDetail(root, params) {
     el("dd", null, [execution.runId
       ? el("a", { href: `/repositories/${repoId}/runs/${execution.runId}` }, [execution.runId])
       : "none"]),
+    el("dt", null, ["Run metadata"]),
+    el("dd", null, [runMetadataText(execution.runMetadata)]),
     el("dt", null, ["Last event"]),
     el("dd", null, [execution.lastEventId != null ? String(execution.lastEventId) : "none"]),
   ]);

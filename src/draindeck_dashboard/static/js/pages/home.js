@@ -8,6 +8,7 @@ import { clear, el, statusChip, syncList, text, timeElement } from "../dom.js";
 import {
   availabilityLabel, displayName, formatAbsoluteTimestamp, formatRelativeTime, runDisplayOutcome,
 } from "../format.js";
+import { projectionIncompleteBanner } from "../readiness.js";
 
 const _AVAILABILITY_TONE = { AVAILABLE: "ok", EMPTY: "muted", NOT_INITIALIZED: "warn", OFFLINE: "danger" };
 const _SEVERITY_TONE = { critical: "danger", warning: "warn", information: "muted" };
@@ -48,6 +49,7 @@ export function buildHomeViewModel({ overview, repositorySummaries, attention, r
       runsByOutcome: overview.runs.byDisplayOutcome,
       evidenceByIntegrity: overview.evidence.byIntegrity,
     },
+    projectionState: overview.projectionState,
   };
 }
 
@@ -171,6 +173,10 @@ export async function render(root, params, ctx) {
       el("a", { href: "/repositories/new", className: "btn btn-primary" }, ["Add repository"]),
     ]));
     return;
+  }
+
+  if (vm.projectionState && !vm.projectionState.complete) {
+    root.appendChild(projectionIncompleteBanner());
   }
 
   const ledgerSection = el("section", { "aria-labelledby": "home-repos-heading" }, [

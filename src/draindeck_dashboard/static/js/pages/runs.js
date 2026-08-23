@@ -6,6 +6,9 @@ import { ApiError, apiFetch } from "../api.js";
 import { renderTimeline, renderTopology } from "../components/timeline-topology.js";
 import { clear, el } from "../dom.js";
 import { formatAbsoluteTimestamp, inconsistencyLabel, runDisplayOutcome } from "../format.js";
+import {
+  isIndexPreparingError, preparingRow, projectionIncompleteBanner, renderPreparingPanel, staleBanner,
+} from "../readiness.js";
 
 function outcomeTone(displayOutcome) {
   if (displayOutcome === "COMPLETED") return "ok";
@@ -44,6 +47,10 @@ export async function render(root, params, ctx) {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator ? await coordinator.fetch("runs:list", url) : await apiFetch(url);
     if (data === undefined) return;
+    if (data.stale) root.insertBefore(staleBanner(), wrapper);
+    else if (data.projectionState && !data.projectionState.complete) {
+      root.insertBefore(projectionIncompleteBanner(), wrapper);
+    }
     if (data.items.length === 0) {
       tbody.appendChild(el("tr", null, [el("td", { colspan: "8" }, ["No runs observed yet."])]));
     }
@@ -64,7 +71,8 @@ export async function render(root, params, ctx) {
     }
   } catch (err) {
     clear(tbody);
-    tbody.appendChild(el("tr", null, [
+    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(8));
+    else tbody.appendChild(el("tr", null, [
       el("td", { colspan: "8", role: "alert" }, [`Could not load runs: ${err.message}`]),
     ]));
   }
@@ -81,6 +89,10 @@ export async function renderDetail(root, params) {
       apiFetch(`/api/repositories/${repoId}/runs/${encodeURIComponent(runId)}/topology`),
     ]);
   } catch (err) {
+    if (isIndexPreparingError(err)) {
+      renderPreparingPanel(root);
+      return;
+    }
     const notFound = err instanceof ApiError && err.status === 404;
     root.appendChild(el("div", { className: "state-panel state-panel--error", role: "alert" }, [
       el("p", { className: "state-panel-title" }, [notFound ? "Run not found." : "Could not load this run."]),
