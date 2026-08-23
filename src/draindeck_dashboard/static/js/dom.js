@@ -126,10 +126,12 @@ export function syncList(listEl, items, keyFn, renderFn, emptyMessage, container
       // loses focus when insertBefore() repositions it). It may sit
       // briefly out of sort order relative to its neighbors until focus
       // moves elsewhere and a later sync corrects it -- a strictly
-      // better tradeoff than blurring the user's own focused row. Also
-      // deliberately does NOT advance `previousEl`, so the NEXT item's
-      // positioning is anchored to the last node this loop actually
-      // placed, not to this skipped one.
+      // better tradeoff than blurring the user's own focused row. `node`
+      // itself has NOT moved, so it's still the correct anchor for the
+      // next item's positioning check -- advance `previousEl` to it (just
+      // without any insertBefore/renderFn call), or every later sibling
+      // gets wrongly pulled in front of it on every subsequent sync.
+      previousEl = node;
     } else if (previousEl === null) {
       if (listEl.firstChild !== node) listEl.insertBefore(node, listEl.firstChild);
       previousEl = node;

@@ -225,8 +225,15 @@ def overview(conn: sqlite3.Connection) -> dict:
     for key, count in by_availability_rows:
         by_availability[key] = count
 
+    # Same 10-second LEASE_UNCLAIMED "no startup flash" gate as /api/attention
+    # (app.py) -- this aggregate must never disagree with the list endpoint
+    # about whether a fresh LEASE_UNCLAIMED condition is visible yet.
+    # LEASE_STALE is never delayed; an already-resolved row is never hidden.
     attention_rows = conn.execute(
-        "SELECT severity, COUNT(*) FROM attention_conditions WHERE resolved_at IS NULL GROUP BY severity"
+        "SELECT severity, COUNT(*) FROM attention_conditions WHERE resolved_at IS NULL "
+        "AND (kind != 'LEASE_UNCLAIMED' OR "
+        "first_detected_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds')) "
+        "GROUP BY severity"
     ).fetchall()
     attention_by_severity = {"critical": 0, "warning": 0, "information": 0}
     for severity, count in attention_rows:

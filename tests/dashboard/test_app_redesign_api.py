@@ -162,6 +162,34 @@ def test_a_resolved_lease_unclaimed_row_is_never_hidden_by_the_gate_regardless_o
     assert len(resp.json()["items"]) == 1
 
 
+def test_overview_attention_count_respects_the_same_lease_unclaimed_gate_as_the_list_endpoint(tmp_path):
+    """/api/overview's attention aggregate must never disagree with
+    /api/attention about whether a fresh LEASE_UNCLAIMED condition is
+    visible yet -- both read the same attention_conditions table and both
+    are shown to the same operator."""
+    client, app = _client(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_condition(app, kind="LEASE_UNCLAIMED", severity="warning",
+                      first_detected_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    resp = client.get("/api/overview")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["attention"]["current"] == 0
+    assert body["attention"]["warning"] == 0
+
+
+def test_overview_attention_count_includes_lease_unclaimed_once_10_seconds_have_elapsed(tmp_path):
+    client, app = _client(tmp_path)
+    old = datetime.now(timezone.utc) - timedelta(seconds=15)
+    _insert_condition(app, kind="LEASE_UNCLAIMED", severity="warning",
+                      first_detected_at=old.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    resp = client.get("/api/overview")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["attention"]["current"] == 1
+    assert body["attention"]["warning"] == 1
+
+
 # --- search ---
 
 def test_search_endpoint_returns_grouped_results(tmp_path):
