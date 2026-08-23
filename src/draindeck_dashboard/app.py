@@ -275,6 +275,17 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
         if repositoryId is not None:
             where.append("repository_id = ?")
             params.append(repositoryId)
+        # docs/27 SS6.4's 10-second LEASE_UNCLAIMED "no startup flash" gate
+        # (attention.py deliberately does not enforce this itself -- it's a
+        # query-layer/visibility concern, not a detection-time one, so
+        # first_detected_at stays an honest anchor). Scoped narrowly to
+        # kind='LEASE_UNCLAIMED': LEASE_STALE (critical) is never delayed,
+        # and an already-RESOLVED LEASE_UNCLAIMED row (history, not a live
+        # flash risk) is never hidden regardless of age.
+        where.append(
+            "(kind != 'LEASE_UNCLAIMED' OR resolved_at IS NOT NULL OR "
+            "first_detected_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds'))"
+        )
         where_sql = " AND ".join(where)
         total = app.state.db.execute(
             f"SELECT COUNT(*) FROM attention_conditions WHERE {where_sql}", params

@@ -6,6 +6,7 @@ codes, and don't disturb existing endpoints.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -99,6 +100,66 @@ def test_attention_status_filter(tmp_path):
     resp = client.get("/api/attention?status=resolved")
     assert resp.status_code == 200
     assert resp.json()["items"] == []
+
+
+# --- LEASE_UNCLAIMED 10-second "no startup flash" visibility gate (docs/27 SS6.4) ---
+
+def _insert_condition(app, *, kind, severity, first_detected_at, resolved_at=None,
+                      condition_key=None, occurrence=1):
+    app.state.db.execute(
+        "INSERT INTO attention_conditions (condition_key, occurrence, repository_id, "
+        "identity_generation_id, kind, severity, subject_type, subject_id, message, target_url, "
+        "first_detected_at, last_detected_at, resolved_at) "
+        "VALUES (?, ?, NULL, NULL, ?, ?, NULL, NULL, ?, '/about', ?, ?, ?)",
+        (condition_key or kind, occurrence, kind, severity, f"{kind} message",
+         first_detected_at, first_detected_at, resolved_at),
+    )
+
+
+def test_lease_unclaimed_hidden_within_the_first_10_seconds(tmp_path):
+    client, app = _client(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_condition(app, kind="LEASE_UNCLAIMED", severity="warning",
+                      first_detected_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    resp = client.get("/api/attention?status=current")
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+
+
+def test_lease_unclaimed_visible_once_10_seconds_have_elapsed(tmp_path):
+    client, app = _client(tmp_path)
+    old = datetime.now(timezone.utc) - timedelta(seconds=15)
+    _insert_condition(app, kind="LEASE_UNCLAIMED", severity="warning",
+                      first_detected_at=old.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    resp = client.get("/api/attention?status=current")
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 1
+    assert resp.json()["items"][0]["kind"] == "LEASE_UNCLAIMED"
+
+
+def test_lease_stale_is_never_delayed_by_the_lease_unclaimed_gate(tmp_path):
+    client, app = _client(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_condition(app, kind="LEASE_STALE", severity="critical",
+                      first_detected_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    resp = client.get("/api/attention?status=current")
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 1
+    assert resp.json()["items"][0]["kind"] == "LEASE_STALE"
+
+
+def test_a_resolved_lease_unclaimed_row_is_never_hidden_by_the_gate_regardless_of_age(tmp_path):
+    """The gate exists only to prevent a live flash to an operator --
+    already-resolved history is never a flash risk and must remain
+    visible under status=resolved/all regardless of how young it was."""
+    client, app = _client(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_condition(app, kind="LEASE_UNCLAIMED", severity="warning",
+                      first_detected_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      resolved_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    resp = client.get("/api/attention?status=resolved")
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 1
 
 
 # --- search ---
