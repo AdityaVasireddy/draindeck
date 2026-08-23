@@ -21,25 +21,43 @@ import * as executionsPage from "./pages/executions.js";
 import * as evidencePage from "./pages/evidence.js";
 import * as aboutPage from "./pages/about.js";
 
+// Each entry is {render, refresh}. `render` mounts the page from scratch
+// (a real navigation) -- `refresh` is called instead on an SSE
+// invalidation and MUST reuse the existing DOM shell (never clear(root))
+// so an in-progress SSE update never steals focus/scroll out from under
+// the user the way a full re-render would. A page without its own
+// lighter refresh path falls back to `render` (still correct, just not
+// focus-preserving) rather than being omitted.
 const _PAGE_MODULES = {
-  home: (root, params, ctx) => homePage.render(root, params, ctx),
-  repositories: (root, params, ctx) => repositoriesPage.render(root, params, ctx),
-  "repository-add": (root) => repositoriesPage.renderAdd(root),
-  "repository-overview": (root, params, ctx) => repositoryDetailPage.render(root, params, ctx),
-  attention: (root, params, ctx) => attentionPage.render(root, params, ctx),
-  runs: (root, params, ctx) => runsPage.render(root, params, ctx),
-  "repository-runs": (root, params, ctx) => runsPage.render(root, params, ctx),
-  "run-detail": (root, params) => runsPage.renderDetail(root, params),
-  issues: (root, params, ctx) => issuesPage.render(root, params, ctx),
-  "repository-issues": (root, params, ctx) => issuesPage.render(root, params, ctx),
-  "issue-detail": (root, params) => issuesPage.renderDetail(root, params),
-  executions: (root, params, ctx) => executionsPage.render(root, params, ctx),
-  "repository-executions": (root, params, ctx) => executionsPage.render(root, params, ctx),
-  "execution-detail": (root, params) => executionsPage.renderDetail(root, params),
-  evidence: (root, params, ctx) => evidencePage.render(root, params, ctx),
-  "repository-evidence": (root, params, ctx) => evidencePage.render(root, params, ctx),
-  "evidence-detail": (root, params) => evidencePage.renderDetail(root, params),
-  about: (root, params, ctx) => aboutPage.render(root, params, ctx),
+  home: { render: (root, params, ctx) => homePage.render(root, params, ctx),
+         refresh: (root, params, ctx) => homePage.refresh(root, params, ctx) },
+  repositories: { render: (root, params, ctx) => repositoriesPage.render(root, params, ctx),
+                 refresh: (root, params, ctx) => repositoriesPage.refresh(root, params, ctx) },
+  "repository-add": { render: (root) => repositoriesPage.renderAdd(root) },
+  "repository-overview": { render: (root, params, ctx) => repositoryDetailPage.render(root, params, ctx) },
+  attention: { render: (root, params, ctx) => attentionPage.render(root, params, ctx),
+              refresh: (root, params, ctx) => attentionPage.refresh(root, params, ctx) },
+  runs: { render: (root, params, ctx) => runsPage.render(root, params, ctx),
+         refresh: (root, params, ctx) => runsPage.refresh(root, params, ctx) },
+  "repository-runs": { render: (root, params, ctx) => runsPage.render(root, params, ctx),
+                       refresh: (root, params, ctx) => runsPage.refresh(root, params, ctx) },
+  "run-detail": { render: (root, params) => runsPage.renderDetail(root, params) },
+  issues: { render: (root, params, ctx) => issuesPage.render(root, params, ctx),
+           refresh: (root, params, ctx) => issuesPage.refresh(root, params, ctx) },
+  "repository-issues": { render: (root, params, ctx) => issuesPage.render(root, params, ctx),
+                         refresh: (root, params, ctx) => issuesPage.refresh(root, params, ctx) },
+  "issue-detail": { render: (root, params) => issuesPage.renderDetail(root, params) },
+  executions: { render: (root, params, ctx) => executionsPage.render(root, params, ctx),
+               refresh: (root, params, ctx) => executionsPage.refresh(root, params, ctx) },
+  "repository-executions": { render: (root, params, ctx) => executionsPage.render(root, params, ctx),
+                             refresh: (root, params, ctx) => executionsPage.refresh(root, params, ctx) },
+  "execution-detail": { render: (root, params) => executionsPage.renderDetail(root, params) },
+  evidence: { render: (root, params, ctx) => evidencePage.render(root, params, ctx),
+             refresh: (root, params, ctx) => evidencePage.refresh(root, params, ctx) },
+  "repository-evidence": { render: (root, params, ctx) => evidencePage.render(root, params, ctx),
+                           refresh: (root, params, ctx) => evidencePage.refresh(root, params, ctx) },
+  "evidence-detail": { render: (root, params) => evidencePage.renderDetail(root, params) },
+  about: { render: (root, params, ctx) => aboutPage.render(root, params, ctx) },
 };
 
 function renderNotYetAvailable(root, routeName) {
@@ -86,10 +104,26 @@ function boot() {
       renderNotFound(pageRoot);
       return;
     }
-    const pageFn = _PAGE_MODULES[currentMatch.name];
+    const entry = _PAGE_MODULES[currentMatch.name];
     const ctx = { coordinator, navigate: (path, options) => router.navigate(path, options) };
-    if (pageFn) pageFn(pageRoot, currentMatch.params, ctx);
+    if (entry) entry.render(pageRoot, currentMatch.params, ctx);
     else renderNotYetAvailable(pageRoot, currentMatch.name);
+  }
+
+  // Called on an SSE invalidation, never on a real navigation. Reuses the
+  // shell `render()` already built for the current route rather than
+  // tearing it down -- a page with its own `refresh` only re-fetches and
+  // syncList-updates its dynamic content, so a user's mid-scroll position,
+  // focused row link, or open filter stays exactly where it was. A page
+  // without a lighter `refresh` path falls back to the full `render()`
+  // (correct, just not focus-preserving).
+  function refreshCurrentRoute() {
+    if (!pageRoot || !currentMatch) return;
+    const entry = _PAGE_MODULES[currentMatch.name];
+    if (!entry) return;
+    const ctx = { coordinator, navigate: (path, options) => router.navigate(path, options) };
+    if (entry.refresh) entry.refresh(pageRoot, currentMatch.params, ctx);
+    else entry.render(pageRoot, currentMatch.params, ctx);
   }
 
   router = createRouter({
@@ -122,12 +156,12 @@ function boot() {
       if (statusEl) updateConnectionStatus(statusEl, connectionStatusLabel(status));
     },
     onInvalidate() {
-      // Targeted per-resource refetch is a later polish pass (docs/27
-      // SS9.3); re-running the current route's own render is a correct,
-      // if less surgical, baseline -- each page's own coordinator-backed
-      // fetches already supersede any still-in-flight request, so a
-      // rapid run of invalidations never races itself.
-      renderCurrentRoute();
+      // refresh (not render): reuses the mounted shell and only updates
+      // dynamic content in place, so focus/scroll survive a targeted SSE
+      // update (docs/27 SS9.3). Each page's own coordinator-backed
+      // fetches already supersede any still-in-flight request, so a rapid
+      // run of invalidations never races itself.
+      refreshCurrentRoute();
     },
   });
 }

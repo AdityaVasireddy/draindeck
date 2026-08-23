@@ -2,10 +2,11 @@
 // Issues Explorer and Issue Detail (docs/27 SS6.6).
 import { ApiError, apiFetch } from "../api.js";
 import { renderTimeline, renderTopology } from "../components/timeline-topology.js";
-import { clear, el } from "../dom.js";
+import { clear, el, syncList } from "../dom.js";
 import { inconsistencyLabel } from "../format.js";
 import {
-  isIndexPreparingError, preparingRow, projectionIncompleteBanner, renderPreparingPanel, staleBanner,
+  isIndexPreparingError, preparingRow, projectionIncompleteBanner, removeReadinessBanner,
+  renderPreparingPanel, staleBanner,
 } from "../readiness.js";
 
 const _STATE_TONE = {
@@ -36,33 +37,40 @@ export async function render(root, params, ctx) {
   root.appendChild(wrapper);
 
   const repoId = params && params.repoId;
-  const url = repoId ? `/api/issues?repositoryId=${repoId}&limit=100` : "/api/issues?limit=100";
   const tbody = table.querySelector("tbody");
+  await loadIssues(root, wrapper, tbody, repoId, ctx);
+}
+
+function renderRows(tbody, items) {
+  syncList(tbody, items, (issue) => `${issue.repository.id}:${issue.issueId}`, (row, issue) => {
+    clear(row);
+    const tone = _STATE_TONE[issue.state] || "muted";
+    row.append(
+      el("td", null, [issue.repository.displayName]),
+      el("th", { scope: "row" }, [
+        el("a", { href: `/repositories/${issue.repository.id}/issues/${issue.issueId}`,
+                 className: "row-title" }, [issue.issueId]),
+      ]),
+      el("td", null, [issue.title || ""]),
+      el("td", null, [el("span", { className: `chip chip--${tone}` }, [issue.state])]),
+      el("td", null, [inconsistencyLabel(issue.inconsistent)]),
+      el("td", null, [issue.lastEventId != null ? String(issue.lastEventId) : "none"]),
+    );
+  }, el("td", { colspan: "6" }, ["No issues observed yet."]), "tr");
+}
+
+async function loadIssues(root, wrapper, tbody, repoId, ctx) {
+  const url = repoId ? `/api/issues?repositoryId=${repoId}&limit=100` : "/api/issues?limit=100";
   try {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator ? await coordinator.fetch("issues:list", url) : await apiFetch(url);
     if (data === undefined) return;
+    removeReadinessBanner(root);
     if (data.stale) root.insertBefore(staleBanner(), wrapper);
     else if (data.projectionState && !data.projectionState.complete) {
       root.insertBefore(projectionIncompleteBanner(), wrapper);
     }
-    if (data.items.length === 0) {
-      tbody.appendChild(el("tr", null, [el("td", { colspan: "6" }, ["No issues observed yet."])]));
-    }
-    for (const issue of data.items) {
-      const tone = _STATE_TONE[issue.state] || "muted";
-      tbody.appendChild(el("tr", null, [
-        el("td", null, [issue.repository.displayName]),
-        el("th", { scope: "row" }, [
-          el("a", { href: `/repositories/${issue.repository.id}/issues/${issue.issueId}`,
-                   className: "row-title" }, [issue.issueId]),
-        ]),
-        el("td", null, [issue.title || ""]),
-        el("td", null, [el("span", { className: `chip chip--${tone}` }, [issue.state])]),
-        el("td", null, [inconsistencyLabel(issue.inconsistent)]),
-        el("td", null, [issue.lastEventId != null ? String(issue.lastEventId) : "none"]),
-      ]));
-    }
+    renderRows(tbody, data.items);
   } catch (err) {
     clear(tbody);
     if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(6));
@@ -70,6 +78,16 @@ export async function render(root, params, ctx) {
       el("td", { colspan: "6", role: "alert" }, [`Could not load issues: ${err.message}`]),
     ]));
   }
+}
+
+/** SSE-invalidation path (docs/27 SS9.3): re-fetches and syncList-updates
+    only the table body/banner, reusing the mounted shell. */
+export async function refresh(root, params, ctx) {
+  const wrapper = root.querySelector(".ledger-table-wrapper");
+  const tbody = root.querySelector("tbody");
+  if (!wrapper || !tbody) { await render(root, params, ctx); return; }
+  const repoId = params && params.repoId;
+  await loadIssues(root, wrapper, tbody, repoId, ctx);
 }
 
 export async function renderDetail(root, params) {

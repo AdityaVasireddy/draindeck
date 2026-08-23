@@ -76,7 +76,17 @@ export function statusChip(labelText, tone, icon) {
     item)`, removes stragglers, appends new rows, and reorders via
     insertBefore only when order actually changed. Renders `emptyMessage`
     as a single placeholder child when `items` is empty. `containerTag`
-    defaults to "li" (the common case: an existing <ul>/<ol> list). */
+    defaults to "li" (the common case: an existing <ul>/<ol> list).
+
+    `renderFn` is skipped entirely for an EXISTING node that currently
+    contains focus (docs/27 SS9.3): every renderFn in this codebase
+    rebuilds a row's interior from scratch (clear + re-append), which
+    would otherwise destroy and recreate the exact element the user has
+    focus on -- indistinguishable from focus loss to the browser, even
+    though the row itself is "the same" by key. That row's content may
+    lag behind a genuine data change until focus moves elsewhere, which
+    is the correct tradeoff against yanking focus out from under an
+    actively-focused control on every SSE update. */
 export function syncList(listEl, items, keyFn, renderFn, emptyMessage, containerTag) {
   const tag = containerTag || "li";
   const existing = new Map();
@@ -100,17 +110,35 @@ export function syncList(listEl, items, keyFn, renderFn, emptyMessage, container
     const key = String(keyFn(item));
     seen.add(key);
     let node = existing.get(key);
-    if (!node) {
+    const isNew = !node;
+    if (isNew) {
       node = document.createElement(tag);
       node.setAttribute("data-key", key);
     }
-    renderFn(node, item);
-    if (previousEl === null) {
+    const holdsFocus = !isNew && document.activeElement !== document.body
+      && node.contains(document.activeElement);
+    if (!holdsFocus) renderFn(node, item);
+    if (holdsFocus) {
+      // Leave a focused node exactly where it physically is -- Chrome
+      // blurs an element on ANY insertBefore() call that moves it, even
+      // pure repositioning with no removal gap in between (verified: a
+      // node already focused and already a child of its parent still
+      // loses focus when insertBefore() repositions it). It may sit
+      // briefly out of sort order relative to its neighbors until focus
+      // moves elsewhere and a later sync corrects it -- a strictly
+      // better tradeoff than blurring the user's own focused row. Also
+      // deliberately does NOT advance `previousEl`, so the NEXT item's
+      // positioning is anchored to the last node this loop actually
+      // placed, not to this skipped one.
+    } else if (previousEl === null) {
       if (listEl.firstChild !== node) listEl.insertBefore(node, listEl.firstChild);
+      previousEl = node;
     } else if (previousEl.nextSibling !== node) {
       listEl.insertBefore(node, previousEl.nextSibling);
+      previousEl = node;
+    } else {
+      previousEl = node;
     }
-    previousEl = node;
   }
   for (const [key, node] of existing) {
     if (!seen.has(key)) node.remove();

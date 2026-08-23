@@ -214,3 +214,41 @@ export async function render(root, params, ctx) {
   activitySection.appendChild(activityList);
   root.appendChild(activitySection);
 }
+
+/** SSE-invalidation path (docs/27 SS9.3): reuses the mounted shell's list
+    containers and syncList-updates them in place -- never clear(root).
+    The repository ledger and attention preview are keyed lists (focus/
+    scroll-safe by construction); the analytics band's chart cards are
+    rebuilt in place (a much smaller, less common focus target than a
+    table row, and not a syncable list). Falls back to a full render()
+    if the mounted DOM doesn't match the expected populated shape (e.g.
+    hasRepositories flipped since the last render) -- the shell itself
+    needs to change in that case, which a partial refresh cannot do. */
+export async function refresh(root, params, ctx) {
+  const ledgerList = root.querySelector('[aria-label="Repository ledger"]');
+  const attentionList = root.querySelector('[aria-label="Current attention"]');
+  const analyticsGrid = root.querySelector(".analytics-band");
+  const activityList = root.querySelector('[aria-label="Recent observed activity"]');
+  if (!ledgerList || !attentionList || !analyticsGrid || !activityList) {
+    await render(root, params, ctx);
+    return;
+  }
+
+  let data;
+  try {
+    data = await fetchHomeData(ctx && ctx.coordinator);
+  } catch (err) {
+    return; // a failed background refresh leaves the last-good view as-is
+  }
+  if (data === undefined) return; // superseded
+
+  const vm = buildHomeViewModel(data);
+  if (!vm.hasRepositories) {
+    await render(root, params, ctx);
+    return;
+  }
+  renderRepositoryLedger(ledgerList, vm.repositories);
+  renderAttentionPreview(attentionList, vm.attentionPreview);
+  renderAnalyticsBand(analyticsGrid, vm.analytics);
+  renderRecentActivity(activityList, vm.recentEvidence);
+}

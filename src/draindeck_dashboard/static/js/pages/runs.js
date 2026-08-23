@@ -4,10 +4,11 @@
 // "Active"/"Running" (ADR-25 gives Dashboard no liveness signal).
 import { ApiError, apiFetch } from "../api.js";
 import { renderTimeline, renderTopology } from "../components/timeline-topology.js";
-import { clear, el } from "../dom.js";
+import { clear, el, syncList } from "../dom.js";
 import { formatAbsoluteTimestamp, inconsistencyLabel, runDisplayOutcome } from "../format.js";
 import {
-  isIndexPreparingError, preparingRow, projectionIncompleteBanner, renderPreparingPanel, staleBanner,
+  isIndexPreparingError, preparingRow, projectionIncompleteBanner, removeReadinessBanner,
+  renderPreparingPanel, staleBanner,
 } from "../readiness.js";
 
 function outcomeTone(displayOutcome) {
@@ -41,34 +42,41 @@ export async function render(root, params, ctx) {
   root.appendChild(wrapper);
 
   const repoId = params && params.repoId;
-  const url = repoId ? `/api/runs?repositoryId=${repoId}&limit=100` : "/api/runs?limit=100";
   const tbody = table.querySelector("tbody");
+  await loadRuns(root, wrapper, tbody, repoId, ctx);
+}
+
+function renderRows(tbody, items) {
+  syncList(tbody, items, (run) => `${run.repository.id}:${run.runId}`, (row, run) => {
+    clear(row);
+    row.append(
+      el("td", null, [run.repository.displayName]),
+      el("th", { scope: "row" }, [
+        el("a", { href: `/repositories/${run.repository.id}/runs/${run.runId}`, className: "row-title" },
+          [run.runId]),
+      ]),
+      el("td", null, [formatAbsoluteTimestamp(run.observedStartedAt) || "not observed"]),
+      el("td", null, [run.engineProvider || "unknown"]),
+      el("td", null, [run.reviewerProvider || "unknown"]),
+      el("td", null, [run.displayOutcome]),
+      el("td", null, [inconsistencyLabel(run.inconsistent)]),
+      el("td", null, [run.lastEventId != null ? String(run.lastEventId) : "none"]),
+    );
+  }, el("td", { colspan: "8" }, ["No runs observed yet."]), "tr");
+}
+
+async function loadRuns(root, wrapper, tbody, repoId, ctx) {
+  const url = repoId ? `/api/runs?repositoryId=${repoId}&limit=100` : "/api/runs?limit=100";
   try {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator ? await coordinator.fetch("runs:list", url) : await apiFetch(url);
     if (data === undefined) return;
+    removeReadinessBanner(root);
     if (data.stale) root.insertBefore(staleBanner(), wrapper);
     else if (data.projectionState && !data.projectionState.complete) {
       root.insertBefore(projectionIncompleteBanner(), wrapper);
     }
-    if (data.items.length === 0) {
-      tbody.appendChild(el("tr", null, [el("td", { colspan: "8" }, ["No runs observed yet."])]));
-    }
-    for (const run of data.items) {
-      tbody.appendChild(el("tr", null, [
-        el("td", null, [run.repository.displayName]),
-        el("th", { scope: "row" }, [
-          el("a", { href: `/repositories/${run.repository.id}/runs/${run.runId}`, className: "row-title" },
-            [run.runId]),
-        ]),
-        el("td", null, [formatAbsoluteTimestamp(run.observedStartedAt) || "not observed"]),
-        el("td", null, [run.engineProvider || "unknown"]),
-        el("td", null, [run.reviewerProvider || "unknown"]),
-        el("td", null, [run.displayOutcome]),
-        el("td", null, [inconsistencyLabel(run.inconsistent)]),
-        el("td", null, [run.lastEventId != null ? String(run.lastEventId) : "none"]),
-      ]));
-    }
+    renderRows(tbody, data.items);
   } catch (err) {
     clear(tbody);
     if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(8));
@@ -76,6 +84,16 @@ export async function render(root, params, ctx) {
       el("td", { colspan: "8", role: "alert" }, [`Could not load runs: ${err.message}`]),
     ]));
   }
+}
+
+/** SSE-invalidation path (docs/27 SS9.3): re-fetches and syncList-updates
+    only the table body/banner, reusing the mounted shell. */
+export async function refresh(root, params, ctx) {
+  const wrapper = root.querySelector(".ledger-table-wrapper");
+  const tbody = root.querySelector("tbody");
+  if (!wrapper || !tbody) { await render(root, params, ctx); return; }
+  const repoId = params && params.repoId;
+  await loadRuns(root, wrapper, tbody, repoId, ctx);
 }
 
 export async function renderDetail(root, params) {

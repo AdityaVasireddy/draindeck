@@ -3,7 +3,7 @@
 // detected conditions, closed severity ordering (critical -> warning ->
 // informational, then oldest first), never dismissible.
 import { apiFetch } from "../api.js";
-import { clear, el, statusChip } from "../dom.js";
+import { clear, el, statusChip, syncList } from "../dom.js";
 import { formatAbsoluteTimestamp } from "../format.js";
 
 const _SEVERITY_TONE = { critical: "danger", warning: "warn", information: "muted" };
@@ -31,21 +31,24 @@ function buildApiUrl(query) {
   return `/api/attention?${params.toString()}`;
 }
 
-function renderRow(item) {
-  const tone = _SEVERITY_TONE[item.severity] || "muted";
-  const row = el("tr");
-  row.append(
-    el("td", null, [statusChip(item.severity, tone)]),
-    el("td", null, [item.kind.replace(/_/g, " ")]),
-    el("td", null, [item.repository
-      ? el("a", { href: `/repositories/${item.repository.id}` }, [`Repository ${item.repository.id}`])
-      : "All repositories"]),
-    el("td", null, [el("a", { href: item.targetUrl }, [item.message])]),
-    el("td", null, [formatAbsoluteTimestamp(item.firstDetectedAt) || item.firstDetectedAt]),
-    el("td", null, [formatAbsoluteTimestamp(item.lastDetectedAt) || item.lastDetectedAt]),
-    el("td", null, [item.resolvedAt ? "Resolved" : "Current"]),
-  );
-  return row;
+function renderRows(tbody, items, query) {
+  syncList(tbody, items, (i) => i.conditionId, (row, item) => {
+    clear(row);
+    const tone = _SEVERITY_TONE[item.severity] || "muted";
+    row.append(
+      el("td", null, [statusChip(item.severity, tone)]),
+      el("td", null, [item.kind.replace(/_/g, " ")]),
+      el("td", null, [item.repository
+        ? el("a", { href: `/repositories/${item.repository.id}` }, [`Repository ${item.repository.id}`])
+        : "All repositories"]),
+      el("td", null, [el("a", { href: item.targetUrl }, [item.message])]),
+      el("td", null, [formatAbsoluteTimestamp(item.firstDetectedAt) || item.firstDetectedAt]),
+      el("td", null, [formatAbsoluteTimestamp(item.lastDetectedAt) || item.lastDetectedAt]),
+      el("td", null, [item.resolvedAt ? "Resolved" : "Current"]),
+    );
+  }, el("td", { colspan: "7" },
+      [query.status === "current" ? "No current attention conditions." : "No conditions found."]),
+     "tr");
 }
 
 export async function render(root, params, ctx) {
@@ -99,25 +102,30 @@ export async function render(root, params, ctx) {
   root.appendChild(wrapper);
 
   const tbody = table.querySelector("tbody");
+  await loadAttention(tbody, query, ctx);
+}
+
+async function loadAttention(tbody, query, ctx) {
   try {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator
       ? await coordinator.fetch("attention:list", buildApiUrl(query))
       : await apiFetch(buildApiUrl(query));
     if (data === undefined) return; // superseded
-    if (data.items.length === 0) {
-      tbody.appendChild(el("tr", null, [
-        el("td", { colspan: "7" }, [
-          query.status === "current" ? "No current attention conditions." : "No conditions found.",
-        ]),
-      ]));
-    } else {
-      for (const item of data.items) tbody.appendChild(renderRow(item));
-    }
+    renderRows(tbody, data.items, query);
   } catch (err) {
     clear(tbody);
     tbody.appendChild(el("tr", null, [
       el("td", { colspan: "7", role: "alert" }, [`Could not load attention: ${err.message}`]),
     ]));
   }
+}
+
+/** SSE-invalidation path (docs/27 SS9.3): re-fetches and syncList-updates
+    only the table body, reusing the mounted shell/filter bar. */
+export async function refresh(root, params, ctx) {
+  const query = parseAttentionQuery(new URLSearchParams(window.location.search));
+  const tbody = root.querySelector("tbody");
+  if (!tbody) { await render(root, params, ctx); return; }
+  await loadAttention(tbody, query, ctx);
 }

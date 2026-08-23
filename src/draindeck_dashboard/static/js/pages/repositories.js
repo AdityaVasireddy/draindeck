@@ -62,7 +62,7 @@ function renderTable(tbody, items) {
     const attnCell = el("td", null, [String(repo.attentionCount)]);
     const pathCell = el("td", { className: "text-mono" }, [repo.projectPath]);
     rowEl.append(nameCell, availCell, attnCell, pathCell);
-  }, "No repositories registered yet.", "tr");
+  }, el("td", { colspan: "4" }, ["No repositories registered yet."]), "tr");
 }
 
 async function loadRegistry(root, query, ctx) {
@@ -139,6 +139,15 @@ export async function render(root, params, ctx) {
       }
     } else { window.history.pushState({}, "", url); window.dispatchEvent(new PopStateEvent("popstate")); }
   });
+}
+
+/** SSE-invalidation path (docs/27 SS9.3): re-fetches and syncList-updates
+    only the table body/pagination status, reusing the shell render()
+    already mounted -- never touches the search input or its focus/caret
+    position. */
+export async function refresh(root, params, ctx) {
+  const query = parseRegistryQuery(new URLSearchParams(window.location.search));
+  await loadRegistry(root, query, ctx);
 }
 
 /** Add Repository (docs/27 SS6.2): required absolute project path,

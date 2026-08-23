@@ -4,10 +4,11 @@
 // and diff are rendered as text only -- never markup -- and no duration
 // is ever shown (the contract establishes none).
 import { ApiError, apiFetch, apiFetchText } from "../api.js";
-import { clear, el } from "../dom.js";
+import { clear, el, syncList } from "../dom.js";
 import { inconsistencyLabel, runMetadataText } from "../format.js";
 import {
-  isIndexPreparingError, preparingRow, projectionIncompleteBanner, renderPreparingPanel, staleBanner,
+  isIndexPreparingError, preparingRow, projectionIncompleteBanner, removeReadinessBanner,
+  renderPreparingPanel, staleBanner,
 } from "../readiness.js";
 
 const _STATE_TONE = {
@@ -24,38 +25,31 @@ export function parseGroupBy(searchParams) {
 }
 
 function renderExecutionRows(tbody, items) {
-  clear(tbody);
-  if (items.length === 0) {
-    tbody.appendChild(el("tr", null, [el("td", { colspan: "5" }, ["No executions observed yet."])]));
-    return;
-  }
-  for (const execution of items) {
-    const tone = _STATE_TONE[execution.state] || "muted";
-    tbody.appendChild(el("tr", null, [
-      el("td", null, [execution.repository.displayName]),
-      el("th", { scope: "row" }, [
-        el("a", { href: `/repositories/${execution.repository.id}/executions/${execution.executionId}`,
-                 className: "row-title" }, [execution.executionId]),
-      ]),
-      el("td", null, [execution.issueId
-        ? el("a", { href: `/repositories/${execution.repository.id}/issues/${execution.issueId}` },
-            [execution.issueId])
-        : "none"]),
-      el("td", null, [el("span", { className: `chip chip--${tone}` }, [execution.state])]),
-      el("td", null, [inconsistencyLabel(execution.inconsistent)]),
-    ]));
-  }
+  syncList(tbody, items, (execution) => `${execution.repository.id}:${execution.executionId}`,
+    (row, execution) => {
+      clear(row);
+      const tone = _STATE_TONE[execution.state] || "muted";
+      row.append(
+        el("td", null, [execution.repository.displayName]),
+        el("th", { scope: "row" }, [
+          el("a", { href: `/repositories/${execution.repository.id}/executions/${execution.executionId}`,
+                   className: "row-title" }, [execution.executionId]),
+        ]),
+        el("td", null, [execution.issueId
+          ? el("a", { href: `/repositories/${execution.repository.id}/issues/${execution.issueId}` },
+              [execution.issueId])
+          : "none"]),
+        el("td", null, [el("span", { className: `chip chip--${tone}` }, [execution.state])]),
+        el("td", null, [inconsistencyLabel(execution.inconsistent)]),
+      );
+    }, el("td", { colspan: "5" }, ["No executions observed yet."]), "tr");
 }
 
 function renderIssueGroups(tbody, items) {
-  clear(tbody);
-  if (items.length === 0) {
-    tbody.appendChild(el("tr", null, [el("td", { colspan: "4" }, ["No executions observed yet."])]));
-    return;
-  }
-  for (const group of items) {
+  syncList(tbody, items, (group) => `${group.repository.id}:${group.issue.issueId}`, (row, group) => {
+    clear(row);
     const byStateText = Object.entries(group.byState).map(([k, v]) => `${k}: ${v}`).join(", ");
-    tbody.appendChild(el("tr", null, [
+    row.append(
       el("td", null, [group.repository.displayName]),
       el("th", { scope: "row" }, [
         el("a", { href: `/repositories/${group.repository.id}/issues/${group.issue.issueId}`,
@@ -68,8 +62,8 @@ function renderIssueGroups(tbody, items) {
               ["View all"])
           : `${group.newestExecutions.length} shown`,
       ]),
-    ]));
-  }
+    );
+  }, el("td", { colspan: "4" }, ["No executions observed yet."]), "tr");
 }
 
 export async function render(root, params, ctx) {
@@ -112,13 +106,18 @@ export async function render(root, params, ctx) {
   root.appendChild(wrapper);
 
   const repoId = params && params.repoId;
+  const tbody = table.querySelector("tbody");
+  await loadExecutions(root, wrapper, tbody, repoId, groupBy, isIssueGroup, headerCells.length, ctx);
+}
+
+async function loadExecutions(root, wrapper, tbody, repoId, groupBy, isIssueGroup, colspan, ctx) {
   const base = repoId ? `/api/executions?repositoryId=${repoId}` : "/api/executions?";
   const url = `${base}${repoId ? "&" : ""}groupBy=${groupBy}&limit=100`;
-  const tbody = table.querySelector("tbody");
   try {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator ? await coordinator.fetch("executions:list", url) : await apiFetch(url);
     if (data === undefined) return;
+    removeReadinessBanner(root);
     if (data.stale) root.insertBefore(staleBanner(), wrapper);
     else if (data.projectionState && !data.projectionState.complete) {
       root.insertBefore(projectionIncompleteBanner(), wrapper);
@@ -127,12 +126,27 @@ export async function render(root, params, ctx) {
     else renderExecutionRows(tbody, data.items);
   } catch (err) {
     clear(tbody);
-    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(headerCells.length));
+    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(colspan));
     else tbody.appendChild(el("tr", null, [
-      el("td", { colspan: String(headerCells.length), role: "alert" },
+      el("td", { colspan: String(colspan), role: "alert" },
         [`Could not load executions: ${err.message}`]),
     ]));
   }
+}
+
+/** SSE-invalidation path (docs/27 SS9.3): re-fetches and syncList-updates
+    only the table body/banner, reusing the mounted shell (including the
+    groupBy toggle's current selection -- a mode CHANGE is always a real
+    navigation via ctx.navigate, never something refresh() itself does). */
+export async function refresh(root, params, ctx) {
+  const wrapper = root.querySelector(".ledger-table-wrapper");
+  const tbody = root.querySelector("tbody");
+  if (!wrapper || !tbody) { await render(root, params, ctx); return; }
+  const groupBy = parseGroupBy(new URLSearchParams(window.location.search));
+  const isIssueGroup = groupBy === "issue";
+  const colspan = tbody.closest("table").querySelectorAll("thead th").length;
+  const repoId = params && params.repoId;
+  await loadExecutions(root, wrapper, tbody, repoId, groupBy, isIssueGroup, colspan, ctx);
 }
 
 function renderContainments(root, containments) {

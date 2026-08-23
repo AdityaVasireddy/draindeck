@@ -35,17 +35,29 @@ export function preparingRow(colspan) {
   return row;
 }
 
+const _BANNER_MARKER = "data-readiness-banner";
+
 /** A dismissible-free, always-visible banner for a page whose data is
     being served stale/rebuilding (docs/27 SS3.2 decision 9's "labelled
     stale/rebuilding" -- data stays on screen, just honestly labelled). */
 export function staleBanner() {
-  return el("p", { className: "state-panel state-panel--warning", role: "status" }, [STALE_TEXT]);
+  return el("p", { className: "state-panel state-panel--warning", role: "status", [_BANNER_MARKER]: "" },
+    [STALE_TEXT]);
 }
 
 /** The cross-repository counterpart: never blocks (docs/27 SS3.2 decision
     9), just discloses that the aggregate below doesn't yet reflect every
     repository. */
 export function projectionIncompleteBanner() {
-  return el("p", { className: "state-panel state-panel--warning", role: "status" },
+  return el("p", { className: "state-panel state-panel--warning", role: "status", [_BANNER_MARKER]: "" },
     [PROJECTION_INCOMPLETE_TEXT]);
+}
+
+/** Removes any previously-inserted stale/projectionIncomplete banner --
+    call before conditionally inserting a fresh one so a `refresh()` path
+    (which reuses the DOM across repeated SSE invalidations, unlike
+    `render()`'s clear(root)) never stacks up duplicate banners. */
+export function removeReadinessBanner(root) {
+  const existing = root.querySelector(`[${_BANNER_MARKER}]`);
+  if (existing) existing.remove();
 }

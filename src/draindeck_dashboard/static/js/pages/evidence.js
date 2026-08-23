@@ -5,7 +5,7 @@
 // linked to, not shown as an evidence integrity value). Cross-repository
 // explorer uses keyset pagination (evidence.id); never a deep OFFSET.
 import { ApiError, apiFetch } from "../api.js";
-import { clear, el, timeElement } from "../dom.js";
+import { clear, el, syncList, timeElement } from "../dom.js";
 import { formatAbsoluteTimestamp, formatRelativeTime } from "../format.js";
 
 const _INTEGRITY_TONE = { OK: "ok", TORN: "warn", MALFORMED: "danger", OVERSIZED: "danger" };
@@ -34,14 +34,10 @@ function buildApiUrl(query, repoId) {
 }
 
 function renderRows(tbody, items) {
-  clear(tbody);
-  if (items.length === 0) {
-    tbody.appendChild(el("tr", null, [el("td", { colspan: "7" }, ["No evidence observed yet."])]));
-    return;
-  }
-  for (const item of items) {
+  syncList(tbody, items, (item) => item.evidenceId, (row, item) => {
+    clear(row);
     const tone = _INTEGRITY_TONE[item.integrity] || "muted";
-    tbody.appendChild(el("tr", null, [
+    row.append(
       el("th", { scope: "row" }, [
         el("a", { href: `/repositories/${item.repository.id}/evidence/${item.evidenceId}`,
                  className: "row-title text-mono" }, [String(item.evidenceId)]),
@@ -52,8 +48,8 @@ function renderRows(tbody, items) {
       el("td", null, [item.eventId != null ? String(item.eventId) : "none"]),
       el("td", { className: "text-mono" }, [item.runId || "none"]),
       el("td", null, [item.ts ? formatAbsoluteTimestamp(item.ts) : "unavailable"]),
-    ]));
-  }
+    );
+  }, el("td", { colspan: "7" }, ["No evidence observed yet."]), "tr");
 }
 
 export async function render(root, params, ctx) {
@@ -87,6 +83,10 @@ export async function render(root, params, ctx) {
   root.appendChild(pagination);
 
   const tbody = table.querySelector("tbody");
+  await loadEvidence(pagination, tbody, query, repoId, ctx);
+}
+
+async function loadEvidence(pagination, tbody, query, repoId, ctx) {
   try {
     const coordinator = ctx && ctx.coordinator;
     const url = buildApiUrl(query, repoId);
@@ -112,6 +112,20 @@ export async function render(root, params, ctx) {
       el("td", { colspan: "7", role: "alert" }, [`Could not load evidence: ${err.message}`]),
     ]));
   }
+}
+
+/** SSE-invalidation path (docs/27 SS9.3): re-fetches and syncList-updates
+    the table body in place, reusing the mounted shell. Pagination
+    controls are still rebuilt (never a keyed list, and the same keyset
+    cursor params from the URL are reused, so Prev/Next targets stay
+    correct) -- a smaller, less common focus target than a table row. */
+export async function refresh(root, params, ctx) {
+  const tbody = root.querySelector("tbody");
+  const pagination = root.querySelector(".pagination");
+  if (!tbody || !pagination) { await render(root, params, ctx); return; }
+  const query = parseEvidenceQuery(new URLSearchParams(window.location.search));
+  const repoId = params && params.repoId;
+  await loadEvidence(pagination, tbody, query, repoId, ctx);
 }
 
 function _pageUrl(repoId, query) {
