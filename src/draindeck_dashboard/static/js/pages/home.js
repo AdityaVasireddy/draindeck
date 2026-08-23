@@ -3,6 +3,7 @@
 // current attention, never a marketing tour. Real data only -- no
 // illustrative counts.
 import { apiFetch } from "../api.js";
+import { renderBarChart } from "../components/chart.js";
 import { clear, el, statusChip, syncList, text, timeElement } from "../dom.js";
 import {
   availabilityLabel, displayName, formatAbsoluteTimestamp, formatRelativeTime, runDisplayOutcome,
@@ -76,12 +77,23 @@ function renderAnalyticsBand(root, analytics) {
   ];
   for (const group of groups) {
     const entries = Object.entries(group.data).filter(([, count]) => count > 0);
-    const card = el("div", { className: "card analytics-card" }, [
-      el("h3", { className: "text-title" }, [group.title]),
-    ]);
+    const card = el("div", { className: "card analytics-card" });
+
     if (entries.length === 0) {
+      card.appendChild(el("h3", { className: "text-title" }, [group.title]));
       card.appendChild(el("p", { className: "text-muted" }, ["No data observed yet."]));
     } else {
+      // The chart is a supplementary visual -- the <dl> beside it is the
+      // primary accessible text/table equivalent (DESIGN.md "The Chart
+      // Encoding Rule"; docs/27 SS9.4), not the other way around.
+      const chartContainer = el("div", { className: "analytics-chart" });
+      renderBarChart(chartContainer, {
+        title: group.title,
+        entries: entries.map(([label, value]) => ({ label, value })),
+        basis: "Derived from indexed evidence",
+      });
+      card.appendChild(chartContainer);
+
       const list = el("dl", { className: "analytics-dl" });
       for (const [key, count] of entries) {
         list.appendChild(el("dt", null, [key]));

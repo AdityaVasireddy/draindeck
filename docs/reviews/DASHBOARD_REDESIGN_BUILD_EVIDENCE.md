@@ -1214,7 +1214,83 @@ check.
 designed, honest state -- verified live against two REAL legacy-data
 edge cases in Draindeck's own history, not synthesized fixtures.
 
-### Unit 13–16
+### Unit 13 — Evidence explorer/detail and analytics charts (2026-08-23)
+
+**Files:** `static/js/pages/evidence.js` (new), `static/js/components/chart.js`
+(new), `static/js/pages/home.js` (edited -- wires `renderBarChart` into
+`renderAnalyticsBand`), `static/styles/components.css` (chart-svg/
+chart-bar--1..8/chart-label/chart-value-label/forced-colors rules),
+`static/styles/pages.css` (`.analytics-chart`), `static/js/app.js` (evidence
+routes wired into `_PAGE_MODULES`), `tests/dashboard/js/test_evidence_page.mjs`
+(new, 4 tests), `tests/dashboard/js/test_chart_component.mjs` (new, 4 tests),
+`tests/dashboard/test_app_shell_contract.py` (`pages/evidence.js` and
+`components/chart.js` added to `_NEW_JS_MODULES`).
+
+**Test-first:** 4 Node tests for `parseEvidenceQuery` (before/after id
+parsing, direction fallback to `"desc"` on any unrecognized value) written
+and confirmed failing before `evidence.js` existed; 4 Node tests for
+`capChartEntries` (pass-through under the cap, correct `"Other"` bucket sum
+when over the 8-category cap, exact boundary at 8) written and confirmed
+failing before `chart.js` existed. All passed on first implementation run.
+
+**Design correction caught before commit:** the Home page's analytics `<dl>`
+text summary was initially marked `visually-hidden` after the bar chart was
+added, on the (wrong) assumption the chart alone was now the primary
+representation. docs/27 requires a genuinely VISIBLE text/table summary
+alongside each chart, not an accessibility-tree-only fallback. Reverted
+before committing -- both the chart and the `<dl>` are visible.
+
+**Implementation:**
+- `evidence.js`: cross-repository or repository-scoped explorer, keyset
+  pagination on `evidence.id` (never OFFSET) via `beforeEvidenceId`/
+  `afterEvidenceId` + `direction`, "Metadata only -- no raw record bytes or
+  payload content is ever shown here." notice always visible. Detail page
+  renders Cursor/Event type/Event ID/Schema version/Issue/Execution/Run/
+  Observed timestamp/Record hash/Length bytes; the
+  "Integrity/corruption details are tracked as repository health..." note
+  only appears when `integrity !== "OK"`.
+- `chart.js`: `capChartEntries` (caps any category series at 8 bars, folding
+  the remainder into an `"Other"` bucket) and `renderBarChart` (SVG bars
+  using the `chart-bar--1..8` categorical palette, `<title>` for
+  accessibility, keyboard-focusable when a `url` is supplied per bar).
+
+**Live verification (real browser, against Draindeck's own real event
+log, 843 evidence records):** Home page analytics band showed correctly
+rendered bar charts (Repository availability, Issue lifecycle, Run
+outcomes, Evidence integrity) using the forest/teal/clay palette, each
+paired with a visible `<dl>` text table beneath it (e.g. "DONE 74",
+"NEEDS_DECOMPOSITION 21", "NEEDS_HUMAN 7"). Evidence Explorer showed a
+real table ordered newest-first (843 down to 794), all "OK" integrity
+chips, real event types/run ids. Evidence Detail for record 843 rendered
+every field correctly with no integrity note (record is OK). Keyset
+pagination verified end-to-end: the "Next" link's `beforeEvidenceId=794`
+correctly fetched and rendered ids 793 down to 744 on click, with a
+genuine `GET /api/evidence?limit=50&direction=desc&beforeEvidenceId=794`
+request observed on the network tab and the URL updating via `pushState`.
+Zero console errors across every check.
+
+**Automation-tool artifact, not an app bug:** the first two attempts to
+click "Next" via the browser tool's ref-based click appeared to do
+nothing (URL unchanged, no `/api/evidence` request fired, the visible
+rows were just the tail of the already-rendered first page, scrolled into
+view by the click itself). Root-caused via `read_network_requests` (zero
+requests on the ref-click, one correct request on a direct
+`element.click()` DOM call) to click-delivery unreliability in the
+automation tool for this anchor, consistent with the Unit 9/11 pattern
+already noted in this log -- not a router or pagination defect. No code
+change was needed; the direct DOM click confirmed the feature works.
+
+**Commands run:**
+- `node tests/dashboard/js/test_evidence_page.mjs` / `test_chart_component.mjs` → both passed
+- `node tests/dashboard/js/test_home_page.mjs` → passed (no regression from the chart wiring)
+- `pytest tests/dashboard -q` → **348 passed**
+- `pytest tests/unit tests/dashboard -q` → **908 passed**, 70.08s, 1 pre-existing warning
+
+**Checkpoint:** Evidence explorer/detail and the Home analytics charts are
+implemented, tested, and verified live against 843 real evidence records
+including correct keyset pagination in both directions.
+
+### Unit 14–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

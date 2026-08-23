@@ -10,34 +10,40 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-22)
+## 1. Current state (verified 2026-08-23)
 
 - **Dashboard redesign: ACCEPTED and IN PROGRESS (build-auto).** Branch
   `dashboard-redesign`, baseline `4052fef97dbb90b52ae91fc01832557bc348cab8`,
   ADR-27/docs/27/tasks/plan accepted 2026-08-23 (commit `1828f58`), local
-  per-unit commits authorized, merge/push still prohibited. Units 0-12
+  per-unit commits authorized, merge/push still prohibited. Units 0-13
   are complete (backend/data layer, UI routing, design tokens/shell/
   themes, API client + SSE primitives, client-side router, Home/
   Repositories/Add/Repository-Overview, Attention Center + global search,
-  Runs/Issues explorers + detail + shared timeline/topology, and now
-  Executions explorer with groupBy + detail with Transcript/Diff tabs) -
-  906/906 combined suite green. The old Part 2 static UI is fully
-  retired. Extensively live-verified end-to-end against a real browser
-  and Draindeck's own real event/execution history, including honest
-  real-world edge cases (legacy relative artifact paths, unresolvable
-  historical commit refs) correctly surfacing through the designed error
-  states rather than being masked. Several real bugs were caught and
-  fixed mid-build (a `dom.js` attribute-reflection bug; a connection-
-  status regression from retiring old `/app.js`; a `replace_all`-missed
-  sibling call site) - each documented with root cause in the build
-  evidence log. Known gap: 768px/320px responsive-breakpoint screenshots
-  remain deferred to Unit 15 (browser resize tool doesn't change the
-  tab's actual viewport in this session). Two further flagged residual
-  items from Units 2/4 also carried to Unit 15. **Next action:** continue
-  with Unit 13 (Evidence explorer/detail and chart/topology polish).
-  Full running evidence log, commands, and per-unit detail:
-  `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
-  `tasks/todo.md`.
+  Runs/Issues explorers + detail + shared timeline/topology, Executions
+  explorer with groupBy + detail with Transcript/Diff tabs, and now
+  Evidence explorer/detail with keyset pagination plus Home-page bar
+  charts) - 908/908 combined suite green. The old Part 2 static UI is
+  fully retired. Extensively live-verified end-to-end against a real
+  browser and Draindeck's own real event/execution history (843 evidence
+  records), including honest real-world edge cases (legacy relative
+  artifact paths, unresolvable historical commit refs) correctly
+  surfacing through the designed error states rather than being masked.
+  Several real bugs were caught and fixed mid-build (a `dom.js`
+  attribute-reflection bug; a connection-status regression from retiring
+  old `/app.js`; a `replace_all`-missed sibling call site; a
+  visually-hidden analytics `<dl>` that should have stayed visible) -
+  each documented with root cause in the build evidence log. Unit 13 also
+  hit an automation-tool click-delivery artifact (not an app bug) while
+  verifying Evidence pagination - confirmed correct via a direct DOM
+  `.click()` and a `read_network_requests` check showing the right
+  `beforeEvidenceId` request firing. Known gap: 768px/320px
+  responsive-breakpoint screenshots remain deferred to Unit 15 (browser
+  resize tool doesn't change the tab's actual viewport in this session).
+  Two further flagged residual items from Units 2/4 also carried to Unit
+  15. **Next action:** continue with Unit 14 (About & Safety, exhaustive
+  states, and responsive hardening). Full running evidence log, commands,
+  and per-unit detail: `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`;
+  checklist: `tasks/todo.md`.
 
 - **Dashboard Part 2 (ADR-26): Phase 7 (run lifecycle events) complete on
   branch `dashboard`** (2026-08-21, commits `fd2b9eb`..`7ff1033`, on top of

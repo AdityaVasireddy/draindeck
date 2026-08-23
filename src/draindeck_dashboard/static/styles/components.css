@@ -312,6 +312,53 @@ table.ledger-table {
   font-size: var(--text-headline-size);
 }
 
+/* --- charts (DESIGN.md "The Chart Encoding Rule") --- */
+/* Predeclared classes only -- never inline style, for CSP compliance.
+   Each bar-N class maps to the fixed eight-position light/dark
+   contrast-alternating token sequence from tokens.css. */
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.chart-bar--1 { fill: var(--color-chart-1); }
+.chart-bar--2 { fill: var(--color-chart-2); }
+.chart-bar--3 { fill: var(--color-chart-3); }
+.chart-bar--4 { fill: var(--color-chart-4); }
+.chart-bar--5 { fill: var(--color-chart-5); }
+.chart-bar--6 { fill: var(--color-chart-6); }
+.chart-bar--7 { fill: var(--color-chart-7); }
+.chart-bar--8 { fill: var(--color-chart-8); }
+
+.chart-label, .chart-value-label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  fill: var(--color-text-primary);
+}
+
+.chart-bar-group:focus-visible .chart-bar {
+  outline: 2px solid var(--color-focus-on-paper);
+  outline-offset: 1px;
+}
+
+.chart-basis {
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-xs);
+}
+
+/* Forced colors (Windows High Contrast): the chart's own fill colors are
+   overridden by the system palette automatically via forced-color-adjust
+   inheritance, but explicit borders make each bar's boundary legible
+   even when every bar becomes the same system "ButtonText" fill. */
+@media (forced-colors: active) {
+  .chart-bar {
+    stroke: CanvasText;
+    stroke-width: 1;
+  }
+}
+
 /* --- live region (connection/status announcements) --- */
 
 .live-region {

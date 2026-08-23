@@ -18,6 +18,7 @@ import * as attentionPage from "./pages/attention.js";
 import * as runsPage from "./pages/runs.js";
 import * as issuesPage from "./pages/issues.js";
 import * as executionsPage from "./pages/executions.js";
+import * as evidencePage from "./pages/evidence.js";
 
 const _PAGE_MODULES = {
   home: (root, params, ctx) => homePage.render(root, params, ctx),
@@ -34,6 +35,9 @@ const _PAGE_MODULES = {
   executions: (root, params, ctx) => executionsPage.render(root, params, ctx),
   "repository-executions": (root, params, ctx) => executionsPage.render(root, params, ctx),
   "execution-detail": (root, params) => executionsPage.renderDetail(root, params),
+  evidence: (root, params, ctx) => evidencePage.render(root, params, ctx),
+  "repository-evidence": (root, params, ctx) => evidencePage.render(root, params, ctx),
+  "evidence-detail": (root, params) => evidencePage.renderDetail(root, params),
 };
 
 function renderNotYetAvailable(root, routeName) {
