@@ -1,0 +1,268 @@
+"""Unit 2 Sub-step A (docs/27 SS8.4): persistent tolerant read models.
+
+`rebuild_read_models` is the full-generation candidate-rebuild-and-publish
+primitive (idempotent, retryable, atomically visible). `apply_changed_entities`
+is the entity-scoped incremental path used on every ordinary tick: it
+replays only the touched issue/execution/run/containment's own evidence
+(never a full-generation scan) and upserts just that entity's row, so a
+normal TORN->OK tail repair or a fresh append never forces a full-generation
+rebuild. Both paths must produce results identical to the pure reducer
+(`build_projection`) -- parity is the core correctness property.
+"""
+from __future__ import annotations
+
+import json
+
+from draindeck_dashboard.db import connect_and_init
+from draindeck_dashboard.projections import build_projection
+from draindeck_dashboard.read_models import (
+    apply_changed_entities,
+    prune_old_generation_views,
+    read_model_status,
+    rebuild_read_models,
+)
+
+
+def _insert_evidence(conn, repo_id, gen_id, event_id, event_type, *, issue_id=None,
+                     execution_id=None, run_id=None, payload=None, integrity="OK"):
+    conn.execute(
+        "INSERT INTO evidence (repository_id, identity_generation_id, record_cursor, "
+        "integrity, event_id, event_type, schema_version, issue_id, execution_id, run_id, "
+        "event_ts, payload_json, record_hash, length_bytes, stored_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, '2026-08-23T00:00:00Z', ?, 'h', 1, "
+        "'2026-08-23T00:00:00Z')",
+        (repo_id, gen_id, f"cursor-{gen_id}-{event_id}", integrity, event_id, event_type,
+         issue_id, execution_id, run_id, json.dumps(payload) if payload is not None else None),
+    )
+
+
+def _setup(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    conn.execute(
+        "INSERT INTO repositories (id, project_path, log_path, canonical_log_path, created_at) "
+        "VALUES (1, 'C:/repo', NULL, NULL, '2026-08-23T00:00:00Z')"
+    )
+    gen_id = conn.execute(
+        "INSERT INTO identity_generations (repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, 1, 'lineage', 1, 1, 1, '2026-08-23T00:00:00Z')"
+    ).lastrowid
+    return conn, gen_id
+
+
+def _issue_view_row(conn, repo_id, gen_id, issue_id):
+    return conn.execute(
+        "SELECT state, title, inconsistent, last_event_id FROM issue_views "
+        "WHERE repository_id = ? AND identity_generation_id = ? AND issue_id = ?",
+        (repo_id, gen_id, issue_id),
+    ).fetchone()
+
+
+def test_rebuild_read_models_matches_pure_reducer_for_issues(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42", payload={"title": "t"})
+    _insert_evidence(conn, 1, gen_id, 2, "IssueActivated", issue_id="42", payload={"base_commit": "a"})
+    _insert_evidence(conn, 1, gen_id, 3, "IssueCompleted", issue_id="42", payload={})
+
+    rebuild_read_models(conn, 1, gen_id)
+    pure = build_projection(conn, 1, gen_id)
+
+    row = _issue_view_row(conn, 1, gen_id, "42")
+    assert row == (pure.issues["42"].state, pure.issues["42"].title,
+                   int(pure.issues["42"].inconsistent), pure.issues["42"].last_event_id)
+    assert row[0] == "DONE"
+
+
+def test_rebuild_read_models_persists_executions_runs_and_containments(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionSpawned", issue_id="42", execution_id="42-e1",
+                     run_id="run-1")
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 3, "RunStarted", run_id="run-1", payload={
+        "engine": {"provider": "anthropic", "model": "claude"},
+        "reviewer": {"provider": "qwen", "model": None},
+        "budget": {"max_attempts_per_issue": 1, "max_executions_per_run": 1,
+                   "hard_stop_proxy_cost_per_run_usd": 1.0, "proxy_pricing": "api_list_rates"},
+        "config_digest": "a" * 64,
+    })
+
+    rebuild_read_models(conn, 1, gen_id)
+
+    exec_row = conn.execute(
+        "SELECT state, run_id FROM execution_views WHERE repository_id=1 AND "
+        "identity_generation_id=? AND execution_id='42-e1'", (gen_id,)
+    ).fetchone()
+    assert exec_row == ("Pending reconciliation", "run-1")
+
+    containment_row = conn.execute(
+        "SELECT state, workspace_key FROM containment_views WHERE repository_id=1 AND "
+        "identity_generation_id=? AND execution_id='42-e1' AND containment_generation='g1'",
+        (gen_id,)
+    ).fetchone()
+    assert containment_row == ("PREPARED", "ws-1")
+
+    run_row = conn.execute(
+        "SELECT engine_provider, config_digest FROM run_views WHERE repository_id=1 AND "
+        "identity_generation_id=? AND run_id='run-1'", (gen_id,)
+    ).fetchone()
+    assert run_row == ("anthropic", "a" * 64)
+
+
+def test_rebuild_read_models_is_idempotent_and_atomically_replaces_stale_rows(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42", payload={"title": "t"})
+    rebuild_read_models(conn, 1, gen_id)
+    rebuild_read_models(conn, 1, gen_id)  # must not raise or duplicate
+
+    count = conn.execute(
+        "SELECT COUNT(*) FROM issue_views WHERE repository_id=1 AND identity_generation_id=? "
+        "AND issue_id='42'", (gen_id,)
+    ).fetchone()[0]
+    assert count == 1
+
+
+def test_rebuild_read_models_updates_read_model_state_to_ready(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42")
+    rebuild_read_models(conn, 1, gen_id)
+
+    status = read_model_status(conn, 1)
+    assert status["status"] == "READY"
+    assert status["identityGenerationId"] == gen_id
+
+
+def test_apply_changed_entities_incrementally_updates_a_single_issue(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42", payload={"title": "t"})
+    rebuild_read_models(conn, 1, gen_id)  # establish baseline READY state
+
+    _insert_evidence(conn, 1, gen_id, 2, "IssueActivated", issue_id="42", payload={"base_commit": "a"})
+    apply_changed_entities(conn, 1, gen_id, issue_ids={"42"})
+
+    row = _issue_view_row(conn, 1, gen_id, "42")
+    assert row[0] == "ACTIVE"
+
+
+def test_apply_changed_entities_does_not_touch_unrelated_issues(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42", payload={"title": "a"})
+    _insert_evidence(conn, 1, gen_id, 2, "IssueCreated", issue_id="43", payload={"title": "b"})
+    rebuild_read_models(conn, 1, gen_id)
+
+    # Mutate issue 43's view row directly to a sentinel the incremental
+    # path for issue 42 must never touch.
+    conn.execute(
+        "UPDATE issue_views SET title = 'SENTINEL' WHERE repository_id=1 AND "
+        "identity_generation_id=? AND issue_id='43'", (gen_id,)
+    )
+    _insert_evidence(conn, 1, gen_id, 3, "IssueActivated", issue_id="42", payload={})
+    apply_changed_entities(conn, 1, gen_id, issue_ids={"42"})
+
+    untouched = conn.execute(
+        "SELECT title FROM issue_views WHERE repository_id=1 AND identity_generation_id=? "
+        "AND issue_id='43'", (gen_id,)
+    ).fetchone()[0]
+    assert untouched == "SENTINEL"
+
+
+def test_apply_changed_entities_torn_to_ok_tail_repair_applies_without_full_rebuild(tmp_path):
+    """A TORN row later completing to OK at the same cursor is the exact
+    boundary-redelivery/tail-repair scenario docs/27 SS8.4 requires be
+    applied incrementally -- never forcing a full-generation rebuild."""
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42", payload={"title": "t"})
+    rebuild_read_models(conn, 1, gen_id)
+
+    # The tail row first arrives TORN (same record_cursor the repair below
+    # will later complete at), then gets repaired to OK in place -- exactly
+    # indexer.py's real upsert behavior for a boundary-redelivered tail.
+    _insert_evidence(conn, 1, gen_id, 2, "IssueActivated", issue_id="42", payload={}, integrity="TORN")
+    apply_changed_entities(conn, 1, gen_id, issue_ids={"42"})  # TORN contributes nothing
+    assert _issue_view_row(conn, 1, gen_id, "42")[0] == "PENDING"
+
+    conn.execute(
+        "UPDATE evidence SET integrity='OK' WHERE repository_id=1 AND identity_generation_id=? "
+        "AND record_cursor=?", (gen_id, f"cursor-{gen_id}-2"),
+    )
+    apply_changed_entities(conn, 1, gen_id, issue_ids={"42"})
+
+    assert _issue_view_row(conn, 1, gen_id, "42")[0] == "ACTIVE"
+
+
+def test_apply_changed_entities_recomputes_run_started_valid_flag_correctly(tmp_path):
+    """RunView's started_valid/finished_valid anomaly tracking isn't
+    persisted as separate columns -- it must be correctly re-derived every
+    time by replaying the run's own evidence from scratch, not by trying
+    to reconstruct hidden state from the stored row."""
+    conn, gen_id = _setup(tmp_path)
+    valid_payload = {
+        "engine": {"provider": "anthropic", "model": "claude"},
+        "reviewer": {"provider": "qwen", "model": None},
+        "budget": {"max_attempts_per_issue": 1, "max_executions_per_run": 1,
+                   "hard_stop_proxy_cost_per_run_usd": 1.0, "proxy_pricing": "api_list_rates"},
+        "config_digest": "a" * 64,
+    }
+    _insert_evidence(conn, 1, gen_id, 1, "RunStarted", run_id="run-1", payload={"garbage": True})
+    rebuild_read_models(conn, 1, gen_id)
+    row = conn.execute(
+        "SELECT inconsistent FROM run_views WHERE repository_id=1 AND identity_generation_id=? "
+        "AND run_id='run-1'", (gen_id,)
+    ).fetchone()
+    assert row[0] == 1  # malformed RunStarted flagged inconsistent
+
+    # A second, VALID RunStarted for the same run_id is itself anomalous
+    # (duplicate) but must recover the valid data per projections.py's
+    # documented "first observed wins, unless it was garbage" rule.
+    _insert_evidence(conn, 1, gen_id, 2, "RunStarted", run_id="run-1", payload=valid_payload)
+    apply_changed_entities(conn, 1, gen_id, run_ids={"run-1"})
+
+    engine_provider = conn.execute(
+        "SELECT engine_provider FROM run_views WHERE repository_id=1 AND identity_generation_id=? "
+        "AND run_id='run-1'", (gen_id,)
+    ).fetchone()[0]
+    assert engine_provider == "anthropic"
+
+
+def test_apply_changed_entities_containment_recomputes_all_generations_for_execution(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    rebuild_read_models(conn, 1, gen_id)
+
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentEstablished", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    apply_changed_entities(conn, 1, gen_id, execution_ids={"42-e1"})
+
+    state = conn.execute(
+        "SELECT state FROM containment_views WHERE repository_id=1 AND identity_generation_id=? "
+        "AND execution_id='42-e1' AND containment_generation='g1'", (gen_id,)
+    ).fetchone()[0]
+    assert state == "ESTABLISHED"
+
+
+def test_prune_old_generation_views_removes_only_stale_generation_rows(tmp_path):
+    conn, gen1 = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen1, 1, "IssueCreated", issue_id="from-gen-1")
+    rebuild_read_models(conn, 1, gen1)
+
+    gen2 = conn.execute(
+        "INSERT INTO identity_generations (repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, 2, 'lineage-2', 2, 2, 1, '2026-08-23T00:00:01Z')"
+    ).lastrowid
+    _insert_evidence(conn, 1, gen2, 1, "IssueCreated", issue_id="from-gen-2")
+    rebuild_read_models(conn, 1, gen2)
+
+    prune_old_generation_views(conn, 1, keep_generation_id=gen2)
+
+    remaining_gen1 = conn.execute(
+        "SELECT COUNT(*) FROM issue_views WHERE repository_id=1 AND identity_generation_id=?",
+        (gen1,),
+    ).fetchone()[0]
+    remaining_gen2 = conn.execute(
+        "SELECT COUNT(*) FROM issue_views WHERE repository_id=1 AND identity_generation_id=?",
+        (gen2,),
+    ).fetchone()[0]
+    assert remaining_gen1 == 0
+    assert remaining_gen2 == 1

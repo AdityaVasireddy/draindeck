@@ -113,7 +113,10 @@ def _apply_v1_to_v2_ddl(conn: sqlite3.Connection) -> None:
         "  repository_id          INTEGER NOT NULL,"
         "  identity_generation_id INTEGER NOT NULL,"
         "  execution_id           TEXT NOT NULL,"
-        "  containment_generation INTEGER NOT NULL,"
+        # runtime.events.projections._containment_key validates this as a
+        # string ("g1", ...), never an integer -- see
+        # src/runtime/engine/claude_headless.py's `containment_generation: str`.
+        "  containment_generation TEXT NOT NULL,"
         "  workspace_key           TEXT,"
         "  state                   TEXT NOT NULL,"
         "  inconsistent            INTEGER NOT NULL DEFAULT 0,"

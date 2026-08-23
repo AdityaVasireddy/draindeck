@@ -65,6 +65,37 @@ def _seed_generation_and_checkpoint(conn, repo_id, *, lineage, device, file_inde
     return gen_id
 
 
+def test_ingest_tick_persists_issue_views_incrementally(tmp_path, monkeypatch):
+    """Unit 2: ingest_repository_tick must persist read models (not just
+    evidence) in the same transaction, via read_models.apply_changed_entities_locked."""
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1, event_type="IssueCreated", issue_id="42",
+                      payload={"title": "fix it"})
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+
+    outcome = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+    assert outcome.status == "ok"
+
+    row = conn.execute(
+        "SELECT state, title FROM issue_views WHERE repository_id = ? AND issue_id = '42'",
+        (repo_id,),
+    ).fetchone()
+    assert row == ("PENDING", "fix it")
+
+    _write_event_line(log_path, 2, event_type="IssueActivated", issue_id="42",
+                      payload={"base_commit": "a"})
+    outcome2 = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+    assert outcome2.status == "ok"
+
+    row2 = conn.execute(
+        "SELECT state FROM issue_views WHERE repository_id = ? AND issue_id = '42'", (repo_id,)
+    ).fetchone()
+    assert row2[0] == "ACTIVE"
+
+
 # ── basic ingest + caught-up-does-not-reset ────────────────────────────
 
 def test_basic_ingest_persists_evidence_and_advances_checkpoint(tmp_path, monkeypatch):

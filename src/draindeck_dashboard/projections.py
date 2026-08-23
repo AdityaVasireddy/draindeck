@@ -109,11 +109,43 @@ class RunView:
     finished_valid: bool = False
 
 
+_CONTAINMENT_EVENT_TYPES = frozenset({
+    EventType.EXECUTION_CONTAINMENT_PREPARED, EventType.EXECUTION_CONTAINMENT_ESTABLISHED,
+    EventType.EXECUTION_TERMINATION_UNCONFIRMED, EventType.EXECUTION_CONTAINMENT_RELEASED,
+})
+
+# Exact states PREPARED|ESTABLISHED|UNCONFIRMED|RELEASED (docs/27 SS8.2, doc
+# 03 amendment "execution containment protocol"). Released is reachable
+# directly from Prepared or Established -- the amendment requires only "a
+# matching unreleased generation", not that Unconfirmed be observed first.
+_CONTAINMENT_TRANSITIONS: dict[tuple[str, EventType], str] = {
+    ("PREPARED", EventType.EXECUTION_CONTAINMENT_ESTABLISHED): "ESTABLISHED",
+    ("ESTABLISHED", EventType.EXECUTION_TERMINATION_UNCONFIRMED): "UNCONFIRMED",
+    ("PREPARED", EventType.EXECUTION_CONTAINMENT_RELEASED): "RELEASED",
+    ("ESTABLISHED", EventType.EXECUTION_CONTAINMENT_RELEASED): "RELEASED",
+    ("UNCONFIRMED", EventType.EXECUTION_CONTAINMENT_RELEASED): "RELEASED",
+}
+
+
+@dataclass
+class ContainmentGenView:
+    """One (execution_id, containment_generation) containment row --
+    orthogonal to execution lifecycle state (doc 03 amendment)."""
+
+    execution_id: str
+    containment_generation: str
+    workspace_key: Optional[str]
+    state: str
+    last_event_id: Optional[int] = None
+    inconsistent: bool = False
+
+
 @dataclass
 class ProjectionResult:
     issues: dict = field(default_factory=dict)
     executions: dict = field(default_factory=dict)
     runs: dict = field(default_factory=dict)
+    containments: dict = field(default_factory=dict)
     unknown_event_type_count: int = 0
 
 
@@ -126,16 +158,36 @@ def _try_event_type(raw: Optional[str]) -> Optional[EventType]:
         return None  # unknown event type: evidence, not projected, not a crash
 
 
-def build_projection(conn: sqlite3.Connection, repo_id: int,
-                     identity_generation_id: int) -> ProjectionResult:
-    result = ProjectionResult()
-    rows = conn.execute(
+def fetch_ok_evidence_rows(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int,
+                           *, issue_id: Optional[str] = None, execution_id: Optional[str] = None,
+                           run_id: Optional[str] = None) -> list:
+    """OK evidence rows for one identity generation, optionally scoped to a
+    single issue/execution/run id (read_models.py's entity-scoped
+    incremental recompute uses this to replay only one entity's own
+    history instead of the whole generation)."""
+    clauses = ["repository_id = ?", "identity_generation_id = ?", "integrity = 'OK'"]
+    params: list = [repo_id, identity_generation_id]
+    if issue_id is not None:
+        clauses.append("issue_id = ?")
+        params.append(issue_id)
+    if execution_id is not None:
+        clauses.append("execution_id = ?")
+        params.append(execution_id)
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    sql = (
         "SELECT event_id, event_type, issue_id, execution_id, run_id, payload_json "
-        "FROM evidence WHERE repository_id = ? AND identity_generation_id = ? "
-        "AND integrity = 'OK' ORDER BY event_id",
-        (repo_id, identity_generation_id),
-    ).fetchall()
+        "FROM evidence WHERE " + " AND ".join(clauses) + " ORDER BY event_id"
+    )
+    return conn.execute(sql, params).fetchall()
 
+
+def apply_ok_evidence_rows(rows: list) -> ProjectionResult:
+    """The pure reducer's dispatch loop, decoupled from SQL fetching so it
+    can run over either a full generation (build_projection) or one
+    entity's own scoped row set (read_models.py)."""
+    result = ProjectionResult()
     for event_id, event_type_str, issue_id, execution_id, run_id, payload_json in rows:
         etype = _try_event_type(event_type_str)
         if etype is None:
@@ -150,6 +202,8 @@ def build_projection(conn: sqlite3.Connection, repo_id: int,
             _apply_execution_spawned(result, execution_id, issue_id, run_id, event_id)
         elif etype in _EXECUTION_TRANSITION_TYPES:
             _apply_execution_transition(result, etype, execution_id, payload_json, event_id)
+        elif etype in _CONTAINMENT_EVENT_TYPES:
+            _apply_containment_event(result, etype, execution_id, payload_json, event_id)
         elif etype is EventType.RUN_STARTED:
             _apply_run_started(result, run_id, payload_json, event_id)
         elif etype is EventType.RUN_FINISHED:
@@ -162,6 +216,12 @@ def build_projection(conn: sqlite3.Connection, repo_id: int,
             view.state = PENDING_RECONCILIATION
 
     return result
+
+
+def build_projection(conn: sqlite3.Connection, repo_id: int,
+                     identity_generation_id: int) -> ProjectionResult:
+    return apply_ok_evidence_rows(
+        fetch_ok_evidence_rows(conn, repo_id, identity_generation_id))
 
 
 def _load_payload(payload_json: Optional[str]) -> dict:
@@ -440,4 +500,41 @@ def _apply_execution_transition(result: ProjectionResult, etype: EventType,
     except Exception:
         view.inconsistent = True
         return
+    view.last_event_id = event_id
+
+
+def _apply_containment_event(result: ProjectionResult, etype: EventType,
+                             execution_id: Optional[str], payload_json: Optional[str],
+                             event_id: int) -> None:
+    if execution_id is None:
+        return
+    payload = _load_payload(payload_json)
+    workspace_key = _str_or_none(payload, "workspace_key")
+    generation = _str_or_none(payload, "containment_generation")
+    if generation is None:
+        return  # no generation to key on -- evidence not modeled here
+
+    key = (execution_id, generation)
+
+    if etype is EventType.EXECUTION_CONTAINMENT_PREPARED:
+        if key in result.containments:
+            result.containments[key].inconsistent = True
+            return
+        result.containments[key] = ContainmentGenView(
+            execution_id=execution_id, containment_generation=generation,
+            workspace_key=workspace_key, state="PREPARED", last_event_id=event_id,
+        )
+        return
+
+    view = result.containments.get(key)
+    if view is None or view.inconsistent:
+        return
+    if workspace_key is not None and view.workspace_key != workspace_key:
+        view.inconsistent = True
+        return
+    next_state = _CONTAINMENT_TRANSITIONS.get((view.state, etype))
+    if next_state is None:
+        view.inconsistent = True
+        return
+    view.state = next_state
     view.last_event_id = event_id

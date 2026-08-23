@@ -150,7 +150,102 @@ required changing).
 existing DB/repository tests green; `sqlite_master` inspected and matches
 spec.
 
-### Units 2–16
+### Unit 2, Sub-step A — pure/persistent read models (2026-08-23)
+
+**Files:** `src/draindeck_dashboard/projections.py`,
+`src/draindeck_dashboard/read_models.py` (new),
+`src/draindeck_dashboard/indexer.py`,
+`tests/dashboard/test_projections.py`, `tests/dashboard/test_read_models.py`
+(new), `tests/dashboard/test_indexer.py`.
+
+**Test-first:** 9 containment-lifecycle tests added to
+`test_projections.py` (RED: `AttributeError: 'ProjectionResult' object has
+no attribute 'containments'`), 10 tests written in new
+`test_read_models.py` (RED: `ModuleNotFoundError`), 1 end-to-end test added
+to `test_indexer.py`. All confirmed failing for the stated reason before
+implementation.
+
+**Real bug caught before it propagated:** the Unit 1 migration DDL
+declared `containment_views.containment_generation` as `INTEGER`, but
+`runtime.engine.claude_headless.ExecutionContext.containment_generation`
+and `runtime.events.projections._containment_key` both treat it as an
+opaque string (e.g. `"g1"`) — confirmed by reading the real runtime
+source. Corrected to `TEXT` in `migrations.py` before any Unit 2 code
+depended on the wrong type. SQLite's type affinity meant this would not
+have raised at runtime (a non-numeric string still stores fine in an
+INTEGER-affinity column), so the bug would have been silent.
+
+**Implementation:**
+- `projections.py`: added `ContainmentGenView`, closed
+  `PREPARED→ESTABLISHED→UNCONFIRMED→RELEASED` transition table (RELEASED
+  reachable directly from PREPARED or ESTABLISHED, matching doc 03's "a
+  matching unreleased generation" — not "must pass through UNCONFIRMED"),
+  workspace_key-mismatch and duplicate-PREPARED handling (both flag
+  `inconsistent`, never raise), keyed by `(execution_id,
+  containment_generation)`. Refactored `build_projection` into
+  `fetch_ok_evidence_rows(conn, repo_id, gen_id, *, issue_id=, execution_id=,
+  run_id=)` (now supports entity-scoped filtering) +
+  `apply_ok_evidence_rows(rows)` (the pure dispatch loop, unchanged
+  behavior) + `build_projection` as a thin unscoped wrapper — verified
+  byte-identical behavior via the full existing + new test suite.
+- `read_models.py` (new): `rebuild_read_models` is the full-generation
+  candidate-rebuild-and-publish primitive (one transaction: recompute via
+  `build_projection`, DELETE+re-INSERT all four view tables for that
+  generation, upsert `read_model_state` to READY with
+  `completed_evidence_id`) — idempotent, used for backfill/forced
+  rebuild. `apply_changed_entities`/`apply_changed_entities_locked`
+  (public transaction-owning / lock-assuming inner variant — see below)
+  is the ordinary-tick path: for each named issue/execution/run id, it
+  replays ONLY that entity's own OK evidence via
+  `fetch_ok_evidence_rows(..., issue_id=...)` etc. and upserts just that
+  entity's row — O(that entity's evidence), never a full-generation scan.
+  Because each call fully re-derives the entity from its CURRENT evidence
+  rather than merging into stored state, a TORN→OK tail repair, a
+  reordered append, or a previously-OK row's content changing are all
+  handled correctly by construction — there is no separate
+  monotonic-vs-mutation branch to get wrong, and a normal tail repair
+  never triggers a full-generation rebuild (verified by
+  `test_apply_changed_entities_torn_to_ok_tail_repair_applies_without_full_rebuild`
+  and `test_apply_changed_entities_recomputes_run_started_valid_flag_correctly`,
+  the latter proving RunView's `started_valid`/`finished_valid` anomaly
+  tracking — not persisted as separate columns — is correctly re-derived
+  every time by replaying the run's own evidence, not by trying to
+  reconstruct hidden state). `prune_old_generation_views` deletes all
+  four view tables' + `read_model_state`'s rows for every generation
+  except the current one.
+- **Real transaction-nesting bug caught and fixed during wiring, before
+  committing:** `indexer.py`'s `ingest_repository_tick` already holds its
+  own per-page `BEGIN IMMEDIATE` transaction; calling
+  `apply_changed_entities` (which opens its own `BEGIN IMMEDIATE`) from
+  inside it would raise `sqlite3.OperationalError: cannot start a
+  transaction within a transaction` — sqlite3 does not support nested
+  transactions on one connection. Fixed by splitting into
+  `apply_changed_entities` (owns its transaction, for standalone
+  callers/tests/the future worker) and `apply_changed_entities_locked`
+  (assumes the caller already holds the write lock); `indexer.py` calls
+  the `_locked` variant. `prune_old_generation_views` is called as a
+  separate step AFTER the rollover's own commit (matching docs/27 SS8.4's
+  "after the new state is established" wording exactly, not just working
+  around the same nesting issue).
+- `indexer.py`: `_upsert_evidence_and_detect_corrupt` now returns the
+  sets of issue/execution/run ids whose OK content actually changed this
+  call (never a boundary-redelivered no-op); `ingest_repository_tick`
+  passes them to `apply_changed_entities_locked` in the same per-page
+  transaction as the evidence upsert.
+
+**Commands run:**
+- `pytest tests/dashboard/test_projections.py -q` → 19 passed
+- `pytest tests/dashboard/test_read_models.py -q` → 10 passed
+- `pytest tests/dashboard/test_indexer.py tests/dashboard/test_read_models.py tests/dashboard/test_projections.py -q` → 46 passed
+- `pytest tests/dashboard -q` → **227 passed**
+- `pytest tests/unit tests/dashboard -q` → **787 passed**, 73.37s, 1 pre-existing warning
+
+**Deviations:** none from the pure/persistent-model contract. Sub-step B
+(lease-owned off-thread worker so no SQLite write executes on the ASGI
+event loop; priority heartbeat scheduling; 16-job FIFO backpressure) is
+separately tracked below and required before Unit 2 as a whole is closed.
+
+### Unit 3–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

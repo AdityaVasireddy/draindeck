@@ -18,6 +18,7 @@ from typing import Optional
 
 from .observer_client import ObserverError, invoke_observer_events
 from .poller import poll_pages
+from .read_models import apply_changed_entities_locked, prune_old_generation_views
 from .sse import prune_changes
 
 _HALTED_DETAIL = "OVERSIZED tail — operator remediation required"
@@ -137,7 +138,16 @@ def _decode_ok_payload(rec: dict) -> tuple:
 
 
 def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
-                                        identity_generation_id: int, records: list) -> None:
+                                        identity_generation_id: int, records: list) -> dict:
+    """Returns the sets of issue/execution/run ids named by an OK record
+    whose stored content actually changed this call (a brand-new row or a
+    TORN/MALFORMED->OK tail repair) -- read_models.apply_changed_entities'
+    entity-scoped incremental recompute input. Never includes ids from a
+    boundary-redelivered no-op re-upsert of already-identical content."""
+    changed_issue_ids: set = set()
+    changed_execution_ids: set = set()
+    changed_run_ids: set = set()
+
     for rec in records:
         cursor = rec["cursor"]
         integrity = rec["integrity"]
@@ -204,6 +214,19 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
         )
         if content_changed:
             _record_change(conn, repo_id, "evidence", cursor)
+            if integrity == "OK":
+                if issue_id is not None:
+                    changed_issue_ids.add(issue_id)
+                if execution_id is not None:
+                    changed_execution_ids.add(execution_id)
+                if run_id is not None:
+                    changed_run_ids.add(run_id)
+
+    return {
+        "issue_ids": changed_issue_ids,
+        "execution_ids": changed_execution_ids,
+        "run_ids": changed_run_ids,
+    }
 
 
 async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,
@@ -243,6 +266,10 @@ async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,
     except Exception:
         conn.execute("ROLLBACK")
         raise
+    # Old-generation view/readiness rows are pruned only after the new
+    # generation's rollover has already committed (docs/27 SS8.4) --
+    # evidence/history is never touched either way.
+    prune_old_generation_views(conn, repo_id, keep_generation_id=new_generation_id)
     return TickOutcome(status="cursor_replaced_rolled",
                        detail=f"identity replaced; generation {new_generation_id} opened")
 
@@ -270,7 +297,14 @@ async def ingest_repository_tick(conn: sqlite3.Connection, repo_id: int,
                     identity_generation_id = _open_new_generation(conn, repo_id, metadata)
 
                 records = page["records"]
-                _upsert_evidence_and_detect_corrupt(conn, repo_id, identity_generation_id, records)
+                changed = _upsert_evidence_and_detect_corrupt(
+                    conn, repo_id, identity_generation_id, records)
+                if changed["issue_ids"] or changed["execution_ids"] or changed["run_ids"]:
+                    apply_changed_entities_locked(
+                        conn, repo_id, identity_generation_id,
+                        issue_ids=changed["issue_ids"], execution_ids=changed["execution_ids"],
+                        run_ids=changed["run_ids"],
+                    )
 
                 # Prefer the page's own nextCursor when the observer gave
                 # one: for a normal advancing page it is EXCLUSIVE (past

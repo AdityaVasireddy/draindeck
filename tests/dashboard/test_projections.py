@@ -157,3 +157,135 @@ def test_non_ok_evidence_is_never_projected(tmp_path):
     result = build_projection(conn, 1, gen_id)
 
     assert result.issues == {}
+
+
+# --- Containment generations (Unit 2 / docs/27 SS8.2, doc 03 amendment) ---
+
+
+def test_containment_full_lifecycle_prepared_established_released(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionSpawned", issue_id="42", execution_id="42-e1")
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 3, "ExecutionContainmentEstablished", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 4, "ExecutionContainmentReleased", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+
+    result = build_projection(conn, 1, gen_id)
+
+    view = result.containments[("42-e1", "g1")]
+    assert view.state == "RELEASED"
+    assert view.workspace_key == "ws-1"
+    assert view.inconsistent is False
+
+
+def test_containment_termination_unconfirmed_from_established(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentEstablished", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 3, "ExecutionTerminationUnconfirmed", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+
+    result = build_projection(conn, 1, gen_id)
+
+    assert result.containments[("42-e1", "g1")].state == "UNCONFIRMED"
+
+
+def test_containment_released_directly_from_prepared_is_legal(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentReleased", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+
+    result = build_projection(conn, 1, gen_id)
+
+    assert result.containments[("42-e1", "g1")].state == "RELEASED"
+    assert result.containments[("42-e1", "g1")].inconsistent is False
+
+
+def test_containment_established_without_matching_prepared_is_skipped(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentEstablished", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+
+    result = build_projection(conn, 1, gen_id)  # must not raise
+
+    assert result.containments == {}
+
+
+def test_containment_terminated_after_release_is_inconsistent(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentReleased", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 3, "ExecutionTerminationUnconfirmed", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+
+    result = build_projection(conn, 1, gen_id)  # must not raise
+
+    view = result.containments[("42-e1", "g1")]
+    assert view.inconsistent is True
+    assert view.state == "RELEASED"  # last known good state retained
+
+
+def test_containment_duplicate_prepared_marks_inconsistent(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+
+    result = build_projection(conn, 1, gen_id)
+
+    assert result.containments[("42-e1", "g1")].inconsistent is True
+    assert result.containments[("42-e1", "g1")].state == "PREPARED"
+
+
+def test_containment_workspace_key_mismatch_marks_inconsistent(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentEstablished", execution_id="42-e1",
+                     payload={"workspace_key": "ws-DIFFERENT", "containment_generation": "g1"})
+
+    result = build_projection(conn, 1, gen_id)  # must not raise
+
+    view = result.containments[("42-e1", "g1")]
+    assert view.inconsistent is True
+    assert view.state == "PREPARED"
+
+
+def test_containment_generations_are_independent_per_execution_and_generation(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentReleased", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    # A second generation for the SAME execution (retry after release) is a
+    # distinct, independent containment row -- not a duplicate.
+    _insert_evidence(conn, 1, gen_id, 3, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1", "containment_generation": "g2"})
+
+    result = build_projection(conn, 1, gen_id)
+
+    assert result.containments[("42-e1", "g1")].state == "RELEASED"
+    assert result.containments[("42-e1", "g1")].inconsistent is False
+    assert result.containments[("42-e1", "g2")].state == "PREPARED"
+    assert result.containments[("42-e1", "g2")].inconsistent is False
+
+
+def test_containment_missing_execution_id_or_generation_is_skipped(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "ExecutionContainmentPrepared", execution_id=None,
+                     payload={"workspace_key": "ws-1", "containment_generation": "g1"})
+    _insert_evidence(conn, 1, gen_id, 2, "ExecutionContainmentPrepared", execution_id="42-e1",
+                     payload={"workspace_key": "ws-1"})  # missing containment_generation
+
+    result = build_projection(conn, 1, gen_id)  # must not raise
+
+    assert result.containments == {}
