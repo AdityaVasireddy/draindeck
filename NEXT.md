@@ -12,26 +12,64 @@
 
 ## 1. Current state (verified 2026-08-23)
 
-- **Dashboard redesign: BUILD-AUTO COMPLETE (Units 0-16), pending user
-  review before merge/push.** Branch `dashboard-redesign`, baseline
-  `4052fef97dbb90b52ae91fc01832557bc348cab8` through the final Unit 16
-  commit. 921/921 combined `tests/unit tests/dashboard` suite green;
-  every docs/27 route implemented and live-verified, including a
-  100,000-row scale fixture and four independent fresh-context reviews
-  (0 security findings; 8 real defects fixed test-first; 6 findings
-  explicitly deferred with rationale). The old Part 2 static UI is fully
-  retired. **No merge or push has occurred.** Full outcome, files
-  changed, migration/compatibility statement, test/browser/security
-  results, independent-review dispositions, and residual risks (most
-  notably: the `INDEX_PREPARING` staleness contract is unwired end-to-end,
-  and 320/768px live-pixel verification was not possible this session due
-  to a tooling limitation) are recorded in the **Final handoff** section
-  at the bottom of `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` --
-  read that before deciding what (if anything) still needs doing before
-  merge. Per-unit checklist: `tasks/todo.md`. **Next action is a user
-  decision**, not an autonomous next step: review the handoff, then
-  either request fixes for the deferred/residual items above or approve
-  merge.
+- **Dashboard redesign: BUILD-AUTO COMPLETE (Units 0-16 plus two
+  merge-blocker `/build-auto` continuations), pending user review before
+  merge/push.** Branch `dashboard-redesign`, baseline
+  `4052fef97dbb90b52ae91fc01832557bc348cab8` through commit `ed09179`
+  (32 commits). **970/970 combined `tests/unit tests/dashboard` suite
+  green** (560 unit, 410 dashboard); every docs/27 route implemented and
+  live-verified, including a 100,000-row scale fixture, a dedicated
+  event-loop-responsiveness/lease-starvation measurement (100k-row
+  rebuild and max 2,000-record tick, both well within budget, no
+  starvation, re-run twice), and six independent fresh-context review
+  rounds across the full history (0 security findings survived to final;
+  every real defect found was fixed test-first and live-verified). The
+  old Part 2 static UI is fully retired. **No merge or push has
+  occurred.**
+
+  Both merge-blocker continuations closed real, previously-shipped gaps
+  a fresh-context review or the user caught: (1) `INDEX_PREPARING`/
+  `REBUILDING`/`READY`/`ERROR` read-model status wired end-to-end
+  (a pre-existing bug had every incremental write fabricating READY);
+  (2) `rebuild_read_models` now has a real lease-owned production caller
+  with a decisive, linearizable ownership re-check immediately before
+  publication -- it never publishes READY or replaces view rows once the
+  lease is lost, proven by regression tests that replaced a prior test
+  weak enough to pass even if publication-after-loss were silently
+  permitted; (3) generation-rollover pruning now happens atomically WITH,
+  and only upon, the new generation's successful publish, not immediately
+  on rollover (which used to destroy the old generation's complete
+  snapshot before the new one was ready); (4) the undocumented status
+  value `FAILED` renamed to the spec-accepted `ERROR` everywhere,
+  including an idempotent data-migration correcting any already-written
+  legacy row and flipping the readiness gate from fail-open (denylist) to
+  fail-closed (allowlist); (5) focus/scroll now survive SSE-triggered
+  list refreshes on every list page, including a reorder-churn bug a
+  review caught in the fix itself; (6) 320/768/1024/1440px and 200% text
+  resize are now live-verified via a working alternate mechanism (a local
+  CSP-relaxing reverse-proxy + iframe harness), not just code-reviewed.
+
+  **One item remains genuinely open, by explicit user waiver, not by
+  omission:** `forced-colors: active` true browser/OS-level rendering was
+  attempted with the user's active cooperation across three escalating
+  mechanisms (DevTools access, an OS-level High Contrast toggle + reload,
+  then an authorized full Chrome restart) and never observed by the
+  automated browser surface despite being genuinely active on the user's
+  own desktop throughout -- a session/profile boundary no available tool
+  could bridge. The user chose to waive this one sub-check rather than
+  continue searching; `.chart-bar`'s System Colors override remains
+  verified by code review only. See `tasks/todo.md`'s WCAG checkbox
+  (left intentionally OPEN) for the full attempt log.
+
+  Full outcome, files changed, migration/compatibility statement, test/
+  browser/security results, and independent-review dispositions for
+  every round are recorded in `docs/reviews/DASHBOARD_REDESIGN_BUILD_
+  EVIDENCE.md` (status header now reflects completion, not "IN
+  PROGRESS") and `tasks/todo.md`'s dated evidence-log entries -- read
+  those before deciding what (if anything) still needs doing before
+  merge. **Next action is a user decision**, not an autonomous next
+  step: review the evidence, then either request the forced-colors gate
+  be revisited with a different mechanism, or approve merge.
 
 - **Dashboard Part 2 (ADR-26): Phase 7 (run lifecycle events) complete on
   branch `dashboard`** (2026-08-21, commits `fd2b9eb`..`7ff1033`, on top of

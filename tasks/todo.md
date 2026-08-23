@@ -234,3 +234,89 @@ No dependency installed. No merge, no push.
 - **Git status:** working tree clean at each commit boundary; every item
   ended at its own local checkpoint commit exactly as authorized. No
   merge, no push, no `src/runtime` modification at any point.
+
+### 2026-08-23 merge-blocker round: lease enforcement, rollover pruning, ERROR rename
+
+A second resumption of `/build-auto`, baseline `6f8246f` (the prior round's
+final commit). Five items closed; final commit `ed09179`.
+
+- **Item 1 (lease ownership for rebuild/backfill):** `rebuild_read_models`
+  now requires `owner_token` and verifies it twice via a new
+  `_require_owned_lease` helper -- once before candidate computation,
+  once immediately after `BEGIN IMMEDIATE` (before publish), while
+  holding SQLite's exclusive write lock (linearizable against any
+  competing takeover). Raises `LeaseLostError` and rolls back on
+  mismatch; never publishes READY or replaces views after lease loss.
+  `scheduler.py`'s `_maybe_rebuild` passes its own `owner_token` and
+  treats `LeaseLostError` specially (no `mark_error` write either, since
+  that would be equally illegitimate post-loss). The prior lease-loss
+  test (which only asserted generic internal consistency -- weak enough
+  to pass even if lease loss silently permitted publication) was
+  replaced with two regression tests asserting the actual required
+  property: no READY status, no view rows, no `mark_error` call, after
+  lease loss. Commit `55a8960`.
+- **Item 2 (generation-rollover pruning timing):** `prune_old_generation_
+  views` is no longer called immediately after a rollover opens the new
+  generation (while it's still PREPARING) -- that destroyed the old
+  generation's complete snapshot before the new one ever reached READY.
+  Pruning now happens INSIDE `rebuild_read_models`'s own atomic
+  transaction, only after the new generation's own successful publish.
+  New tests prove old-generation rows survive a failed rebuild attempt,
+  a lease-loss rejection, a retry (right up until the retry itself
+  commits), and a scheduler cancellation mid-rollover. Commit `55a8960`.
+- **Item 3 (FAILED -> ERROR rename):** docs/27 SS8.4's frozen contract is
+  explicit: "Status is PREPARING|READY|REBUILDING|ERROR." Renamed
+  everywhere: the stored literal, `mark_failed` -> `mark_error`, every
+  caller, every status-tuple check, every test. Commit `982b046`.
+- **Fresh independent reviews** (code-reviewer, security-auditor) ran
+  against Items 1-3's diff: 0 critical/important code-quality findings
+  (2 harmless suggestions addressed with clarifying comments); security
+  found 1 MEDIUM (fail-open gating: `check_read_model_readiness`/
+  `projection_state_summary` denylisted PREPARING/ERROR instead of
+  allowlisting READY/REBUILDING, so an unrecognized status value --
+  including a legacy `'FAILED'` row this exact codebase wrote before the
+  rename, never migrated -- silently passed as complete) and 1 LOW
+  (`mark_error`'s write was not lease-checked). Both fixed test-first:
+  the readiness gate now fails CLOSED (allowlist), a new idempotent data
+  migration corrects any existing `'FAILED'` row to `'ERROR'` on next
+  startup, and `mark_error` now takes `owner_token` and re-checks lease
+  ownership immediately before its write, same pattern as
+  `rebuild_read_models`'s decisive check. Commit `ed09179`.
+- **Item 5 (forced-colors live acceptance):** genuinely attempted with
+  the user's active cooperation, not resolved, explicitly waived by the
+  user rather than left unresolved-and-unmarked. Attempt log: (1)
+  F12/DevTools would not open in the browser-automation context, tried
+  twice including a click-then-F12 sequence to rule out a focus-routing
+  artifact; (2) the user enabled real Windows High Contrast on their own
+  desktop and confirmed it visibly active there, but the automated tab
+  still reported `matchMedia('(forced-colors: active)') === false` after
+  a hard reload; (3) the user authorized a full `taskkill chrome.exe` +
+  relaunch (Chrome PID list captured in this session's tool output) so
+  Chrome would pick up the OS theme at startup -- still `false` after
+  relaunch, with no visible remapping in a fresh screenshot. This points
+  to a session/profile boundary between the automated browser surface
+  and the user's visible desktop that no available tool could bridge.
+  Asked directly, the user chose to WAIVE this one sub-check rather than
+  continue searching for a mechanism. The relevant `tasks/todo.md`
+  checkbox is left OPEN with this full log, per explicit instruction not
+  to mark code-review-only verification as live acceptance.
+- **Item 4 (this documentation correction):** this entry; `NEXT.md`
+  updated to the current test count/state; `docs/reviews/DASHBOARD_
+  REDESIGN_BUILD_EVIDENCE.md`'s header changed from IN PROGRESS to
+  reflect actual completion status; `git diff --check 4052fef..HEAD`
+  clean (one pre-existing trailing-whitespace line in a Unit-0-era
+  planning doc, from before this session, fixed as part of this pass).
+- **Full suite, final commit `ed09179`:** `pytest tests/unit
+  tests/dashboard -q` → **970 passed** (560 unit + 410 dashboard), 0
+  failed. Event-loop/lease-starvation measurement
+  (`tests/dashboard/scale/measure_event_loop_responsiveness.py`) re-run
+  twice: Scenario A (100k-row rebuild) job elapsed 135.9-137.9ms, max
+  event-loop gap 30.5-31.4ms (50ms budget), max lease-renewal delay
+  0.137-0.139s (5s budget); Scenario B (2,000-record tick) job elapsed
+  21.8-23.2ms, max event-loop gap 27.3-30.8ms, max lease-renewal delay
+  0.013-0.016s. Both scenarios PASS both runs.
+- **Git status:** working tree clean at each commit boundary; every item
+  ended at its own local checkpoint commit exactly as authorized. No
+  merge, no push, no `src/runtime` modification at any point
+  (`git diff 6f8246f..HEAD --stat -- src/runtime` empty). No dependency
+  installed.

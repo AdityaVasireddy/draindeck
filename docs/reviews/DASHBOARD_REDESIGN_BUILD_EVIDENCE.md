@@ -1,8 +1,9 @@
 # Dashboard Redesign Build Evidence
 
-**Status:** IN PROGRESS — Unit 0 complete<br>
+**Status:** BUILD-AUTO COMPLETE — Units 0-16 plus two merge-blocker continuations; one item (forced-colors live acceptance) explicitly waived by the user; pending user review before merge/push<br>
 **Branch:** `dashboard-redesign`<br>
-**Baseline:** `4052fef97dbb90b52ae91fc01832557bc348cab8`
+**Baseline:** `4052fef97dbb90b52ae91fc01832557bc348cab8`<br>
+**Final commit:** `ed09179`
 
 This tracked record is the durable build-auto evidence log. After every unit,
 record the exact files, failing-first test, passing focused/full commands,
@@ -1819,106 +1820,178 @@ severity suggestions reviewed and accepted as-is. Full combined suite: 960
 passed (958 -> 960 after the 2 new review-fix regression tests), 0 failed.
 No merge, no push, no `src/runtime` modification.
 
+## 2026-08-23 merge-blocker round: lease enforcement, rollover pruning, ERROR rename
+
+A second `/build-auto` resumption, baseline `6f8246f` (the prior continuation's
+final commit). Full narrative, exact commands, and exact numbers are in
+`tasks/todo.md`'s "2026-08-23 merge-blocker round" evidence-log entry; this
+section summarizes outcome and disposition only.
+
+- **Lease ownership for rebuild/backfill:** `rebuild_read_models` was
+  publishable by a process that no longer held the indexer lease -- a real
+  merge blocker, not a cosmetic gap. Now requires `owner_token` and
+  verifies it twice (before candidate computation, and decisively
+  immediately before publication while holding SQLite's exclusive write
+  lock -- linearizable against any competing takeover). The prior
+  lease-loss test only asserted generic internal consistency, weak enough
+  to pass even if publication-after-loss were silently permitted;
+  replaced with regression tests asserting the actual required property.
+- **Generation-rollover pruning timing:** old-generation view rows were
+  destroyed immediately on rollover, before the new generation ever
+  reached READY -- meaning a rollover-triggered PREPARING window had no
+  snapshot left to honestly label stale even in principle. Pruning now
+  happens atomically WITH, and only upon, the new generation's own
+  successful publish. Proven to survive failure, retry, cancellation, and
+  lease loss.
+- **FAILED -> ERROR:** the codebase used an undocumented status value
+  where docs/27 SS8.4's frozen contract specifies `ERROR`. Renamed
+  everywhere.
+- **Fresh independent reviews caught two more real issues** in this
+  round's own diff, both fixed before this section was written: a
+  fail-open readiness gate (an unrecognized status value, including a
+  legacy `'FAILED'` row, silently passed as a complete snapshot -- flipped
+  to fail-closed, plus an idempotent data migration for existing rows),
+  and an unprotected `mark_error` write that could regress a newly-
+  published status from an actual new lease holder.
+- **Forced-colors:** genuinely attempted across three escalating
+  mechanisms with the user's active, real-time cooperation; never
+  resolved; explicitly waived by the user rather than silently left
+  unmarked. Full attempt log in `tasks/todo.md`.
+
+**Checkpoint:** 2 more fresh-context independent reviews ran against this
+round's own diff (Items 1-3) before its fixes. Code review: 0 critical/
+important findings, 2 harmless suggestions addressed. Security: 1 MEDIUM
+(fail-open gating) + 1 LOW (unprotected `mark_error` write), both fixed
+test-first and re-verified. Full combined suite: 970 passed (560 unit + 410
+dashboard), 0 failed. Event-loop/lease-starvation measurement re-run twice,
+both scenarios PASS both runs. No merge, no push, no `src/runtime`
+modification, no dependency installed.
+
 ## Final handoff
 
-- **Outcome:** Units 0-16 plus the 2026-08-23 continuation (above) of the
-  Dashboard Redesign (docs/27, ADR-27) are complete on branch
-  `dashboard-redesign`. 960/960 combined `tests/unit
-  tests/dashboard` suite green at the final commit. The old Part 2 static
-  UI is fully retired; every route in docs/27 §4/§9.1 is implemented,
-  tested, and live-verified against a real browser and Draindeck's own
-  real event/execution history plus a 100,000-row scale fixture.
+- **Outcome:** Units 0-16 plus two merge-blocker `/build-auto`
+  continuations (above) of the Dashboard Redesign (docs/27, ADR-27) are
+  complete on branch `dashboard-redesign`, final commit `ed09179`.
+  **970/970 combined `tests/unit tests/dashboard` suite green** at the
+  final commit. The old Part 2 static UI is fully retired; every route in
+  docs/27 §4/§9.1 is implemented, tested, and live-verified against a
+  real browser and Draindeck's own real event/execution history plus a
+  100,000-row scale fixture. **One item remains genuinely open by
+  explicit user waiver** (forced-colors live acceptance -- see Residual
+  risks below), not silently marked done.
 - **Files changed:** every commit from Unit 0 (`1828f58`-adjacent) through
-  this continuation's final commit (`6f8246f`) is scoped to
-  `src/draindeck_dashboard/`, `tests/dashboard/`,
-  `docs/27-dashboard-redesign-spec.md`,
+  the final commit (`ed09179`) is scoped to `src/draindeck_dashboard/`,
+  `tests/dashboard/`, `docs/27-dashboard-redesign-spec.md`,
   `docs/08-session-0-closure-and-adr-amendments.md` §5i,
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`, `tasks/`,
   `PRODUCT.md`, `DESIGN.md`, and `NEXT.md`. **`src/runtime` was never
-  touched** (confirmed: `git diff 7cdb23b..HEAD --stat -- src/runtime` is
+  touched** (confirmed: `git diff 4052fef..HEAD --stat -- src/runtime` is
   empty). No dependency was installed.
 - **Migration/compatibility:** the v1->v2 SQLite migration
   (`migrations.py`) is additive-only, applied automatically on next
   connect, tested for concurrent-start safety, idempotent restart, and
   rollback-on-failure (Unit 1). No existing evidence/registration/
   checkpoint/generation/corruption/lease row is ever touched by the
-  migration or by any new query. The legacy Phase 5 per-repository
-  endpoints and the old static UI's server-side routes remain unchanged
-  and still pass their original tests.
-- **Test results:** `pytest tests/unit tests/dashboard -q` → **960 passed**
-  (560 unit + 398 dashboard), run twice for consistency, 0 failed. Scale/
-  performance acceptance (`tests/dashboard/scale/measure_performance.py`)
-  passes all 12 measured endpoints against docs/27 SS14's budgets on the
+  migration or by any new query. `run_migrations` now also carries one
+  idempotent DATA correction (not a schema/DDL change, no version bump):
+  any existing `read_model_state.status='FAILED'` row (the value an
+  earlier, undocumented deviation actually wrote) is corrected to
+  `'ERROR'` on next startup -- a no-op once corrected. The legacy Phase 5
+  per-repository endpoints and the old static UI's server-side routes
+  remain unchanged and still pass their original tests.
+- **Test results:** `pytest tests/unit tests/dashboard -q` → **970
+  passed** (560 unit + 410 dashboard), 0 failed. Scale/performance
+  acceptance (`tests/dashboard/scale/measure_performance.py`) passes all
+  12 measured endpoints against docs/27 SS14's budgets on the
   20/1,000/2,000/10,000/100,000-row fixture (Unit 15). Event-loop/lease-
   starvation acceptance (`tests/dashboard/scale/measure_event_loop_
-  responsiveness.py`, new this continuation) passes both scenarios (a
-  100,000-row single-repo rebuild and a maximum 2,000-record tick) against
-  a real `ReadModelWorker`, run twice for consistency (see the 2026-08-23
-  continuation entry above for exact figures).
+  responsiveness.py`) passes both scenarios (a 100,000-row single-repo
+  rebuild and a maximum 2,000-record tick) against a real
+  `ReadModelWorker`, run twice for consistency both in the first
+  continuation and again after the lease-enforcement changes in the
+  merge-blocker round (see that entry above for exact figures).
 - **Browser/accessibility/security results:** extensive real-browser
-  verification across Units 6-16 plus this continuation covering every
+  verification across Units 6-16 plus both continuations covering every
   route's populated/empty/loading/error/reconnecting/preparing/stale
   states, keyboard-only interaction (search, dialogs, tabs, tablist arrow
   keys, filters), focus-not-obscured-by-sticky-header, zero console errors
   throughout, and CSP/security headers on every route. 320/768/1024/1440
-  CSS px and 200% text resize are now live-verified against the real
-  running app (a local CSP-relaxing reverse-proxy + iframe harness, since
-  `resize_window` remains unreliable this session and `frame-ancestors
-  'none'` otherwise blocks iframe-based testing); `prefers-reduced-motion`
-  is live-verified via rule injection. **One honestly-carried gap
-  remains**: `forced-colors: active` is verified by code review only
-  (`.chart-bar` System Colors override) — true browser-level forced-colors
-  media-feature emulation was not achievable via any tooling available
-  this session (no working DevTools/CDP Emulation access; OS-level
-  high-contrast toggling is out of scope as a system-settings change).
-- **Independent review findings and dispositions:** Unit 16's own review
-  round (above) found 0 security defects and 8 real contract/accessibility/
-  quality defects, all fixed; 6 further findings were deferred with
-  rationale — this continuation closed every one of those 6 (see the
-  2026-08-23 continuation entry above). This continuation then ran its own
-  fresh 2-reviewer round (code-reviewer, security-auditor) against its own
-  diff: 0 security findings; 2 Important code-quality findings, both real,
-  both fixed test-first and live-verified/tested (a `syncList` reorder-
-  churn bug and a missing LEASE_UNCLAIMED gate on `/api/overview`); 2
-  low-severity suggestions reviewed and accepted as-is. No open P0/P1/P2
-  finding remains from either review round.
+  CSS px and 200% text resize are live-verified against the real running
+  app (a local CSP-relaxing reverse-proxy + iframe harness, since
+  `resize_window` remains unreliable in this environment and
+  `frame-ancestors 'none'` otherwise blocks iframe-based testing);
+  `prefers-reduced-motion` is live-verified via rule injection. **One
+  item remains genuinely open, by explicit user waiver:**
+  `forced-colors: active` true browser/OS-level rendering was attempted
+  across three escalating mechanisms with the user's active, real-time
+  cooperation (DevTools access twice, the user's own OS-level High
+  Contrast toggle + page reload, then a user-authorized full Chrome
+  process restart to pick up the theme at startup) and never observed by
+  the automated browser surface despite being genuinely active on the
+  user's own desktop throughout every attempt -- pointing to a
+  session/profile boundary between the automated browser and the user's
+  visible desktop that no available tool could bridge. Asked directly,
+  the user chose to waive this one sub-check. `.chart-bar`'s System
+  Colors override remains verified by code review only, and is NOT
+  claimed as live-verified.
+- **Independent review findings and dispositions:** three independent
+  fresh-context review passes ran across this branch's full history
+  (Unit 16's own pass with four reviewers -- security, contract-honesty,
+  accessibility, code-quality; the first continuation's pass pairing a
+  code-quality and a security reviewer; and this merge-blocker round's
+  own pass, same pairing). Cumulative: 8 real contract/accessibility/
+  quality defects fixed in Unit 16; 6 further Unit-16-deferred findings
+  all closed by the first continuation, which itself then found and
+  fixed 2 more Important findings in its own fresh review pass; this
+  merge-blocker round's own fresh review pass then found and fixed 1
+  MEDIUM security finding (a fail-open readiness gate) and 1 LOW security
+  finding (an unprotected `mark_error` write), plus addressed 2 harmless
+  code-quality suggestions. **0 security findings survive at the final
+  commit.** No open P0/P1/P2 finding remains from any review round.
 - **Residual risks:**
-  1. `forced-colors: active` true browser-level rendering is verified by
-     code review only, not live pixels — a tooling limitation of this
-     session's available browser-automation access (see above), not a
-     known code defect.
+  1. `forced-colors: active` true browser-level rendering remains
+     genuinely unverified live and is explicitly waived by the user (see
+     above) -- not a known code defect, a confirmed tooling/environment
+     limitation that persisted across every escalation attempted.
   2. `dom.js`'s `syncList` intentionally lags a focused row's *content*
      behind newly-arrived data until focus moves elsewhere (it never
      reorders or re-renders a currently-focused row's interior) — a
      disclosed, reviewed tradeoff against the alternative of yanking focus
      out from under an actively-focused control on every SSE update, not
      a defect.
-- **Git status:** working tree clean at each unit/continuation commit
-  boundary; every commit is its own local checkpoint exactly as
+- **Git status:** working tree clean at every unit/continuation/round
+  commit boundary; every commit is its own local checkpoint exactly as
   authorized. **No merge, no push, and no `src/runtime` modification at
   any point in this branch's history.**
 
 ## Final verification
 
-- Focused tests: run throughout (TDD per item, failing-first where
-  applicable — see the 2026-08-23 continuation entry for the specific new
-  test files/counts per item)
-- Dashboard suite: `pytest tests/dashboard -q` → **398 passed**
+- Focused tests: run throughout every round (TDD per item, failing-first
+  where applicable — see each dated evidence-log entry for the specific
+  new test files/counts per item)
+- Dashboard suite: `pytest tests/dashboard -q` → **410 passed**
 - Combined unit + Dashboard suite: `pytest tests/unit tests/dashboard -q`
-  → **960 passed**, run twice for consistency, 0 failed
+  → **970 passed**, 0 failed
 - Real-browser/accessibility review: run — 320/768/1024/1440px, 200% text
   resize, keyboard-only, focus-not-obscured, and reduced-motion all
-  live-verified against the real running app this continuation;
-  forced-colors verified by code review only (see Residual risks above)
+  live-verified against the real running app; forced-colors genuinely
+  attempted (three escalating mechanisms, user cooperation) and
+  explicitly waived by the user, not marked as live-verified (see
+  Residual risks above)
 - Scale/performance review: run —
-  `tests/dashboard/scale/measure_performance.py` (Unit 15, pre-existing,
-  still passing) and `tests/dashboard/scale/measure_event_loop_
-  responsiveness.py` (new this continuation, 2 runs, both PASS)
-- Security review: run — fresh-context security-auditor pass this
-  continuation, 0 findings at any severity
-- Independent reviews: run — code-reviewer + security-auditor this
-  continuation; 2 Important findings, both fixed and verified; see above
-- Final working tree / commit list: clean; `7cdb23b..HEAD` is 10 commits
-  (`143625f`, `0ac006c`, `f4343c5`, `0d9a42a`, `553032e`, `0fd6f82`,
-  `28312d1`, `f053e4e`, `6f8246f`, plus this documentation commit), each
-  scoped to exactly the item(s) it names in its message
+  `tests/dashboard/scale/measure_performance.py` (Unit 15, still passing)
+  and `tests/dashboard/scale/measure_event_loop_responsiveness.py`
+  (2 runs in each of two rounds, all PASS)
+- Security review: run — fresh-context security-auditor passes in both
+  continuations; final round found and closed 1 MEDIUM + 1 LOW finding;
+  0 findings survive at the final commit
+- Independent reviews: run — code-reviewer + security-auditor pairs in
+  both continuations (4 review passes total across the two rounds); every
+  Important/MEDIUM/LOW finding fixed test-first and re-verified; see
+  above
+- Final working tree / commit list: clean; `4052fef..HEAD` is 32 commits
+  total (`7cdb23b..HEAD` covers both merge-blocker continuations: 10
+  commits in the first round ending `62ca2bb`, then 3 commits in this
+  round -- `55a8960`, `982b046`, `ed09179` -- plus this documentation
+  commit), each scoped to exactly the item(s) it names in its message.
+  `git diff --check 4052fef..HEAD` clean.
