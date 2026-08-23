@@ -1090,6 +1090,72 @@ controlled-exit/abrupt-death/no-downgrade tests, the full unit suite, and
 crash harness seeds 42 and 1337. Existing logs without run events remain
 valid and receive no fabricated lifecycle history.
 
+## 5i. ADR-27 — Dashboard materialized read models and multi-screen operator UI
+
+**Status:** ACCEPTED · **Proposed:** 2026-08-22 · **Accepted:** 2026-08-23
+(explicit user authorization to implement Units 0-16 of `tasks/plan.md`,
+including local per-unit checkpoint commit authority). This is a
+Dashboard-only architecture proposal. It does not amend `src/runtime`, Doc
+03, ADR-25's observer contract, or ADR-26's single-writer and security
+boundaries. The
+complete proposed product, API, SQLite, UI, accessibility, security, scale,
+and acceptance contract is `docs/27-dashboard-redesign-spec.md`; that document
+is normative for the proposal and must be reviewed together with this record.
+
+**Context.** Dashboard Part 2 intentionally shipped a small vanilla UI and
+rebuilds issue/execution/run projections in memory for each list request. The
+approved redesign adds a cross-repository operator home, attention triage,
+search, stable detail routes, charts, scoped topology, containment inspection,
+and a 100,000+ evidence-row operating envelope. Implementing those screens by
+joining paginated client pages or replaying every current generation per
+request would be incomplete and unbounded.
+
+**Decision.** Keep evidence as the source of truth and add Dashboard-owned,
+current-generation materialized views for issues, runs, executions, and
+containment generations; a Dashboard-detection attention history; bounded
+aggregate/search/detail/timeline/topology REST reads; and an accessible
+multi-screen vanilla HTML/CSS/JS shell. SQLite v2 migration performs only
+short idempotent DDL at startup, reading schema version only after acquiring a
+`BEGIN IMMEDIATE` lock. Large backfill/rebuild work is elected by the
+existing ADR-26 lease, runs off the ASGI event loop with a dedicated
+connection, verifies lease ownership before atomic publish, and exposes an
+honest readiness/stale state. Normal TORN-tail completion applies
+incrementally; only a previously projected OK mutation or non-monotonic
+projectable evidence requires rebuild. Each bounded observer page's persistence
+and incremental projection/attention work uses the same off-thread lease-owned
+   writer rather than the ASGI loop. Lease acquire/renew writes use that same
+   worker and connection with priority scheduling, so no SQLite write blocks the
+   ASGI loop or lets queued page/backfill work starve the heartbeat. SSE remains invalidation-only; its
+envelope is unchanged and its `entityType` vocabulary gains additive
+attention/health/read-model values.
+
+Attention does not reinterpret `Pending reconciliation`, a TORN tail, or
+`no controlled finish observed` as actionable failure because ADR-25 exposes
+no process liveness. Containment is modeled per
+`(execution_id, containment_generation)` with the exact projected state
+vocabulary `PREPARED|ESTABLISHED|UNCONFIRMED|RELEASED`. Existing REST defaults,
+including repository-scoped evidence's oldest-first order and FastAPI's 422
+path-validation shape, remain backward compatible. The one explicit pre-GA
+boundedness tightening caps that legacy evidence offset at 100,000. New global
+evidence navigation uses bounded keyset pagination.
+
+**Alternatives rejected.** Client-only joins cannot be pagination-complete;
+per-request replay cannot meet the scale envelope; startup backfill before
+lease acquisition violates the single-writer design and blocks ASGI; a new
+frontend framework/build chain adds surface without satisfying a missing
+requirement; direct target-log reads bypass ADR-25; treating no-finish/pending
+states as attention would turn absence of liveness evidence into an alarm.
+
+**Consequences and gate.** New schema/API/UI code remains confined to
+`src/draindeck_dashboard` and Dashboard tests. Repository deletion must remove
+all new Dashboard-owned rows. Non-tabular content reflows to 320 CSS pixels,
+interactive boundaries/focus indicators meet non-text contrast, and real
+browser verification must be available before source mutation. Acceptance of
+this ADR, docs/27, and the version-controlled implementation plan is required
+before implementation. Acceptance does not itself authorize `src/runtime`
+changes, remote serving, a new dependency, commit, merge, or push; local
+checkpoint-commit authority must be stated separately.
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml

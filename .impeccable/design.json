@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-22T00:00:00Z",
+  "title": "Design System: Draindeck Dashboard",
+  "extensions": {
+    "colorMeta": {
+      "forest-rail": {"role": "primary", "displayName": "Binding Forest", "canonical": "#153C31", "tonalRamp": ["#071A15", "#0B2E25", "#153C31", "#386B5B", "#608F7D", "#91B7A7", "#C3D9CF", "#EDF4F0"]},
+      "paper-canvas": {"role": "neutral", "displayName": "Paper Canvas", "canonical": "#F6F1E8", "tonalRamp": ["#211E19", "#403A31", "#655D50", "#8C8272", "#B4AA9B", "#D8D0C5", "#F6F1E8", "#FFFCF7"]},
+      "ink-primary": {"role": "neutral", "displayName": "Graphite Ink", "canonical": "#23332E", "tonalRamp": ["#101714", "#23332E", "#40554E", "#62786F", "#879B92", "#AFC0B8", "#D7E1DC", "#F3F7F5"]},
+      "sage-action": {"role": "secondary", "displayName": "Editorial Sage", "canonical": "#386B46", "tonalRamp": ["#102016", "#23452D", "#386B46", "#5F8E6B", "#88AF90", "#B3CEB8", "#DAE7DC", "#F1F7F2"]},
+      "bronze-attention": {"role": "tertiary", "displayName": "Margin Bronze", "canonical": "#7A5B2E", "tonalRamp": ["#23190C", "#4E381B", "#7A5B2E", "#A47F48", "#C7A56E", "#DFC99A", "#F1E5CD", "#FBF5E8"]},
+      "clay-danger": {"role": "tertiary", "displayName": "Correction Clay", "canonical": "#9B432E", "tonalRamp": ["#2B100A", "#632619", "#9B432E", "#C46852", "#DE927F", "#EDBBAE", "#F5DDD6", "#FCF2EF"]},
+      "focus-teal": {"role": "primary", "displayName": "Proofreader Teal", "canonical": "#006E75", "tonalRamp": ["#002124", "#00464B", "#006E75", "#25949B", "#5AB8BC", "#91D5D7", "#C6EBEC", "#EFFAFA"]},
+      "focus-on-dark": {"role": "primary", "displayName": "Focus on Dark", "canonical": "#6EDAE0", "tonalRamp": ["#062426", "#0B494C", "#157175", "#309A9E", "#6EDAE0", "#9BE9ED", "#C8F4F6", "#F0FCFC"]},
+      "field-border-light": {"role": "neutral", "displayName": "Field Border Light", "canonical": "#81796C", "tonalRamp": ["#201D19", "#423D35", "#665F53", "#81796C", "#AAA193", "#CDC5BA", "#E9E3DA", "#F9F6F1"]},
+      "field-border-dark": {"role": "neutral", "displayName": "Field Border Dark", "canonical": "#82998D", "tonalRamp": ["#17201C", "#304039", "#4C6258", "#6A8478", "#82998D", "#AEC1B7", "#D4E0DA", "#F2F7F4"]},
+      "chart-light-1": {"role": "tertiary", "displayName": "Chart Light 1", "canonical": "#153C31", "tonalRamp": ["#071A15", "#0B2E25", "#153C31", "#386B5B", "#608F7D", "#91B7A7", "#C3D9CF", "#EDF4F0"]},
+      "chart-light-8": {"role": "tertiary", "displayName": "Chart Light 8", "canonical": "#52645E", "tonalRamp": ["#101714", "#23332E", "#40554E", "#62786F", "#879B92", "#AFC0B8", "#D7E1DC", "#F3F7F5"]},
+      "chart-dark-1": {"role": "tertiary", "displayName": "Chart Dark 1", "canonical": "#A6D6B0", "tonalRamp": ["#102016", "#23452D", "#386B46", "#5F8E6B", "#88AF90", "#A6D6B0", "#DAE7DC", "#F1F7F2"]},
+      "chart-dark-8": {"role": "tertiary", "displayName": "Chart Dark 8", "canonical": "#7D8A3F", "tonalRamp": ["#1B1F0B", "#39421A", "#596528", "#7D8A3F", "#A2AD67", "#C4CC94", "#E0E5C2", "#F5F7E9"]}
+    },
+    "typographyMeta": {
+      "display": {"displayName": "Editorial Display", "purpose": "One page title or prominent empty-state statement."},
+      "body": {"displayName": "Operational Body", "purpose": "Dense tables, descriptions, and controls."},
+      "mono": {"displayName": "Evidence Mono", "purpose": "Identifiers, hashes, paths, cursors, transcript, and diff content."}
+    },
+    "shadows": [
+      {"name": "sticky-plane", "value": "0 1px 0 rgba(11, 46, 37, 0.12)", "purpose": "Separate sticky toolbars from scrolling evidence."},
+      {"name": "floating-menu", "value": "0 8px 24px rgba(11, 46, 37, 0.14)", "purpose": "Menus, popovers, and search results."},
+      {"name": "dialog-drawer", "value": "0 18px 50px rgba(11, 46, 37, 0.22)", "purpose": "Confirmation dialogs and temporary overlay planes."}
+    ],
+    "motion": [
+      {"name": "duration-fast", "value": "120ms", "purpose": "Hover and pressed feedback."},
+      {"name": "duration-standard", "value": "180ms", "purpose": "Drawer, disclosure, and filter state changes."},
+      {"name": "ease-editorial", "value": "cubic-bezier(0.2, 0, 0, 1)", "purpose": "Default non-linear state transition; disabled under reduced motion."}
+    ],
+    "breakpoints": [
+      {"name": "accessibility-reflow", "value": "320px"},
+      {"name": "tablet", "value": "768px"},
+      {"name": "rail-expanded", "value": "1024px"},
+      {"name": "wide-workspace", "value": "1440px"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single strongest action in a working region.",
+      "html": "<button class=\"ds-btn-primary\">Add repository</button>",
+      "css": ".ds-btn-primary{min-height:44px;border:1px solid #153C31;border-radius:4px;background:#153C31;color:#FCF9F3;padding:10px 16px;font:650 15px/1.35 system-ui,-apple-system,'Segoe UI',sans-serif;cursor:pointer;transition:background 120ms cubic-bezier(.2,0,0,1);scroll-margin-block:64px}.ds-btn-primary:hover{background:#0B2E25}.ds-btn-primary:focus-visible{outline:2px solid #006E75;outline-offset:2px}.ds-btn-primary:active{transform:translateY(1px)}@media(prefers-color-scheme:dark){.ds-btn-primary:focus-visible{outline-color:#6EDAE0}}@media(prefers-reduced-motion:reduce){.ds-btn-primary{transition:none}.ds-btn-primary:active{transform:none}}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A bounded secondary action that retains the paper surface.",
+      "html": "<button class=\"ds-btn-secondary\">View evidence</button>",
+      "css": ".ds-btn-secondary{min-height:44px;border:1px solid #153C31;border-radius:4px;background:#FCF9F3;color:#153C31;padding:9px 15px;font:650 15px/1.35 system-ui,-apple-system,'Segoe UI',sans-serif;cursor:pointer;transition:background 120ms cubic-bezier(.2,0,0,1)}.ds-btn-secondary:hover{background:#E2EBDF}.ds-btn-secondary:focus-visible{outline:2px solid #006E75;outline-offset:2px}.ds-btn-secondary:active{background:#D2E0CF}"
+    },
+    {
+      "name": "Global Search",
+      "kind": "input",
+      "refersTo": "input-search",
+      "description": "Simple grouped search across repositories, issues, runs, executions, and evidence identifiers.",
+      "html": "<label class=\"ds-search-label\" for=\"ds-search\">Search Draindeck</label><input class=\"ds-search\" id=\"ds-search\" type=\"search\" placeholder=\"Repository, issue, run, execution, evidence…\">",
+      "css": ".ds-search-label{display:block;margin-bottom:6px;color:#52645E;font:700 12px/1.25 system-ui,-apple-system,'Segoe UI',sans-serif;letter-spacing:.055em;text-transform:uppercase}.ds-search{width:100%;min-height:44px;border:1px solid #81796C;border-radius:4px;background:#FCF9F3;color:#23332E;padding:10px 12px;font:400 15px/1.55 system-ui,-apple-system,'Segoe UI',sans-serif}.ds-search:hover{border-color:#52645E}.ds-search:focus-visible{border-color:#153C31;outline:2px solid #006E75;outline-offset:2px}@media(prefers-color-scheme:dark){.ds-search{border-color:#82998D;background:#1D3028;color:#F5EFE6}.ds-search:focus-visible{outline-color:#6EDAE0}}"
+    },
+    {
+      "name": "Attention Chip",
+      "kind": "chip",
+      "refersTo": "chip-attention",
+      "description": "A text-and-icon annotation for a known attention condition.",
+      "html": "<span class=\"ds-chip-attention\"><span aria-hidden=\"true\">◆</span> Needs attention</span>",
+      "css": ".ds-chip-attention{display:inline-flex;align-items:center;gap:6px;border:1px solid #D9C49E;border-radius:999px;background:#F1E5CD;color:#7A5B2E;padding:4px 8px;font:700 12px/1.25 system-ui,-apple-system,'Segoe UI',sans-serif;letter-spacing:.055em;text-transform:uppercase}.ds-chip-attention:focus-visible{outline:2px solid #006E75;outline-offset:2px}"
+    },
+    {
+      "name": "Navigation Rail",
+      "kind": "nav",
+      "refersTo": "navigation-rail",
+      "description": "Persistent forest spine with visible compact labels and one active destination.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Primary\"><a class=\"ds-nav-item ds-nav-active\" href=\"#\">Home</a><a class=\"ds-nav-item\" href=\"#\">Repositories</a><a class=\"ds-nav-item\" href=\"#\">Attention</a></nav>",
+      "css": ".ds-nav{width:240px;border-radius:8px;background:#153C31;padding:12px;color:#FCF9F3}.ds-nav-item{display:block;border-radius:4px;color:#E2EBDF;padding:10px 12px;text-decoration:none;font:650 15px/1.35 system-ui,-apple-system,'Segoe UI',sans-serif}.ds-nav-item:hover{background:#234C40;color:#fff}.ds-nav-item:focus-visible{outline:2px solid #6EDAE0;outline-offset:2px}.ds-nav-active{background:#F6F1E8;color:#153C31}@media(max-width:1023px) and (min-width:768px){.ds-nav{width:72px}.ds-nav-item{padding:8px 4px;text-align:center;font-size:11px}}"
+    },
+    {
+      "name": "Ledger Table",
+      "kind": "custom",
+      "refersTo": "table-surface",
+      "description": "Dense aligned records with linked titles and explicit status.",
+      "html": "<div class=\"ds-table-wrap\"><table class=\"ds-table\"><caption>Registered repositories</caption><thead><tr><th>Repository</th><th>Availability</th><th>Attention</th></tr></thead><tbody><tr><td><a href=\"#\">issue-runtime</a></td><td>Available</td><td><span>None observed</span></td></tr><tr><td><a href=\"#\">stock-agent</a></td><td>Offline</td><td><strong>Indexer lease expired</strong></td></tr></tbody></table></div>",
+      "css": ".ds-table-wrap{overflow:auto;border:1px solid #CFC7B8;border-radius:8px;background:#FCF9F3}.ds-table{width:100%;border-collapse:collapse;color:#23332E;font:400 15px/1.55 system-ui,-apple-system,'Segoe UI',sans-serif}.ds-table caption{padding:16px;text-align:left;font:400 24px/1.2 Georgia,'Times New Roman',serif}.ds-table th,.ds-table td{padding:12px 16px;border-top:1px solid #CFC7B8;text-align:left}.ds-table th{color:#52645E;font-size:12px;letter-spacing:.055em;text-transform:uppercase}.ds-table a{color:#153C31;font-weight:650;text-underline-offset:3px}.ds-table a:hover{text-decoration-thickness:2px}.ds-table a:focus-visible{outline:2px solid #006E75;outline-offset:2px}"
+    },
+    {
+      "name": "Topology Node",
+      "kind": "custom",
+      "refersTo": "topology-node",
+      "description": "A keyboard-reachable observed relationship node for scoped mini-topology.",
+      "html": "<a class=\"ds-topology-node\" href=\"#\"><span class=\"ds-topology-type\">Execution</span><code>exec-018</code><span>Accepted</span></a>",
+      "css": ".ds-topology-node{display:inline-grid;gap:4px;min-width:180px;border:1px solid #CFC7B8;border-radius:8px;background:#FCF9F3;color:#23332E;padding:12px;text-decoration:none}.ds-topology-node:hover{border-color:#386B46;background:#F6F1E8}.ds-topology-node:focus-visible{outline:2px solid #006E75;outline-offset:2px}.ds-topology-type{color:#52645E;font:700 12px/1.25 system-ui,-apple-system,'Segoe UI',sans-serif;letter-spacing:.055em;text-transform:uppercase}.ds-topology-node code{font:400 13px/1.5 'Cascadia Mono',Consolas,monospace}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Operator's Field Journal",
+    "overview": "Draindeck is a composed editorial workspace wrapped around durable runtime evidence. A deep forest rail anchors the application like a clothbound spine; warm paper surfaces hold dense, aligned records; sparing sage, bronze, and clay annotations behave like deliberate editorial marks. The interface is visually distinctive without competing with the facts. The system balances editorial identity, operational density, scoped topology, and resilient navigation while rejecting marketing and spectacle.",
+    "keyCharacteristics": ["Warm editorial shell with a deep forest application spine.", "Dense, aligned tables for registries and evidence; cards only for real grouping.", "Honest labels separating observed facts, derived summaries, and unavailable data.", "Restrained topology and charts that always link back to inspectable records.", "Quiet motion, crisp unobscured focus, and comprehensive non-ideal states."],
+    "rules": [
+      {"name": "The Annotation Rule", "body": "Sage, bronze, and clay communicate status only when paired with text and an icon or shape; color and fill style never carry meaning alone.", "section": "colors"},
+      {"name": "The Ten-Percent Rule", "body": "Annotation colors occupy no more than roughly ten percent of a screen. Paper and forest establish identity; evidence remains visually dominant.", "section": "colors"},
+      {"name": "The Chart Encoding Rule", "body": "Categorical charts use a complete eight-position, contrast-alternating sequence. Light: #153C31, #007F87, #6B2F24, #5F7F36, #3D4972, #8A6A2F, #65405E, #52645E. Dark: #A6D6B0, #9D71A1, #6EDAE0, #C36E5B, #F2C57C, #6888C9, #FFB4A5, #7D8A3F. Every entry clears 3:1 against its intended canvas, and alternating luminance improves grayscale separation. Every segment also has a direct label, symbol or pattern, and text/table equivalent; hue is never the sole distinction. More than eight categories collapse into “Other” with a linked data table rather than recycling color.", "section": "colors"},
+      {"name": "The One-Serif-Level Rule", "body": "Never stack multiple decorative serif tiers inside a dense workspace; Georgia names the page or major section, while operational content remains sans-serif or mono.", "section": "typography"},
+      {"name": "The Flat-by-Default Rule", "body": "Entity rows, metric summaries, and ordinary sections never receive individual drop shadows; use a one-pixel ledger rule and spacing instead.", "section": "elevation"}
+    ],
+    "dos": ["Do open on fused cross-repository health and attention so the product starts with triage, not a tour.", "Do use Binding Forest (#153C31) for the application spine and warm Paper Canvas (#F6F1E8) for the workspace.", "Do use aligned tables, one-pixel ledger rules, and 8px surfaces for dense entity comparison.", "Do label observed facts and derived summaries explicitly, including the exact phrase ‘no controlled finish observed.’", "Do pair every status/chart color with text and an icon, symbol, pattern, or shape; use dedicated field-border/focus tokens, preserve visible unobscured focus, and honor reduced motion and forced colors.", "Do design loading, empty, filtered-empty, API-error, reconnecting, stale-lease, malformed, oversized, corrupt, inconsistent, legacy, and truncated-artifact states alongside ideal data.", "Do preserve stable URLs, meaningful links, pagination, search context, and keyboard focus during incremental SSE updates."],
+    "donts": ["Don't build a SaaS marketing landing page, vanity hero section, conversion funnel, or decorative product-claim screen.", "Don't use generic admin templates made from repetitive floating cards or equal-weight KPI tiles.", "Don't use neon cyberpunk dashboards, purple gradients, glassmorphism, gradient text, or glowing status chrome.", "Don't use a whole-portfolio force graph as spectacle; topology is scoped to one issue or run and backed by observed identifiers.", "Don't imply process liveness, cryptographic verification, exact budget progress, precise causality, or any fact the Dashboard contracts do not expose.", "Don't squeeze desktop tables into mobile-style cards; v1 is desktop/tablet focused, while non-tabular content still reflows accessibly to 320px.", "Don't apply 20–30px radii, shadows to every row, heavy paper texture, ornamental asymmetry, hover-only information, color-only meaning, or motion that survives prefers-reduced-motion: reduce."]
+  }
+}

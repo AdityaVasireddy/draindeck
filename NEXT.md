@@ -10,7 +10,30 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-21)
+## 1. Current state (verified 2026-08-22)
+
+- **Dashboard redesign is PLANNED, not approved or implemented.** Branch
+  `dashboard-redesign` remains based at
+  `4052fef97dbb90b52ae91fc01832557bc348cab8`. Product/visual context is in
+  `PRODUCT.md`, `DESIGN.md`, and `.impeccable/design.json`; proposed ADR-27 is
+  recorded in docs/08 §5i with the full proposed contract in docs/27 and the
+  version-controlled execution plan/checklist in `tasks/plan.md` /
+  `tasks/todo.md`. A pre-approval review found and the planning docs now address
+  normal TORN-tail repair, lease-owned off-thread projection backfill, attention
+  invalidation/no-liveness semantics, WCAG focus/boundary contrast and 320px
+  reflow, unregister cleanup, API grouping/search/keyset pagination, exact
+  per-generation containment vocabulary, explicit UI routing/CSP constraints,
+  ADR placement, tracked build evidence, local checkpoint commits, and the
+  browser-tool prerequisite. A second review also closed dark-surface rail
+  focus, recent-activity ordering, complete contrast-alternating eight-color
+  chart ramps, locked schema-version reads, off-thread bounded tick writes,
+  and tooltip/visible-label accessibility. A final validation also moved lease
+  heartbeat writes onto the priority off-thread writer path, removed conflicting
+  tooltip-only navigation language, and required explicit UTF-8 for Python
+  artifact readers. **Next action:** user
+  review/acceptance of ADR-27,
+  docs/27, and tasks/plan plus an explicit decision on local per-unit checkpoint
+  commits. Unit 0 must prove browser automation before any `src/` mutation.
 
 - **Dashboard Part 2 (ADR-26): Phase 7 (run lifecycle events) complete on
   branch `dashboard`** (2026-08-21, commits `fd2b9eb`..`7ff1033`, on top of

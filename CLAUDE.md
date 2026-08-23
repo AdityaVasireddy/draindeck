@@ -23,8 +23,13 @@ production feature; everything builds on the event-log layer.
 - Honesty discipline: in every summary, separate what was VERIFIED this
   session (ran it, saw it pass) from what is ASSUMED. Never report a test
   as passing without running it.
-- Every session ends at a runnable, committed checkpoint; update NEXT.md.
-- No commit without explicit authorization. Never commit or push until the user has explicitly authorized that specific commit.
+- Every implementation session ends at a runnable checkpoint and updates NEXT.md.
+  A commit is part of that checkpoint only when explicitly authorized. A planned
+  uninterrupted multi-unit build must obtain explicit authority for its bounded
+  local checkpoint-commit series before source mutation; otherwise stop at the
+  first approval gate rather than accumulating an unreviewable uncommitted diff.
+- No commit without explicit authorization. Never push or merge until the user
+  has explicitly authorized that separate action.
 - Kill criteria (ADR-19) are frozen: 20 issues, attempt-1 ≥30%, cost/shipped
   ≤ $3. Never tune them to dodge a verdict.
 - Process depth scales to blast radius, not session length. (Correction after ~17 sessions:
@@ -50,22 +55,29 @@ production feature; everything builds on the event-log layer.
   gated run against StockPhotoAgent.
 
 ## Environment
-- Windows, Python 3.12+, deps: pyyaml, pydantic, pytest (no frameworks —
-  no Temporal/LangGraph, no parallelism, no external state store in v1).
+- Windows, Python 3.12+, core deps: pyyaml, pydantic, pytest. Core `src/runtime`
+  remains framework-free (no Temporal/LangGraph, no external state store in
+  v1). ADR-26 separately permits FastAPI/Uvicorn only in the optional
+  `draindeck_dashboard` package/`dashboard` extra.
 - Execution provider: `claude -p` on Claude Pro subscription (ADR-18).
   IMPORTANT: keep ANTHROPIC_API_KEY UNSET — if set, claude bills the API
   instead of the subscription. Applies to both this runtime and your own
   Claude Code sessions.
 
 ## Verify commands
-- Unit: `python -m pytest tests\unit -q`  (expect 235 pass)
+- Unit: `python -m pytest tests\unit -q`  (expect 560 pass at baseline `4052fef`)
+- Dashboard: `python -m pytest tests\dashboard -q`  (expect 197 pass at baseline)
+- Combined: `python -m pytest tests\unit tests\dashboard -q`  (expect 757 pass at baseline)
 - Durability gate: `python tests\crash\harness.py %TEMP%\ch`  (expect 60 pass on
   BOTH seed 42 and seed 1337, invariants I-a..I-h; the harness is mutation-tested —
   it can actually fail; see docs/14 for current harness state)
 
 ## Current task
-Session 3: implement RepositoryAdapter (repo/adapter.py + repo/git_adapter.py
-per docs/09 §7) and bind the three reconciler seams (preserve_residue,
-check_unwitnessed_commit, check_dirty_workspace) in
-src/runtime/recovery/reconciler.py. Extend the crash harness to use a real
-temp git repo as the "world". See NEXT.md.
+
+Dashboard redesign planning on branch `dashboard-redesign`, baseline
+`4052fef97dbb90b52ae91fc01832557bc348cab8`. Proposed ADR-27 is in docs/08
+§5i; the full proposed contract is docs/27; PRODUCT.md/DESIGN.md define the
+approved visual/product direction; tasks/plan.md is the version-controlled
+build-auto plan. Do not mutate `src/` until the user explicitly accepts all
+three planning gates, resolves local checkpoint-commit authority, and Unit 0
+proves real-browser automation is callable. `src/runtime` remains out of scope.

@@ -18,7 +18,9 @@ scratch/*
 !.claude/commands/**
 
 docs/handoffs/
-tasks/
+tasks/*
+!tasks/plan.md
+!tasks/todo.md
 scratch/
 *_bundle.txt
 .pytest_cache/
