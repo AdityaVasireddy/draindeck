@@ -17,6 +17,9 @@ from draindeck_dashboard.db import connect_and_init
 from draindeck_dashboard.projections import build_projection
 from draindeck_dashboard.read_models import (
     apply_changed_entities,
+    mark_failed,
+    mark_preparing,
+    mark_rebuilding,
     prune_old_generation_views,
     read_model_status,
     rebuild_read_models,
@@ -185,6 +188,97 @@ def test_rebuild_read_models_updates_read_model_state_to_ready(tmp_path):
     status = read_model_status(conn, 1)
     assert status["status"] == "READY"
     assert status["identityGenerationId"] == gen_id
+
+
+def test_mark_preparing_sets_status_with_no_prior_snapshot(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    mark_preparing(conn, 1, gen_id)
+    status = read_model_status(conn, 1)
+    assert status["status"] == "PREPARING"
+    assert status["identityGenerationId"] == gen_id
+    assert status["completedEvidenceId"] is None
+    assert status["completedAt"] is None
+
+
+def test_mark_preparing_on_a_new_generation_clears_the_old_generations_snapshot_fields(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42")
+    rebuild_read_models(conn, 1, gen_id)  # READY, with a real completed_evidence_id
+
+    new_gen_id = conn.execute(
+        "INSERT INTO identity_generations (repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, 2, 'lineage2', 1, 1, 1, '2026-08-23T00:00:00Z')"
+    ).lastrowid
+    mark_preparing(conn, 1, new_gen_id)
+
+    status = read_model_status(conn, 1)
+    assert status["status"] == "PREPARING"
+    assert status["identityGenerationId"] == new_gen_id
+    # The OLD generation's completed_evidence_id would be dishonest here --
+    # it describes evidence in a generation this row no longer represents.
+    assert status["completedEvidenceId"] is None
+    assert status["completedAt"] is None
+
+
+def test_mark_rebuilding_flips_ready_to_rebuilding_without_losing_the_last_snapshot(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    _insert_evidence(conn, 1, gen_id, 1, "IssueCreated", issue_id="42")
+    rebuild_read_models(conn, 1, gen_id)  # READY
+    before = read_model_status(conn, 1)
+
+    mark_rebuilding(conn, 1)
+
+    after = read_model_status(conn, 1)
+    assert after["status"] == "REBUILDING"
+    # The last complete snapshot's identity is preserved -- this is exactly
+    # what lets a caller serve it "labelled stale/rebuilding" instead of
+    # blocking (docs/27 SS3.2 decision 9).
+    assert after["identityGenerationId"] == before["identityGenerationId"]
+    assert after["completedEvidenceId"] == before["completedEvidenceId"]
+    assert after["completedAt"] == before["completedAt"]
+
+
+def test_mark_rebuilding_is_a_no_op_when_status_is_still_preparing(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    mark_preparing(conn, 1, gen_id)
+    mark_rebuilding(conn, 1)
+    status = read_model_status(conn, 1)
+    # An unsafe mutation on a generation that was never itself completed
+    # doesn't need its own status -- PREPARING already means "no complete
+    # snapshot," and the eventual rebuild picks up the mutation too.
+    assert status["status"] == "PREPARING"
+
+
+def test_mark_failed_records_error_code(tmp_path):
+    conn, gen_id = _setup(tmp_path)
+    mark_preparing(conn, 1, gen_id)
+    mark_failed(conn, 1, gen_id, "REBUILD_CRASHED")
+    status = read_model_status(conn, 1)
+    assert status["status"] == "FAILED"
+    assert status["errorCode"] == "REBUILD_CRASHED"
+
+
+def test_mark_failed_for_a_stale_generation_id_does_not_overwrite_a_newer_ready_status(tmp_path):
+    """A failure report that arrives for an OLD generation_id (e.g. a
+    retried worker job racing a newer rollover) must never regress the
+    CURRENT generation's real status -- mark_failed is scoped by
+    (repo_id, identity_generation_id), not repo_id alone."""
+    conn, gen_id = _setup(tmp_path)
+    mark_preparing(conn, 1, gen_id)
+    new_gen_id = conn.execute(
+        "INSERT INTO identity_generations (repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, 2, 'lineage2', 1, 1, 1, '2026-08-23T00:00:00Z')"
+    ).lastrowid
+    _insert_evidence(conn, 1, new_gen_id, 1, "IssueCreated", issue_id="42")
+    rebuild_read_models(conn, 1, new_gen_id)  # current generation is READY
+
+    mark_failed(conn, 1, gen_id, "REBUILD_CRASHED")  # a stale report for the OLD generation
+
+    status = read_model_status(conn, 1)
+    assert status["status"] == "READY"
+    assert status["identityGenerationId"] == new_gen_id
 
 
 def test_apply_changed_entities_incrementally_updates_a_single_issue(tmp_path):

@@ -145,6 +145,70 @@ def _publish(conn: sqlite3.Connection, repo_id: int, gen_id: int, result: Projec
         _write_containment_view(conn, repo_id, gen_id, view)
 
 
+def mark_preparing(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int) -> None:
+    """A brand-new identity generation just opened (fresh registration's
+    first tick, or a rollover) -- no complete read-model snapshot exists
+    for it yet. Runs inside the CALLER's already-open transaction (the
+    same one that just opened the generation), never its own -- mirrors
+    ``apply_changed_entities_locked``'s contract. Clears any prior
+    generation's completed_evidence_id/completed_at: those describe a
+    DIFFERENT generation's snapshot, never honestly reusable here."""
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'PREPARING', NULL, ?, NULL, NULL) "
+        "ON CONFLICT(repository_id) DO UPDATE SET "
+        "identity_generation_id=excluded.identity_generation_id, status='PREPARING', "
+        "completed_evidence_id=NULL, started_at=excluded.started_at, completed_at=NULL, "
+        "error_code=NULL",
+        (repo_id, identity_generation_id, _now()),
+    )
+
+
+def mark_rebuilding(conn: sqlite3.Connection, repo_id: int) -> None:
+    """A previously-OK evidence row's content changed (docs/27 SS8.4: hash,
+    event ID, decoded content, or integrity changed, or a lower/non-
+    monotonic projectable event) -- the CURRENT generation's snapshot is
+    still complete and still served (docs/27 SS3.2 decision 9: "serve the
+    last complete snapshot labelled stale/rebuilding"), just no longer
+    trusted as fully correct until a scoped rebuild republishes it.
+    Deliberately does NOT touch identity_generation_id/completed_evidence_id/
+    completed_at -- those still describe the last genuinely complete
+    snapshot, which is exactly what a caller needs to label it stale.
+    Runs inside the caller's already-open transaction, like
+    ``mark_preparing``. A no-op (never regresses READY/REBUILDING back to
+    PREPARING) if no row exists yet -- an unsafe mutation on a generation
+    that was never itself completed doesn't need a distinct status; it's
+    already correctly PREPARING and rebuild will pick up the mutation too."""
+    conn.execute(
+        "UPDATE read_model_state SET status = 'REBUILDING' "
+        "WHERE repository_id = ? AND status = 'READY'",
+        (repo_id,),
+    )
+
+
+def mark_failed(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int,
+               error_code: str) -> None:
+    """A rebuild attempt raised -- own transaction (called standalone from
+    the scheduler after a worker job fails, never nested in the failed
+    rebuild's own already-rolled-back transaction). Never regresses a
+    READY snapshot for a DIFFERENT (newer) generation that might have
+    completed in the meantime -- only marks failure for the exact
+    generation that was actually attempted."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE read_model_state SET status = 'FAILED', error_code = ? "
+            "WHERE repository_id = ? AND identity_generation_id = ?",
+            (error_code, repo_id, identity_generation_id),
+        )
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
+
+
 def rebuild_read_models(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int) -> None:
     """Full-generation candidate rebuild: recompute every entity from its
     OK evidence and atomically replace this generation's view rows in one
@@ -249,19 +313,15 @@ def apply_changed_entities_locked(conn: sqlite3.Connection, repo_id: int,
         view = result.runs.get(run_id)
         if view is not None:
             _write_run_view(conn, repo_id, identity_generation_id, view)
-
-    if issue_ids or execution_ids or run_ids:
-        completed_evidence_id = _max_evidence_id(conn, repo_id, identity_generation_id)
-        conn.execute(
-            "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
-            "completed_evidence_id, started_at, completed_at, error_code) "
-            "VALUES (?, ?, 'READY', ?, ?, ?, NULL) "
-            "ON CONFLICT(repository_id) DO UPDATE SET "
-            "identity_generation_id=excluded.identity_generation_id, status='READY', "
-            "completed_evidence_id=excluded.completed_evidence_id, "
-            "completed_at=excluded.completed_at, error_code=NULL",
-            (repo_id, identity_generation_id, completed_evidence_id, _now(), _now()),
-        )
+    # Deliberately does NOT touch read_model_state: this is the ordinary
+    # per-tick incremental path, not a completion signal. Only
+    # rebuild_read_models (a genuine full-generation rebuild, scheduler-
+    # orchestrated once catch-up is confirmed) may transition status to
+    # READY -- see docs/27 SS3.2 decision 9. Marking READY here on every
+    # touched entity was the original (pre-fix) bug: it made "READY" mean
+    # "some incremental write recently happened" rather than "a complete
+    # snapshot exists," which is exactly the fabricated-completeness class
+    # of defect decision 9 exists to prevent.
 
 
 def prune_old_generation_views(conn: sqlite3.Connection, repo_id: int, keep_generation_id: int) -> None:

@@ -21,7 +21,12 @@ Persist = Callable[[Callable[[sqlite3.Connection], T]], Awaitable[T]]
 
 from .observer_client import ObserverError, invoke_observer_events
 from .poller import poll_pages
-from .read_models import apply_changed_entities_locked, prune_old_generation_views
+from .read_models import (
+    apply_changed_entities_locked,
+    mark_preparing,
+    mark_rebuilding,
+    prune_old_generation_views,
+)
 from .sse import prune_changes
 
 _HALTED_DETAIL = "OVERSIZED tail — operator remediation required"
@@ -150,6 +155,7 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
     changed_issue_ids: set = set()
     changed_execution_ids: set = set()
     changed_run_ids: set = set()
+    unsafe_mutation = False
 
     for rec in records:
         cursor = rec["cursor"]
@@ -198,6 +204,14 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
             (repo_id, identity_generation_id, cursor),
         ).fetchone()
         content_changed = existing is None or existing != (integrity, record_hash)
+        # docs/27 SS8.4: "a previously OK row changing hash, event ID,
+        # decoded content or integrity ... schedules an off-thread scoped
+        # rebuild" -- distinct from a brand-new row (existing is None) or a
+        # TORN/MALFORMED->OK tail repair (existing[0] != 'OK'), neither of
+        # which is an "unsafe" mutation; the incremental apply below
+        # already handles both of those correctly by construction.
+        if existing is not None and existing[0] == "OK" and content_changed:
+            unsafe_mutation = True
 
         conn.execute(
             "INSERT INTO evidence (repository_id, identity_generation_id, record_cursor, "
@@ -229,6 +243,7 @@ def _upsert_evidence_and_detect_corrupt(conn: sqlite3.Connection, repo_id: int,
         "issue_ids": changed_issue_ids,
         "execution_ids": changed_execution_ids,
         "run_ids": changed_run_ids,
+        "unsafe_mutation": unsafe_mutation,
     }
 
 
@@ -266,6 +281,7 @@ async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,
         c.execute("BEGIN IMMEDIATE")
         try:
             new_generation_id = _open_new_generation(c, repo_id, probe["metadata"])
+            mark_preparing(c, repo_id, new_generation_id)
             _set_checkpoint(
                 c, repo_id, identity_generation_id=new_generation_id,
                 last_record_cursor=None, last_record_hash=None, halted_oversized=False,
@@ -303,6 +319,7 @@ def _persist_page(c: sqlite3.Connection, repo_id: int, identity_generation_id: O
         metadata = page["metadata"]
         if identity_generation_id is None:
             identity_generation_id = _open_new_generation(c, repo_id, metadata)
+            mark_preparing(c, repo_id, identity_generation_id)
 
         records = page["records"]
         changed = _upsert_evidence_and_detect_corrupt(c, repo_id, identity_generation_id, records)
@@ -312,6 +329,8 @@ def _persist_page(c: sqlite3.Connection, repo_id: int, identity_generation_id: O
                 issue_ids=changed["issue_ids"], execution_ids=changed["execution_ids"],
                 run_ids=changed["run_ids"],
             )
+        if changed["unsafe_mutation"]:
+            mark_rebuilding(c, repo_id)
 
         # Prefer the page's own nextCursor when the observer gave one: for
         # a normal advancing page it is EXCLUSIVE (past every record just

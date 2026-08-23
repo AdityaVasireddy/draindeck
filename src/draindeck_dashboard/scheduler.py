@@ -22,8 +22,9 @@ from typing import Optional
 
 from . import attention, lease
 from .indexer import ingest_repository_tick
-from .poller import NORMAL_INTERVAL_SECONDS, next_backoff_seconds
+from .poller import MAX_PAGES_PER_TICK, NORMAL_INTERVAL_SECONDS, next_backoff_seconds
 from .read_model_worker import ReadModelWorker
+from .read_models import mark_failed, read_model_status, rebuild_read_models
 
 # Statuses that must back off even if the checkpoint's last-known
 # availability is stale (docs/19: "transient/unavailable probes retain
@@ -156,6 +157,49 @@ class Scheduler:
         ).fetchone()
         return row[0] if row is not None else None
 
+    def _current_generation_id(self, repo_id: int) -> Optional[int]:
+        row = self._conn.execute(
+            "SELECT identity_generation_id FROM checkpoints WHERE repository_id = ?", (repo_id,)
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    async def _maybe_rebuild(self, repo_id: int, outcome) -> None:
+        """docs/27 SS3.2 decision 9 / SS8.4: the lease-owned production
+        caller for rebuild_read_models. A brand-new generation (mark_preparing,
+        indexer.py) or an unsafe OK-row mutation (mark_rebuilding, indexer.py)
+        both need a real full-generation rebuild to reach READY -- the
+        incremental path deliberately never sets READY itself. REBUILDING/
+        FAILED are urgent (a previously-complete snapshot is now compromised
+        or a prior rebuild attempt failed) and retried on every tick
+        regardless of catch-up state; PREPARING (initial backfill) waits
+        for this tick to have caught up (or halted, meaning no further
+        progress is possible) so a multi-page backfill doesn't pay the
+        O(evidence) rebuild cost on every one of potentially many ticks."""
+        generation_id = self._current_generation_id(repo_id)
+        if generation_id is None:
+            return
+        status = read_model_status(self._conn, repo_id)
+        needs_rebuild = (
+            status is None
+            or status["identityGenerationId"] != generation_id
+            or status["status"] in ("PREPARING", "REBUILDING", "FAILED")
+        )
+        if not needs_rebuild:
+            return
+        urgent = status is not None and status["status"] in ("REBUILDING", "FAILED")
+        caught_up = outcome.status == "ok" and outcome.pages_ingested < MAX_PAGES_PER_TICK
+        if not urgent and not (caught_up or outcome.status == "halted"):
+            return
+        try:
+            await self._worker.submit(
+                lambda c, _rid=repo_id, _gid=generation_id: rebuild_read_models(c, _rid, _gid)
+            )
+        except Exception as exc:
+            await self._worker.submit(
+                lambda c, _rid=repo_id, _gid=generation_id, _code=type(exc).__name__:
+                    mark_failed(c, _rid, _gid, _code)
+            )
+
     def _tick_needs_backoff(self, repo_id: int, outcome) -> bool:
         if outcome.status in _BACKOFF_STATUSES:
             return True
@@ -184,6 +228,7 @@ class Scheduler:
                             lambda conn, _rid=repo_id: attention.reconcile_repository_conditions(
                                 conn, _rid, attention.derive_repository_conditions(conn, _rid))
                         )
+                        await self._maybe_rebuild(repo_id, outcome)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

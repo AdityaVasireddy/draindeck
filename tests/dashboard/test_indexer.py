@@ -96,6 +96,114 @@ def test_ingest_tick_persists_issue_views_incrementally(tmp_path, monkeypatch):
     assert row2[0] == "ACTIVE"
 
 
+# ── INDEX_PREPARING/REBUILDING wiring (docs/27 SS3.2 decision 9, SS8.4) ─
+
+def test_first_tick_for_a_new_repository_marks_read_model_state_preparing(tmp_path, monkeypatch):
+    """A freshly-registered repository's very first tick opens a new
+    identity generation -- read_model_status must report PREPARING (not
+    silently return None, which older code let list/detail endpoints
+    misread as "genuinely zero items") from that instant on, before the
+    scheduler's own separate rebuild has had a chance to run."""
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1, event_type="IssueCreated", issue_id="42")
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+
+    outcome = asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+    assert outcome.status == "ok"
+
+    from draindeck_dashboard.read_models import read_model_status
+    status = read_model_status(conn, repo_id)
+    assert status is not None
+    assert status["status"] == "PREPARING"
+    assert status["completedEvidenceId"] is None
+
+
+def test_a_previously_ok_rows_content_changing_marks_read_model_state_rebuilding(tmp_path):
+    """docs/27 SS8.4: "a previously OK row changing hash, event ID, decoded
+    content or integrity ... schedules an off-thread scoped rebuild." Unit
+    level (not through the real observer/file cursor mechanics, which
+    would need contrived same-cursor byte-offset manipulation to force
+    this deterministically) -- exercises exactly the function this
+    property lives in."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    conn.execute(
+        "INSERT INTO repositories (id, project_path, log_path, canonical_log_path, created_at) "
+        "VALUES (1, 'C:/repo', NULL, NULL, '2026-08-23T00:00:00Z')"
+    )
+    gen_id = conn.execute(
+        "INSERT INTO identity_generations (repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, 1, 'lineage', 1, 1, 1, '2026-08-23T00:00:00Z')"
+    ).lastrowid
+    from draindeck_dashboard.read_models import rebuild_read_models, read_model_status
+
+    def _ok_record(cursor, event_id, record_hash, payload_obj):
+        import base64
+        line = json.dumps({
+            "event_id": event_id, "schema_version": 1, "ts": "2026-08-23T00:00:00Z",
+            "run_id": None, "type": "IssueCreated", "issue_id": "42",
+            "execution_id": None, "payload": payload_obj,
+        }) + "\n"
+        return {
+            "cursor": cursor, "integrity": "OK", "eventId": event_id, "eventType": "IssueCreated",
+            "schemaVersion": 1, "recordHash": record_hash, "lengthBytes": len(line),
+            "recordBytesBase64": base64.b64encode(line.encode("utf-8")).decode("ascii"),
+        }
+
+    first = indexer._upsert_evidence_and_detect_corrupt(
+        conn, 1, gen_id, [_ok_record("c1", 1, "hash-a", {"title": "original"})])
+    assert first["unsafe_mutation"] is False
+    rebuild_read_models(conn, 1, gen_id)  # establish a READY baseline snapshot
+    assert read_model_status(conn, 1)["status"] == "READY"
+
+    # The SAME cursor's OK content now differs (different hash/payload) --
+    # exactly the "previously OK row changing ... decoded content" case.
+    second = indexer._upsert_evidence_and_detect_corrupt(
+        conn, 1, gen_id, [_ok_record("c1", 1, "hash-b", {"title": "mutated"})])
+    assert second["unsafe_mutation"] is True
+
+    from draindeck_dashboard.read_models import mark_rebuilding
+    mark_rebuilding(conn, 1)
+    status = read_model_status(conn, 1)
+    assert status["status"] == "REBUILDING"
+    # The last complete (pre-mutation) snapshot's identity is preserved --
+    # this is what lets a caller serve it labelled stale rather than block.
+    assert status["identityGenerationId"] == gen_id
+
+
+def test_a_brand_new_row_or_torn_to_ok_repair_never_marks_unsafe_mutation(tmp_path, monkeypatch):
+    """The unsafe_mutation signal must stay narrowly scoped -- a normal
+    fresh append or a TORN->OK tail repair (both already handled correctly
+    by the incremental path per read_models.py's own docstring) must never
+    trip it, or every ordinary tick would spuriously trigger a full
+    rebuild."""
+    log_path = tmp_path / "events.jsonl"
+    _write_event_line(log_path, 1)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write('{"event_id":2,"schema_version":1,"ts":"2026-08-20T00:00:00Z",'
+                '"run_id":null,"type":"IssueCreated","issue_id":null,'
+                '"execution_id":null,"payload":{}')  # torn: no trailing newline
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    monkeypatch.setattr(poller, "invoke_observer_events", _observer_reader)
+    repo_id = _register(conn, tmp_path, log_path)
+    asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+
+    from draindeck_dashboard.read_models import read_model_status
+    assert read_model_status(conn, repo_id)["status"] == "PREPARING"  # from the first tick, never REBUILDING
+
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write("}\n")  # complete the torn record: same cursor, different hash
+    asyncio.run(indexer.ingest_repository_tick(conn, repo_id, "exe", str(log_path)))
+
+    # Still PREPARING (this generation was never READY), never REBUILDING --
+    # a TORN->OK repair is not an "unsafe" mutation.
+    assert read_model_status(conn, repo_id)["status"] == "PREPARING"
+
+
 # ── basic ingest + caught-up-does-not-reset ────────────────────────────
 
 def test_basic_ingest_persists_evidence_and_advances_checkpoint(tmp_path, monkeypatch):
