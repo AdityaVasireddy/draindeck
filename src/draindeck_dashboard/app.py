@@ -18,7 +18,6 @@ from pydantic import BaseModel, ConfigDict
 
 from . import api_queries
 from .artifacts import artifact_root_for_log, resolve_contained_artifact
-from .attention import derive_repository_conditions
 from .config import DashboardConfig
 from .db import connect_and_init
 from .diffs import compute_diff
@@ -361,17 +360,9 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     async def api_repository_overview(repo_id: int) -> dict:
         registration = get_repository(app.state.db, repo_id)  # 404 if missing
         health = build_health(app.state.db, repo_id)
-        conditions = derive_repository_conditions(app.state.db, repo_id)
         return {
             "registration": registration, "health": health,
-            "attention": {
-                "current": len(conditions),
-                "items": [
-                    {"kind": c.kind, "severity": c.severity, "message": c.message,
-                     "targetUrl": c.target_url}
-                    for c in conditions[:5]
-                ],
-            },
+            "attention": api_queries.repository_attention_summary(app.state.db, repo_id),
         }
 
     @app.get("/api/repositories/{repo_id}/issues/{issue_id}")

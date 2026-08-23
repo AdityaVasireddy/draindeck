@@ -182,6 +182,37 @@ def repository_summaries(conn: sqlite3.Connection, *, limit: int = 50, offset: i
     return _paginate(items, limit=limit, offset=offset, total=total)
 
 
+def repository_attention_summary(conn: sqlite3.Connection, repo_id: int, *, preview_limit: int = 5) -> dict:
+    """The SAME persisted `attention_conditions` table `/api/attention` and
+    `repository_summaries`'s `attentionCount` already read (Unit 16
+    contract-honesty finding: Repository Overview previously called
+    `derive_repository_conditions()` fresh on every request instead, so
+    the "current attention" number shown here and the one shown on
+    Repositories/Attention could genuinely disagree in the window before
+    the next lease-owner reconciliation tick). Only the lease-owning
+    writer ever persists condition changes (attention.py), so reading the
+    stored rows here -- rather than recomputing -- is what makes every
+    screen agree on the same number at the same instant."""
+    total = conn.execute(
+        "SELECT COUNT(*) FROM attention_conditions WHERE repository_id = ? AND resolved_at IS NULL",
+        (repo_id,),
+    ).fetchone()[0]
+    rows = conn.execute(
+        "SELECT kind, severity, message, target_url FROM attention_conditions "
+        "WHERE repository_id = ? AND resolved_at IS NULL "
+        "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, "
+        "first_detected_at LIMIT ?",
+        (repo_id, preview_limit),
+    ).fetchall()
+    return {
+        "current": total,
+        "items": [
+            {"kind": kind, "severity": severity, "message": message, "targetUrl": url}
+            for kind, severity, message, url in rows
+        ],
+    }
+
+
 # --- overview ---
 
 def overview(conn: sqlite3.Connection) -> dict:

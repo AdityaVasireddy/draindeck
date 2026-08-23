@@ -284,6 +284,30 @@ def test_repository_overview_endpoint(tmp_path):
     assert resp.json()["registration"]["id"] == repo_id
 
 
+def test_repository_overview_attention_count_matches_repository_summaries(tmp_path):
+    """Unit 16 contract-honesty finding: Repository Overview's attention
+    count used to be live-recomputed while repository-summaries read the
+    persisted table -- they could genuinely disagree. Both must now read
+    the exact same source and therefore always agree."""
+    client, app = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    app.state.db.execute(
+        "INSERT INTO attention_conditions (condition_key, occurrence, repository_id, "
+        "identity_generation_id, kind, severity, subject_type, subject_id, message, target_url, "
+        "first_detected_at, last_detected_at, resolved_at) VALUES ('k1', 1, ?, NULL, "
+        "'ISSUE_NEEDS_DECOMPOSITION', 'warning', 'issue', 'i1', 'm', '/x', "
+        "'2026-08-23T00:00:00Z', '2026-08-23T00:00:00Z', NULL)",
+        (repo_id,),
+    )
+    overview_resp = client.get(f"/api/repositories/{repo_id}/overview")
+    summaries_resp = client.get("/api/repository-summaries")
+    overview_count = overview_resp.json()["attention"]["current"]
+    summary_count = next(
+        r["attentionCount"] for r in summaries_resp.json()["items"] if r["id"] == repo_id
+    )
+    assert overview_count == summary_count == 1
+
+
 def test_repository_overview_unknown_id_is_404(tmp_path):
     client, _ = _client(tmp_path)
     resp = client.get("/api/repositories/999/overview")
