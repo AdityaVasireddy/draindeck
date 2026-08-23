@@ -7,18 +7,21 @@
 import { createRequestCoordinator } from "./api.js";
 import { initRailExpandToggle, initThemeControl, renderRailNav, updateConnectionStatus } from
   "./components/shell.js";
+import { initGlobalSearch } from "./components/search.js";
 import { clear, el } from "./dom.js";
 import { createRouter } from "./router.js";
 import { connectChangeStream, connectionStatusLabel } from "./stream.js";
 import * as homePage from "./pages/home.js";
 import * as repositoriesPage from "./pages/repositories.js";
 import * as repositoryDetailPage from "./pages/repository-detail.js";
+import * as attentionPage from "./pages/attention.js";
 
 const _PAGE_MODULES = {
   home: (root, params, ctx) => homePage.render(root, params, ctx),
   repositories: (root, params, ctx) => repositoriesPage.render(root, params, ctx),
   "repository-add": (root) => repositoriesPage.renderAdd(root),
   "repository-overview": (root, params, ctx) => repositoryDetailPage.render(root, params, ctx),
+  attention: (root, params, ctx) => attentionPage.render(root, params, ctx),
 };
 
 function renderNotYetAvailable(root, routeName) {
@@ -50,6 +53,10 @@ function boot() {
   const railExpandToggle = document.getElementById("rail-expand-toggle");
   const rail = document.getElementById("app-rail");
   if (railExpandToggle && rail) initRailExpandToggle(railExpandToggle, rail);
+
+  const searchInput = document.getElementById("global-search-input");
+  const searchListbox = document.getElementById("global-search-listbox");
+  if (searchInput && searchListbox) initGlobalSearch(searchInput, searchListbox, { coordinator });
 
   let firstDispatch = true;
   let currentMatch = null;

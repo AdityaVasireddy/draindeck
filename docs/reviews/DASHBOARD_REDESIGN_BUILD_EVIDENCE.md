@@ -997,7 +997,77 @@ verified; no illustrative count/status remains anywhere in these three
 pages -- every value shown was independently cross-checked against prior
 units' live verifications.
 
-### Unit 10–16
+### Unit 10 — Attention Center and global search (2026-08-23)
+
+**Files:** `static/js/pages/attention.js` (new),
+`static/js/components/search.js` (new), `static/js/app.js`,
+`static/index.html`, `static/styles/shell.css`,
+`tests/dashboard/js/test_attention_page.mjs`,
+`test_search_component.mjs` (both new).
+
+**Test-first:** 4 Node tests for `attention.js`'s `parseAttentionQuery`
+(exact `current`/`resolved`/`all` filter set, safe fallback on an
+unknown value), 7 for `search.js`'s pure `flattenGroupedResults`
+(fixed 5-group order, tolerant of missing/empty groups) and
+`nextActiveIndex` (wrap-around in both directions, -1/no-selection with
+zero results). All passed on first run.
+
+**Implementation:**
+- `attention.js`: a real ledger table (Severity/Condition/Scope/Subject/
+  First detected/Last detected/Status columns) over the existing
+  `/api/attention` endpoint (Unit 5) -- current/resolved/all filter chips
+  round-tripped through the URL, closed severity-then-oldest-first
+  ordering already enforced server-side (Unit 3/4), links into the
+  relevant repository/issue/execution/run detail. No dismiss control
+  exists anywhere in this module, matching docs/27's "never dismissible."
+- `search.js`: a labelled combobox/listbox (`role="combobox"`/
+  `"listbox"`/`"option"`, `aria-expanded`/`aria-activedescendant`) over
+  `/api/search` (Unit 5) -- 200ms debounce, ArrowUp/ArrowDown cycles
+  through the flattened grouped results with wraparound,
+  Enter navigates and clears the field, Escape closes without moving
+  focus (WCAG 1.4.13), and a document-level click outside closes it too.
+  No advanced query syntax or search history is exposed anywhere in this
+  module.
+- Wired into `app.js`'s boot (`initGlobalSearch` on the shell's search
+  input) and dispatch table (`attention` route); `index.html`'s search
+  markup gained the listbox and full ARIA combobox wiring;
+  `shell.css` gained the floating results panel styling
+  (`shadow-floating-menu`, active-option highlighting via the token
+  system, never color alone -- the active option is also the
+  `aria-activedescendant` target).
+
+**Live verification (real browser, against Draindeck's own real
+843-event log):** the Attention Center rendered all 28 real current
+conditions in a real table with working Current/Resolved/All filters;
+switching to "Resolved" surfaced the exact transient system-wide
+`LEASE_UNCLAIMED` condition this session's Unit 3 design predicted (the
+very first Dashboard process to run against a fresh DB observes-then-
+immediately-resolves it on consecutive heartbeats) -- a live confirmation
+of that earlier design decision, not just a unit test. The search
+combobox: typing "Draindeck" produced a real "REPOSITORIES" group with
+the real result; ArrowDown correctly set `aria-activedescendant` to the
+first option; Enter navigated to `/repositories/1`, cleared the input,
+and closed the list; Escape closed the list while `document.activeElement`
+remained the input (verified directly, not assumed). Zero console errors
+across every step.
+
+**Diagnostic note:** an initial live check appeared to show the search
+listbox never opening after typing -- traced to a race in the TEST
+script itself (dispatching a synthetic `input` event immediately after
+`navigate()`, before `app.js`'s module script had finished attaching its
+listener) rather than an application defect; repeating the same
+interaction after allowing the page to settle worked immediately, and
+was then verified multiple further times.
+
+**Commands run:**
+- `node tests/dashboard/js/test_attention_page.mjs` / `test_search_component.mjs` → both passed
+- `pytest tests/dashboard -q` → **344 passed**
+- `pytest tests/unit tests/dashboard -q` → **904 passed**, 71.28s, 1 pre-existing warning
+
+**Checkpoint:** keyboard-only search-to-detail flow and resolved-attention
+filtering both pass, verified live end-to-end, not just via unit tests.
+
+### Unit 11–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

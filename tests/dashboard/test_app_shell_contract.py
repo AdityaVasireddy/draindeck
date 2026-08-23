@@ -29,6 +29,7 @@ _NEW_STYLESHEETS = ["tokens.css", "base.css", "shell.css", "components.css", "pa
 _NEW_JS_MODULES = [
     "app.js", "dom.js", "format.js", "state.js", "components/shell.js", "api.js", "stream.js",
     "router.js", "pages/home.js", "pages/repositories.js", "pages/repository-detail.js",
+    "pages/attention.js", "components/search.js",
 ]
 
 

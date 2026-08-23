@@ -28,13 +28,16 @@
 
     <div class="app-workspace">
       <header class="app-utility-bar">
-        <form id="global-search-form" class="app-search" role="search">
+        <div class="app-search" role="search">
           <label for="global-search-input" class="visually-hidden">
             Search repositories, issues, runs, executions, evidence
           </label>
           <input id="global-search-input" type="search" name="q" placeholder="Search…"
-                 autocomplete="off">
-        </form>
+                 autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"
+                 aria-controls="global-search-listbox">
+          <ul id="global-search-listbox" class="search-listbox" role="listbox"
+              aria-label="Search results" hidden></ul>
+        </div>
         <div class="app-utility-actions">
           <p id="connection-status" role="status" aria-live="polite" class="text-label">
             Connecting…
