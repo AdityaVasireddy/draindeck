@@ -51,9 +51,11 @@ def check_read_model_readiness(conn: sqlite3.Connection, repository_id: Optional
     denylist of the known not-ready values -- fails CLOSED on anything
     unrecognized (security review, this session's merge-blocker round).
     A denylist previously let a legacy `status='FAILED'` row (the value
-    this exact codebase wrote before the FAILED->ERROR rename, never
-    rewritten in place by any migration) silently fall through as if it
-    were a genuine complete snapshot."""
+    this exact codebase wrote before the FAILED->ERROR rename) silently
+    fall through as if it were a genuine complete snapshot; startup
+    migration (`migrations.py`'s `run_migrations`) now rewrites any such
+    row to `'ERROR'` in place, and this allowlist is the defense-in-depth
+    backstop for that correction, not the only thing relying on it."""
     if repository_id is None:
         return None
     status = read_model_status(conn, repository_id)

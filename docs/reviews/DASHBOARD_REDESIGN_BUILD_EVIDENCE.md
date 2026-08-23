@@ -3,7 +3,9 @@
 **Status:** BUILD-AUTO COMPLETE — Units 0-16 plus two merge-blocker continuations; one item (forced-colors live acceptance) explicitly waived by the user; pending user review before merge/push<br>
 **Branch:** `dashboard-redesign`<br>
 **Baseline:** `4052fef97dbb90b52ae91fc01832557bc348cab8`<br>
-**Final commit:** `ed09179`
+**Implementation/security fixes completed at:** `ed09179`<br>
+**Documentation closeout at:** `c991be5`<br>
+**This documentation-cleanup commit (bookkeeping corrections only):** HEAD
 
 This tracked record is the durable build-auto evidence log. After every unit,
 record the exact files, failing-first test, passing focused/full commands,
@@ -1871,17 +1873,22 @@ modification, no dependency installed.
 
 - **Outcome:** Units 0-16 plus two merge-blocker `/build-auto`
   continuations (above) of the Dashboard Redesign (docs/27, ADR-27) are
-  complete on branch `dashboard-redesign`, final commit `ed09179`.
-  **970/970 combined `tests/unit tests/dashboard` suite green** at the
-  final commit. The old Part 2 static UI is fully retired; every route in
-  docs/27 §4/§9.1 is implemented, tested, and live-verified against a
-  real browser and Draindeck's own real event/execution history plus a
-  100,000-row scale fixture. **One item remains genuinely open by
-  explicit user waiver** (forced-colors live acceptance -- see Residual
-  risks below), not silently marked done.
+  complete on branch `dashboard-redesign`. Implementation/security fixes
+  completed at commit `ed09179`; documentation closeout at commit
+  `c991be5`; this final documentation-only cleanup commit (bookkeeping
+  corrections, no behavior/test change) is HEAD.
+  **970/970 combined `tests/unit tests/dashboard` suite green**
+  (560 unit + 410 dashboard) as of `ed09179` and unchanged since (no
+  source/test file has been touched by either documentation commit). The
+  old Part 2 static UI is fully retired; every route in docs/27 §4/§9.1
+  is implemented, tested, and live-verified against a real browser and
+  Draindeck's own real event/execution history plus a 100,000-row scale
+  fixture. **One item remains genuinely open by explicit user waiver**
+  (forced-colors live acceptance -- see Residual risks below), not
+  silently marked done.
 - **Files changed:** every commit from Unit 0 (`1828f58`-adjacent) through
-  the final commit (`ed09179`) is scoped to `src/draindeck_dashboard/`,
-  `tests/dashboard/`, `docs/27-dashboard-redesign-spec.md`,
+  the implementation/security cutoff (`ed09179`) is scoped to
+  `src/draindeck_dashboard/`, `tests/dashboard/`, `docs/27-dashboard-redesign-spec.md`,
   `docs/08-session-0-closure-and-adr-amendments.md` §5i,
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`, `tasks/`,
   `PRODUCT.md`, `DESIGN.md`, and `NEXT.md`. **`src/runtime` was never
@@ -1989,9 +1996,17 @@ modification, no dependency installed.
   both continuations (4 review passes total across the two rounds); every
   Important/MEDIUM/LOW finding fixed test-first and re-verified; see
   above
-- Final working tree / commit list: clean; `4052fef..HEAD` is 32 commits
-  total (`7cdb23b..HEAD` covers both merge-blocker continuations: 10
-  commits in the first round ending `62ca2bb`, then 3 commits in this
-  round -- `55a8960`, `982b046`, `ed09179` -- plus this documentation
-  commit), each scoped to exactly the item(s) it names in its message.
+- Final working tree / commit list: clean. `4052fef..HEAD` covers, in
+  order: Units 0-16 through `7cdb23b`; the first merge-blocker
+  continuation's 10 commits ending in its own documentation commit
+  `62ca2bb`; the second merge-blocker round's 3 implementation/security
+  commits (`55a8960`, `982b046`, `ed09179`) plus its own documentation
+  commit `c991be5`; and this final documentation-only bookkeeping cleanup
+  commit, which is HEAD. `4052fef..c991be5` is 33 commits (verified via
+  `git log --oneline 4052fef..c991be5 | wc -l` at the time this line was
+  written) -- deliberately not restated as a running total inclusive of
+  HEAD, since that count would go stale the moment any further commit
+  lands; use `git log --oneline 4052fef..HEAD | wc -l` for the current
+  figure rather than trusting a number written into this file. Each
+  commit is scoped to exactly the item(s) it names in its own message.
   `git diff --check 4052fef..HEAD` clean.

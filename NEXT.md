@@ -15,8 +15,11 @@
 - **Dashboard redesign: BUILD-AUTO COMPLETE (Units 0-16 plus two
   merge-blocker `/build-auto` continuations), pending user review before
   merge/push.** Branch `dashboard-redesign`, baseline
-  `4052fef97dbb90b52ae91fc01832557bc348cab8` through commit `ed09179`
-  (32 commits). **970/970 combined `tests/unit tests/dashboard` suite
+  `4052fef97dbb90b52ae91fc01832557bc348cab8`: implementation/security
+  fixes completed at commit `ed09179`; documentation closeout at commit
+  `c991be5` (33 commits after baseline); a further documentation-only
+  cleanup commit (bookkeeping corrections, no behavior/test change) is
+  HEAD. **970/970 combined `tests/unit tests/dashboard` suite
   green** (560 unit, 410 dashboard); every docs/27 route implemented and
   live-verified, including a 100,000-row scale fixture, a dedicated
   event-loop-responsiveness/lease-starvation measurement (100k-row
