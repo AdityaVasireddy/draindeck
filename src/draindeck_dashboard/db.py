@@ -17,7 +17,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+from .migrations import run_migrations
+
 BUSY_TIMEOUT_MS = 5_000
 
 
@@ -42,18 +43,11 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Idempotent schema setup. Safe to call on every process start."""
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_meta ("
-        "  version INTEGER NOT NULL"
-        ")"
-    )
-    row = conn.execute("SELECT version FROM schema_meta").fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO schema_meta (version) VALUES (?)", (SCHEMA_VERSION,)
-        )
-
+    """Idempotent v1 base-table setup. Safe to call on every process
+    start. ``schema_meta`` itself is exclusively owned by migrations.py
+    (docs/27 SS8.1) -- this function never reads or writes it, so version
+    gating always happens inside migrations.run_migrations' own locked
+    transaction, never here."""
     # change_sequence is the one monotonic SSE cursor (docs/19 "REST API,
     # SSE, and UI states"). INTEGER PRIMARY KEY is the SQLite rowid alias
     # and is therefore indexed by construction — no separate CREATE INDEX
@@ -192,4 +186,5 @@ def init_schema(conn: sqlite3.Connection) -> None:
 def connect_and_init(db_path: Path | str) -> sqlite3.Connection:
     conn = connect(db_path)
     init_schema(conn)
+    run_migrations(conn)
     return conn

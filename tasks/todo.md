@@ -6,7 +6,7 @@ checkpoint-commit authority resolved (authorized); browser automation proven
 in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
 
 - [x] Unit 0 — Baseline, context loader, executable contract map, preflight
-- [ ] Unit 1 — Transactional SQLite v2 migration
+- [x] Unit 1 — Transactional SQLite v2 migration
 - [ ] Unit 2 — Lease-owned off-thread read models, containment generations, backfill/rebuild
 - [ ] Unit 3 — Attention detection history
 - [ ] Unit 4 — Bounded query layer and aggregates

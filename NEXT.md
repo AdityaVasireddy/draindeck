@@ -12,28 +12,19 @@
 
 ## 1. Current state (verified 2026-08-22)
 
-- **Dashboard redesign is PLANNED, not approved or implemented.** Branch
-  `dashboard-redesign` remains based at
-  `4052fef97dbb90b52ae91fc01832557bc348cab8`. Product/visual context is in
-  `PRODUCT.md`, `DESIGN.md`, and `.impeccable/design.json`; proposed ADR-27 is
-  recorded in docs/08 §5i with the full proposed contract in docs/27 and the
-  version-controlled execution plan/checklist in `tasks/plan.md` /
-  `tasks/todo.md`. A pre-approval review found and the planning docs now address
-  normal TORN-tail repair, lease-owned off-thread projection backfill, attention
-  invalidation/no-liveness semantics, WCAG focus/boundary contrast and 320px
-  reflow, unregister cleanup, API grouping/search/keyset pagination, exact
-  per-generation containment vocabulary, explicit UI routing/CSP constraints,
-  ADR placement, tracked build evidence, local checkpoint commits, and the
-  browser-tool prerequisite. A second review also closed dark-surface rail
-  focus, recent-activity ordering, complete contrast-alternating eight-color
-  chart ramps, locked schema-version reads, off-thread bounded tick writes,
-  and tooltip/visible-label accessibility. A final validation also moved lease
-  heartbeat writes onto the priority off-thread writer path, removed conflicting
-  tooltip-only navigation language, and required explicit UTF-8 for Python
-  artifact readers. **Next action:** user
-  review/acceptance of ADR-27,
-  docs/27, and tasks/plan plus an explicit decision on local per-unit checkpoint
-  commits. Unit 0 must prove browser automation before any `src/` mutation.
+- **Dashboard redesign: ACCEPTED and IN PROGRESS (build-auto).** Branch
+  `dashboard-redesign`, baseline `4052fef97dbb90b52ae91fc01832557bc348cab8`.
+  ADR-27 (docs/08 §5i), `docs/27-dashboard-redesign-spec.md`, and
+  `tasks/plan.md` were explicitly accepted 2026-08-23 (commit `1828f58`),
+  with local per-unit checkpoint commits authorized and merge/push still
+  prohibited. Unit 0 (baseline/context/CLI/browser-automation gate) and
+  Unit 1 (transactional SQLite v1→v2 migration: `migrations.py`, six new
+  read-model/attention tables, five new evidence indexes, transactional
+  `delete_repository` cleanup) are complete — 767/767 combined suite green.
+  **Next action:** continue with Unit 2 (lease-owned off-thread read
+  models). Full running evidence log, commands, and per-unit detail:
+  `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
+  `tasks/todo.md`.
 
 - **Dashboard Part 2 (ADR-26): Phase 7 (run lifecycle events) complete on
   branch `dashboard`** (2026-08-21, commits `fd2b9eb`..`7ff1033`, on top of

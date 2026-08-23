@@ -48,7 +48,7 @@ def test_init_schema_is_idempotent(tmp_path):
     conn2 = connect_and_init(db_path)  # must not raise on re-init
     try:
         version = conn2.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == 1
+        assert version == 2
         count = conn2.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0]
         assert count == 1
     finally:

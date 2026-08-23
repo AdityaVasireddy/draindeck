@@ -137,6 +137,57 @@ def test_delete_removes_only_dashboard_rows(tmp_path):
     assert repo.exists()  # never touches the repository on disk
 
 
+def test_delete_removes_every_v2_read_model_and_attention_row(tmp_path):
+    """Unit 1 (docs/27 SS8.2): delete_repository must transactionally
+    remove attention_conditions, containment_views, execution_views,
+    run_views, issue_views, and read_model_state -- never the target
+    path -- alongside the pre-existing v1 cleanup."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    created = register_repository(conn, project_path=str(repo), log_path=None)
+    repo_id = created["id"]
+    now = "2026-08-23T00:00:00Z"
+
+    conn.execute(
+        "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
+        "VALUES (?, 1, 'issue-1', 'PENDING', ?)", (repo_id, now),
+    )
+    conn.execute(
+        "INSERT INTO run_views (repository_id, identity_generation_id, run_id, updated_at) "
+        "VALUES (?, 1, 'run-1', ?)", (repo_id, now),
+    )
+    conn.execute(
+        "INSERT INTO execution_views (repository_id, identity_generation_id, execution_id, state, updated_at) "
+        "VALUES (?, 1, 'exec-1', 'ACCEPTED', ?)", (repo_id, now),
+    )
+    conn.execute(
+        "INSERT INTO containment_views (repository_id, identity_generation_id, execution_id, "
+        "containment_generation, state, updated_at) VALUES (?, 1, 'exec-1', 1, 'RELEASED', ?)",
+        (repo_id, now),
+    )
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status) "
+        "VALUES (?, 1, 'READY')", (repo_id,),
+    )
+    conn.execute(
+        "INSERT INTO attention_conditions (condition_key, repository_id, kind, severity, "
+        "message, first_detected_at, last_detected_at) "
+        "VALUES ('k1', ?, 'REPOSITORY_OFFLINE', 'warning', 'm', ?, ?)",
+        (repo_id, now, now),
+    )
+
+    delete_repository(conn, repo_id)
+
+    for table in (
+        "issue_views", "run_views", "execution_views", "containment_views",
+        "read_model_state", "attention_conditions",
+    ):
+        remaining = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE repository_id = ?", (repo_id,)
+        ).fetchone()[0]
+        assert remaining == 0, f"{table} still has rows for deleted repository {repo_id}"
+
+
 def test_list_repositories_orders_by_id(tmp_path):
     conn = connect_and_init(tmp_path / "dash.sqlite3")
     repo_a = _git_worktree(tmp_path, "a")

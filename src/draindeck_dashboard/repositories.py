@@ -128,11 +128,25 @@ def get_repository(conn: sqlite3.Connection, repo_id: int) -> dict:
 
 def delete_repository(conn: sqlite3.Connection, repo_id: int) -> None:
     """Removes only Dashboard-owned rows — never the log, artifacts, or
-    repository on disk (docs/19)."""
+    repository on disk (docs/19). Transactionally removes every v2
+    read-model/attention row (docs/27 SS8.2) before the v1 cleanup."""
     get_repository(conn, repo_id)  # raises NotFoundError if missing
-    conn.execute("DELETE FROM changes WHERE repository_id = ?", (repo_id,))
-    conn.execute("DELETE FROM corruptions WHERE repository_id = ?", (repo_id,))
-    conn.execute("DELETE FROM evidence WHERE repository_id = ?", (repo_id,))
-    conn.execute("DELETE FROM checkpoints WHERE repository_id = ?", (repo_id,))
-    conn.execute("DELETE FROM identity_generations WHERE repository_id = ?", (repo_id,))
-    conn.execute("DELETE FROM repositories WHERE id = ?", (repo_id,))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM attention_conditions WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM containment_views WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM execution_views WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM run_views WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM issue_views WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM read_model_state WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM changes WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM corruptions WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM evidence WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM checkpoints WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM identity_generations WHERE repository_id = ?", (repo_id,))
+        conn.execute("DELETE FROM repositories WHERE id = ?", (repo_id,))
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")

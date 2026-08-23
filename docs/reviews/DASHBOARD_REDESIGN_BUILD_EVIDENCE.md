@@ -94,7 +94,63 @@ status fields updated from PROPOSED to ACCEPTED in this same checkpoint to
 record the approval event. No `src/` or `tests/` file was touched during
 Unit 0.
 
-### Units 1–16
+### Unit 1 — Transactional SQLite v2 migration (2026-08-23)
+
+**Files:** `src/draindeck_dashboard/db.py`, `src/draindeck_dashboard/migrations.py`
+(new), `src/draindeck_dashboard/repositories.py`,
+`tests/dashboard/test_db.py`, `tests/dashboard/test_migrations.py` (new),
+`tests/dashboard/test_repositories.py`.
+
+**Test-first:** wrote `tests/dashboard/test_migrations.py` (9 tests) against
+the not-yet-existing `draindeck_dashboard.migrations` module; confirmed
+`ModuleNotFoundError` collection failure (RED) before implementing. Also
+added `test_delete_removes_every_v2_read_model_and_attention_row` to
+`test_repositories.py` and confirmed it failed (`issue_views still has
+rows...`) before implementing.
+
+**Implementation:** `migrations.py` (new) owns `schema_meta` exclusively —
+`init_schema` (db.py) no longer touches it. `run_migrations()` executes
+`BEGIN IMMEDIATE` before any version read (verified by a call-order spy
+test), then: no row → fresh DB, create all v2 tables/indexes directly and
+insert version 2; version 1 → apply the additive v1→v2 DDL and bump to 2;
+version > 2 → raise `SchemaVersionError`; version == 2 → no-op. All DDL
+uses `CREATE TABLE/INDEX IF NOT EXISTS`, so a concurrent second migrator
+blocked by SQLite's write lock (5s busy_timeout, already in `db.py`)
+converges cleanly once it acquires the lock and observes version 2 — no
+second migration path. A failure mid-DDL rolls back via `except
+BaseException: ROLLBACK; raise`, verified by an injected-failure test that
+reopens the database afterward and confirms it is still at version 1 with
+no v2 tables. `connect_and_init` now calls `init_schema(conn)` then
+`run_migrations(conn)`. Added tables: `issue_views`, `run_views`,
+`execution_views`, `containment_views`, `read_model_state`,
+`attention_conditions`, exactly matching docs/27 §8.2's columns/composite
+keys, plus the 5 new `evidence` indexes from §8.3. `attention_conditions`
+uses a partial unique index (`ux_attention_conditions_open_key` on
+`condition_key WHERE resolved_at IS NULL`) so a resolved-then-recurring
+condition opens a new row/occurrence rather than overwriting history.
+`repositories.delete_repository` now wraps every v1+v2 DELETE in one
+`BEGIN IMMEDIATE`/`COMMIT` transaction (previously unwrapped/implicit) and
+removes `attention_conditions`, `containment_views`, `execution_views`,
+`run_views`, `issue_views`, `read_model_state` before the existing v1
+cleanup. `tests/dashboard/test_db.py`'s idempotency assertion updated from
+`version == 1` to `version == 2` (the only pre-existing test the migration
+required changing).
+
+**Commands run:**
+- `pytest tests/dashboard/test_migrations.py -q` → 9 passed
+- `pytest tests/dashboard/test_repositories.py tests/dashboard/test_db.py tests/dashboard/test_migrations.py -q` → 27 passed
+- `pytest tests/dashboard -q` → **207 passed** (197 baseline + 10 new)
+- `pytest tests/unit tests/dashboard -q` → **767 passed** (757 baseline + 10 new), 1 pre-existing warning, 70.94s
+- Live `sqlite_master` dump against a fresh `connect_and_init()` database
+  (scratch file, deleted after inspection) matches docs/27 §8.2/§8.3's
+  table/index inventory exactly (verified line-by-line against the spec
+  text above).
+
+**Deviations:** none. **Checkpoint:** migration-focused tests and all
+existing DB/repository tests green; `sqlite_master` inspected and matches
+spec.
+
+### Units 2–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.
