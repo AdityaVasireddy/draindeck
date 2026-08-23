@@ -754,7 +754,74 @@ handler, unsafe HTML, or unapproved visual token (verified directly via
 browser confirms zero console errors and correct theme/routing behavior.
 320px/768px breakpoint screenshots deferred to Unit 15, disclosed above.
 
-### Unit 8–16
+### Unit 8 — API client, connection stream, and focus-safe reconciliation (2026-08-23)
+
+**Files:** `static/js/api.js` (new), `static/js/stream.js` (new),
+`tests/dashboard/js/test_api.mjs`, `test_stream.mjs` (both new),
+`tests/dashboard/test_app_shell_contract.py`.
+
+**Test-first:** 13 new plain-Node tests (7 for `api.js`, 6 for
+`stream.js`), all against real Node globals (`fetch`, `AbortController`,
+`setTimeout`/`setInterval`) rather than a simulated DOM -- Node 24 ships
+these natively, so no polyfill/dependency was needed. All passed on
+first real run; no bug this time, unlike most prior units' JS/SQL work.
+
+**Implementation:**
+- `api.js`: `ApiError` (typed `code`/`status` from the existing `{error:
+  {code,message}}` envelope, generic fallback when a response isn't that
+  shape, and a distinct `NETWORK_ERROR` code when `fetch` itself throws)
+  and `createRequestCoordinator()` -- fetches keyed by an arbitrary
+  string abort any still-in-flight fetch under the SAME key before
+  starting a new one, and a response that resolves after being
+  superseded is suppressed (returns `undefined`, not stale data or a
+  spurious `AbortError`). Verified directly: two concurrent fetches under
+  the same key resolve with only the second's real body; different keys
+  never abort each other; `abortAll()` suppresses every in-flight key.
+- `stream.js`: `CONNECTION_STATUS` + `connectionStatusLabel` (docs/27
+  SS5.1's exact four states -- verified no label ever contains the word
+  "running"), `SYSTEM_REPOSITORY_ID = 0` + `isSystemWideChange`,
+  `createChangeCoalescer` (a burst of changes to the SAME
+  `(repositoryId, entityType, entityId)` within the coalescing window
+  fires the flush callback ONCE with only the latest, not once per
+  change -- distinct identities in the same window all survive
+  independently, including two different `repositoryId: 0` system-wide
+  entity types not colliding), `createPeriodicRefresh` (the 30-second
+  time-derived attention/lease refresh primitive; `stop()` verified to
+  actually end ticking, not just stop being awaited), and
+  `connectChangeStream` (the real `EventSource` wiring -- coalesces
+  `change` events, handles `resync` by closing and reopening a fresh
+  source since a resync carries no id to resume from).
+
+**Live verification (real browser, not simulated):** `await
+import('/assets/js/api.js')` and `.../stream.js')` both loaded with zero
+console errors; `createRequestCoordinator().fetch('health',
+'/api/health')` made a REAL fetch against the running server and
+returned `{"status":"ok"}`; `connectionStatusLabel(CONNECTED)` returned
+`"Updates connected"`. Server cleanly `taskkill /F`'d afterward.
+
+**Scope note:** per the plan's own Unit 8 file list, these are
+primitives only -- neither module is wired into `app.js`/`index.html`
+yet, so the pre-existing Part 2 page logic (and its own inline SSE
+handling) keeps running unchanged. Units 9-14 replace it page-by-page
+with real modules built on `api.js`/`stream.js`/`dom.js`, at which point
+the "replace the current clear(el)-inside-row pattern" item from the
+plan's Unit 8 description actually applies (there is no redesigned
+screen yet for it to apply to).
+
+**Commands run:**
+- `node tests/dashboard/js/test_api.mjs` / `test_stream.mjs` → both passed directly
+- `pytest tests/dashboard/test_app_shell_contract.py tests/dashboard/test_static_js_contracts.py -q` → 12 passed
+- `pytest tests/dashboard -q` → **339 passed**
+- `pytest tests/unit tests/dashboard -q` → **899 passed**, 70.70s, 1 pre-existing warning
+
+**Checkpoint:** deterministic JS tests green; a focused live-browser probe
+confirms both modules load and execute correctly against the real
+server. The "browser probe proves focus remains on an updated row
+control" acceptance bullet is deferred with `dom.js`'s `syncList` (Unit 7)
+to whichever Unit 9+ page first uses it against live SSE-driven data,
+since there is no redesigned live-updating screen to probe yet.
+
+### Unit 9–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

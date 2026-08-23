@@ -26,7 +26,9 @@ def _client(tmp_path: Path):
 
 
 _NEW_STYLESHEETS = ["tokens.css", "base.css", "shell.css", "components.css"]
-_NEW_JS_MODULES = ["app.js", "dom.js", "format.js", "state.js", "components/shell.js"]
+_NEW_JS_MODULES = [
+    "app.js", "dom.js", "format.js", "state.js", "components/shell.js", "api.js", "stream.js",
+]
 
 
 def test_every_new_stylesheet_is_served_with_css_content_type(tmp_path):

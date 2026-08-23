@@ -18,24 +18,25 @@
   `tasks/plan.md` were explicitly accepted 2026-08-23 (commit `1828f58`),
   with local per-unit checkpoint commits authorized and merge/push still
   prohibited. Backend/data layer (Units 0-5) plus Unit 6 (stable UI
-  routing) are complete. Unit 7 (design tokens, shell, themes, shared
-  JS primitives) is now also done — 897/897 combined suite green,
-  including new plain-Node `.mjs` tests (docs/27 bans any new JS
-  dependency, so pure JS logic is tested with `node:assert`, driven from
-  pytest via subprocess). Live-verified in a real browser: forest rail
-  with correct active-route highlighting, deep-link reload to a nested
-  route works, theme toggle re-themes the shell and persists across
-  reload, all 12 asset requests return 200, zero console errors. Known
-  gap disclosed in the build evidence: this session's browser-resize tool
-  did not actually change the tab's viewport width, so 768px/320px
-  responsive-breakpoint screenshots are deferred to Unit 15's dedicated
-  multi-viewport pass rather than claimed now. The pre-existing Part 2
-  page logic still runs, unmodified, underneath the new shell chrome —
-  Units 8-14 replace it incrementally so the app stays genuinely working
-  at every checkpoint. Two flagged, non-blocking residual items remain
-  from Units 2/4, carried to Unit 15. **Next action:** continue with
-  Unit 8 (API client, connection stream, and focus-safe reconciliation).
-  Full running evidence log, commands, and per-unit detail:
+  routing) are complete. Units 7 (design tokens, shell, themes, shared JS
+  primitives) and 8 (API client with abort-aware request coordination,
+  SSE connection state/invalidation coalescing) are now also done —
+  899/899 combined suite green, including new plain-Node `.mjs` tests
+  (docs/27 bans any new JS dependency, so pure JS logic is tested with
+  `node:assert`, driven from pytest via subprocess; verified against real
+  Node/browser `fetch`/`AbortController`/`EventSource`). The shell is
+  live-verified in a real browser (correct rail active-state, deep-link
+  reload works, theme toggle persists, zero console errors); the
+  pre-existing Part 2 page logic still runs, unmodified, underneath the
+  new shell chrome so the app stays genuinely working at every checkpoint
+  — Units 9-14 replace it incrementally, page by page. Known gap
+  disclosed in the build evidence: this session's browser-resize tool
+  doesn't change the tab's actual viewport, so 768px/320px breakpoint
+  screenshots are deferred to Unit 15. Two flagged, non-blocking residual
+  items remain from Units 2/4, also carried to Unit 15. **Next action:**
+  continue with Unit 9 (home, repository registry, add flow, repository
+  overview) — the first real redesigned page. Full running evidence log,
+  commands, and per-unit detail:
   `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`; checklist:
   `tasks/todo.md`.
 

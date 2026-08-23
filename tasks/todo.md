@@ -13,7 +13,7 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
 - [x] Unit 5 — Search and additive REST routes
 - [x] Unit 6 — Stable UI routing and security preservation
 - [x] Unit 7 — Design tokens, shell, themes, shared primitives
-- [ ] Unit 8 — API client, SSE, focus-safe keyed reconciliation
+- [x] Unit 8 — API client, SSE, focus-safe keyed reconciliation
 - [ ] Unit 9 — Home, repositories, registration, repository overview
 - [ ] Unit 10 — Attention Center and global search
 - [ ] Unit 11 — Runs and Issues explorers/details/timelines/topology
