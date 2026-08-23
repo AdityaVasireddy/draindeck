@@ -8,7 +8,12 @@ import pytest
 
 from draindeck_dashboard import api_queries
 from draindeck_dashboard.db import connect_and_init
-from draindeck_dashboard.errors import InvalidFilterError, InvalidSortError, PageOutOfRangeError
+from draindeck_dashboard.errors import (
+    IndexPreparingError,
+    InvalidFilterError,
+    InvalidSortError,
+    PageOutOfRangeError,
+)
 
 
 def _repo(conn, name="repo", availability="AVAILABLE", gen_number=1):
@@ -198,10 +203,128 @@ def test_cross_repository_issues_only_returns_current_generation_rows(tmp_path):
     assert [i["issueId"] for i in result["items"]] == ["current"]
 
 
+# --- read-model readiness (docs/27 SS3.2 decision 9: INDEX_PREPARING/REBUILDING) ---
+
+def _mark_ready(conn, repo_id, gen_id, *, completed_evidence_id=0):
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'READY', ?, '2026-08-23T00:00:00Z', '2026-08-23T00:00:00Z', NULL)",
+        (repo_id, gen_id, completed_evidence_id),
+    )
+
+
+def test_repository_scoped_issues_query_raises_index_preparing_with_no_snapshot_at_all(tmp_path):
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")  # no read_model_state row inserted
+    with pytest.raises(IndexPreparingError):
+        api_queries.cross_repository_issues(conn, limit=50, offset=0, repository_id=repo_id)
+
+
+def test_repository_scoped_runs_query_raises_index_preparing_while_status_is_preparing(tmp_path):
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'PREPARING', NULL, '2026-08-23T00:00:00Z', NULL, NULL)",
+        (repo_id, gen_id),
+    )
+    with pytest.raises(IndexPreparingError):
+        api_queries.cross_repository_runs(conn, limit=50, offset=0, repository_id=repo_id)
+
+
+def test_repository_scoped_executions_query_raises_index_preparing_on_failed_status(tmp_path):
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'FAILED', NULL, '2026-08-23T00:00:00Z', NULL, 'RuntimeError')",
+        (repo_id, gen_id),
+    )
+    with pytest.raises(IndexPreparingError):
+        api_queries.cross_repository_executions(conn, limit=50, offset=0, repository_id=repo_id)
+
+
+def test_repository_scoped_query_labels_rebuilding_status_stale_and_still_serves_data(tmp_path):
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    _mark_ready(conn, repo_id, gen_id, completed_evidence_id=5)
+    conn.execute("UPDATE read_model_state SET status = 'REBUILDING' WHERE repository_id = ?", (repo_id,))
+    conn.execute(
+        "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
+        "VALUES (?, ?, 'i1', 'DONE', '2026-08-23T00:00:00Z')", (repo_id, gen_id),
+    )
+    result = api_queries.cross_repository_issues(conn, limit=50, offset=0, repository_id=repo_id)
+    assert result["stale"] is True
+    assert [i["issueId"] for i in result["items"]] == ["i1"]  # data still served, not blocked
+
+
+def test_repository_scoped_query_ready_status_never_carries_a_stale_flag(tmp_path):
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    _mark_ready(conn, repo_id, gen_id)
+    result = api_queries.cross_repository_issues(conn, limit=50, offset=0, repository_id=repo_id)
+    assert "stale" not in result
+
+
+def test_cross_repository_query_never_raises_for_a_preparing_repository_but_discloses_it(tmp_path):
+    """A cross-repository (unscoped) request must never block over ONE
+    repository's readiness -- it just discloses which repositories aren't
+    part of a complete snapshot via projectionState (docs/27 SS3.2
+    decision 9's "never expose partially rebuilt rows as complete" is
+    satisfied here by DISCLOSING incompleteness, not by omission)."""
+    conn = _setup(tmp_path)
+    ready_repo, ready_gen = _repo(conn, "ready")
+    _mark_ready(conn, ready_repo, ready_gen)
+    preparing_repo, preparing_gen = _repo(conn, "preparing")
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'PREPARING', NULL, '2026-08-23T00:00:00Z', NULL, NULL)",
+        (preparing_repo, preparing_gen),
+    )
+    result = api_queries.cross_repository_issues(conn, limit=50, offset=0)  # no repository_id filter
+    assert preparing_repo in result["projectionState"]["preparingRepositoryIds"]
+    assert result["projectionState"]["complete"] is False
+
+
+def test_cross_repository_query_projection_state_complete_when_every_repo_is_ready(tmp_path):
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    _mark_ready(conn, repo_id, gen_id)
+    result = api_queries.cross_repository_issues(conn, limit=50, offset=0)
+    assert result["projectionState"] == {
+        "complete": True, "preparingRepositoryIds": [], "staleRepositoryIds": [],
+    }
+
+
+def test_projection_state_summary_counts_a_repository_with_no_read_model_state_row_as_preparing(tmp_path):
+    """A repository registered but never yet ticked (no read_model_state
+    row at all) is at least as "not ready" as one explicitly PREPARING --
+    the LEFT JOIN in projection_state_summary must catch this case too."""
+    conn = _setup(tmp_path)
+    repo_id, _gen_id = _repo(conn, "a")  # no read_model_state row inserted
+    summary = api_queries.projection_state_summary(conn)
+    assert repo_id in summary["preparingRepositoryIds"]
+    assert summary["complete"] is False
+
+
 def test_cross_repository_issues_filters_by_repository_id(tmp_path):
     conn = _setup(tmp_path)
     repo_a, gen_a = _repo(conn, "a")
     repo_b, gen_b = _repo(conn, "b")
+    # A repository-scoped query now requires a READY read_model_state row
+    # (Unit 16: check_read_model_readiness) -- without one, this would
+    # correctly raise IndexPreparingError rather than silently answering
+    # from directly-inserted fixture rows a real backfill never produced.
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'READY', 0, '2026-08-23T00:00:00Z', '2026-08-23T00:00:00Z', NULL)",
+        (repo_a, gen_a),
+    )
     conn.execute(
         "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
         "VALUES (?, ?, 'ia', 'DONE', '2026-08-23T00:00:00Z')", (repo_a, gen_a),
@@ -397,6 +520,7 @@ def test_entity_timeline_unknown_entity_type_rejected(tmp_path):
 def test_topology_issue_scope_returns_execution_and_evidence_nodes(tmp_path):
     conn = _setup(tmp_path)
     repo_id, gen_id = _repo(conn, "a")
+    _mark_ready(conn, repo_id, gen_id)
     conn.execute(
         "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
         "VALUES (?, ?, 'i1', 'DONE', '2026-08-23T00:00:00Z')", (repo_id, gen_id),
@@ -425,6 +549,7 @@ def test_topology_issue_scope_returns_execution_and_evidence_nodes(tmp_path):
 def test_topology_is_bounded_and_marks_truncated(tmp_path):
     conn = _setup(tmp_path)
     repo_id, gen_id = _repo(conn, "a")
+    _mark_ready(conn, repo_id, gen_id)
     conn.execute(
         "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
         "VALUES (?, ?, 'i1', 'DONE', '2026-08-23T00:00:00Z')", (repo_id, gen_id),

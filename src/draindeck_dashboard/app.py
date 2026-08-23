@@ -24,6 +24,7 @@ from .db import connect_and_init
 from .diffs import compute_diff
 from .errors import InvalidFilterError, NotFoundError, register_error_handlers
 from .health import build_health
+from .projections import RUN_METADATA_UNAVAILABLE
 from .repositories import (
     delete_repository,
     get_repository,
@@ -46,6 +47,32 @@ from .views import (
     list_issues,
     list_runs,
 )
+
+
+def _run_metadata_field(conn, repo_id: int, run_id: Optional[str]) -> dict:
+    """v2 read-model counterpart to views.py's _run_metadata_field (which
+    reads from a live build_projection replay) -- same shape, same exact
+    RUN_METADATA_UNAVAILABLE fallback text, so Execution Detail never
+    shows a blank metadata panel (docs/19) regardless of which endpoint
+    served it. Availability comes from whether a run_views row exists for
+    this run_id in the CURRENT generation, never from run_id's string shape."""
+    if run_id is None:
+        return {"available": False, "message": RUN_METADATA_UNAVAILABLE}
+    row = conn.execute(
+        "SELECT rv.run_id, rv.engine_provider, rv.engine_model, rv.reviewer_provider, "
+        "rv.reviewer_model, rv.budget_json, rv.config_digest, rv.outcome, rv.inconsistent "
+        "FROM run_views rv JOIN checkpoints c ON c.repository_id = rv.repository_id "
+        "AND c.identity_generation_id = rv.identity_generation_id "
+        "WHERE rv.repository_id = ? AND rv.run_id = ?", (repo_id, run_id),
+    ).fetchone()
+    if row is None:
+        return {"available": False, "message": RUN_METADATA_UNAVAILABLE}
+    return {
+        "available": True, "runId": row[0], "engineProvider": row[1], "engineModel": row[2],
+        "reviewerProvider": row[3], "reviewerModel": row[4],
+        "budget": json.loads(row[5]) if row[5] else {}, "configDigest": row[6],
+        "outcome": row[7], "inconsistent": bool(row[8]),
+    }
 
 
 _PAGE_LIMIT_DEFAULT = 50
@@ -339,6 +366,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.get("/api/repositories/{repo_id}/issues/{issue_id}")
     async def api_issue_detail(repo_id: int, issue_id: str) -> dict:
         get_repository(app.state.db, repo_id)
+        api_queries.check_read_model_readiness(app.state.db, repo_id)
         row = app.state.db.execute(
             "SELECT iv.issue_id, iv.state, iv.title, iv.inconsistent, iv.last_event_id "
             "FROM issue_views iv JOIN checkpoints c ON c.repository_id = iv.repository_id "
@@ -353,6 +381,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.get("/api/repositories/{repo_id}/runs/{run_id}")
     async def api_run_detail(repo_id: int, run_id: str) -> dict:
         get_repository(app.state.db, repo_id)
+        api_queries.check_read_model_readiness(app.state.db, repo_id)
         row = app.state.db.execute(
             "SELECT rv.run_id, rv.engine_provider, rv.engine_model, rv.reviewer_provider, "
             "rv.reviewer_model, rv.budget_json, rv.config_digest, rv.outcome, rv.inconsistent, "
@@ -375,6 +404,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.get("/api/repositories/{repo_id}/executions/{execution_id}")
     async def api_execution_detail(repo_id: int, execution_id: str) -> dict:
         get_repository(app.state.db, repo_id)
+        api_queries.check_read_model_readiness(app.state.db, repo_id)
         row = app.state.db.execute(
             "SELECT ev.execution_id, ev.issue_id, ev.state, ev.inconsistent, ev.last_event_id, "
             "ev.run_id FROM execution_views ev JOIN checkpoints c "
@@ -393,6 +423,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
         return {
             "executionId": row[0], "issueId": row[1], "state": row[2], "inconsistent": bool(row[3]),
             "lastEventId": row[4], "runId": row[5],
+            "runMetadata": _run_metadata_field(app.state.db, repo_id, row[5]),
             "containments": [
                 {"containmentGeneration": gen, "workspaceKey": wk, "state": st,
                  "inconsistent": bool(inc)}

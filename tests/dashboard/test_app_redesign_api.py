@@ -144,6 +144,15 @@ def test_cross_repository_issues_endpoint(tmp_path):
         "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
         "VALUES (?, 1, 'i1', 'DONE', '2026-08-23T00:00:00Z')", (repo_id,),
     )
+    # A repository-scoped request now requires a READY read_model_state
+    # row (Unit 16: INDEX_PREPARING gating) -- a real backfill would have
+    # produced one before issue_views ever had a row in the first place.
+    app.state.db.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, 1, 'READY', 0, '2026-08-23T00:00:00Z', '2026-08-23T00:00:00Z', NULL)",
+        (repo_id,),
+    )
     resp = client.get("/api/issues")
     assert resp.status_code == 200
     assert resp.json()["items"][0]["issueId"] == "i1"
@@ -237,6 +246,12 @@ def test_issue_detail_endpoint(tmp_path):
         "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
         "VALUES (?, 1, 'i1', 'DONE', '2026-08-23T00:00:00Z')", (repo_id,),
     )
+    app.state.db.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, 1, 'READY', 0, '2026-08-23T00:00:00Z', '2026-08-23T00:00:00Z', NULL)",
+        (repo_id,),
+    )
     resp = client.get(f"/api/repositories/{repo_id}/issues/i1")
     assert resp.status_code == 200
     assert resp.json()["issueId"] == "i1"
@@ -246,6 +261,146 @@ def test_issue_detail_endpoint(tmp_path):
 
     bad_repo = client.get("/api/repositories/notanint/issues/i1")
     assert bad_repo.status_code == 422
+
+
+# --- execution detail: nested run metadata (Unit 16 contract-honesty finding) ---
+
+def _seed_generation_checkpoint_and_ready(app, repo_id, gen_id=1):
+    app.state.db.execute(
+        "INSERT INTO identity_generations (id, repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (?, ?, 1, 'l', 1, 1, 1, '2026-08-23T00:00:00Z')", (gen_id, repo_id),
+    )
+    app.state.db.execute(
+        "INSERT INTO checkpoints (repository_id, identity_generation_id, last_record_cursor, "
+        "last_record_hash, halted_oversized, reduced_confidence, availability, updated_at) "
+        "VALUES (?, ?, NULL, NULL, 0, 0, 'AVAILABLE', '2026-08-23T00:00:00Z')", (repo_id, gen_id),
+    )
+    app.state.db.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'READY', 0, '2026-08-23T00:00:00Z', '2026-08-23T00:00:00Z', NULL)",
+        (repo_id, gen_id),
+    )
+
+
+def test_execution_detail_includes_full_run_metadata_when_a_run_exists(tmp_path):
+    client, app = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    _seed_generation_checkpoint_and_ready(app, repo_id)
+    app.state.db.execute(
+        "INSERT INTO run_views (repository_id, identity_generation_id, run_id, engine_provider, "
+        "engine_model, reviewer_provider, reviewer_model, budget_json, config_digest, outcome, "
+        "inconsistent, updated_at) VALUES (?, 1, 'r1', 'anthropic', 'claude', 'qwen', NULL, "
+        "'{\"max_attempts_per_issue\": 1}', 'digest', 'COMPLETED', 0, '2026-08-23T00:00:00Z')",
+        (repo_id,),
+    )
+    app.state.db.execute(
+        "INSERT INTO execution_views (repository_id, identity_generation_id, execution_id, "
+        "issue_id, state, run_id, updated_at) VALUES (?, 1, 'e1', 'i1', 'ACCEPTED', 'r1', "
+        "'2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    resp = client.get(f"/api/repositories/{repo_id}/executions/e1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["runMetadata"]["available"] is True
+    assert body["runMetadata"]["runId"] == "r1"
+    assert body["runMetadata"]["engineProvider"] == "anthropic"
+    assert body["runMetadata"]["outcome"] == "COMPLETED"
+    assert body["runMetadata"]["budget"] == {"max_attempts_per_issue": 1}
+
+
+def test_execution_detail_run_metadata_unavailable_exact_fallback_when_execution_has_no_run_id(tmp_path):
+    client, app = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    _seed_generation_checkpoint_and_ready(app, repo_id)
+    app.state.db.execute(
+        "INSERT INTO execution_views (repository_id, identity_generation_id, execution_id, "
+        "issue_id, state, run_id, updated_at) VALUES (?, 1, 'e1', 'i1', 'ACCEPTED', NULL, "
+        "'2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    resp = client.get(f"/api/repositories/{repo_id}/executions/e1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["runMetadata"] == {
+        "available": False, "message": "run metadata unavailable (legacy/ambiguous)",
+    }
+
+
+def test_execution_detail_run_metadata_unavailable_when_run_id_set_but_no_run_views_row(tmp_path):
+    """A legacy/ambiguous case: the execution names a run_id, but no
+    RunStarted was ever observed for it (or it belongs to a different
+    generation) -- never fabricate metadata, use the exact same fallback."""
+    client, app = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    _seed_generation_checkpoint_and_ready(app, repo_id)
+    app.state.db.execute(
+        "INSERT INTO execution_views (repository_id, identity_generation_id, execution_id, "
+        "issue_id, state, run_id, updated_at) VALUES (?, 1, 'e1', 'i1', 'ACCEPTED', "
+        "'ghost-run', '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    resp = client.get(f"/api/repositories/{repo_id}/executions/e1")
+    assert resp.status_code == 200
+    assert resp.json()["runMetadata"] == {
+        "available": False, "message": "run metadata unavailable (legacy/ambiguous)",
+    }
+
+
+# --- INDEX_PREPARING gating on repository-scoped detail/topology routes ---
+
+def test_issue_detail_returns_503_index_preparing_when_repo_not_ready(tmp_path):
+    client, app = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    app.state.db.execute(
+        "INSERT INTO identity_generations (id, repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, ?, 1, 'l', 1, 1, 1, '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    app.state.db.execute(
+        "INSERT INTO checkpoints (repository_id, identity_generation_id, last_record_cursor, "
+        "last_record_hash, halted_oversized, reduced_confidence, availability, updated_at) "
+        "VALUES (?, 1, NULL, NULL, 0, 0, 'AVAILABLE', '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    # No read_model_state row -- repository never got past its first tick.
+    resp = client.get(f"/api/repositories/{repo_id}/issues/i1")
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "INDEX_PREPARING"
+
+
+def test_run_detail_returns_503_index_preparing_when_repo_not_ready(tmp_path):
+    client, app = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    app.state.db.execute(
+        "INSERT INTO identity_generations (id, repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, ?, 1, 'l', 1, 1, 1, '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    app.state.db.execute(
+        "INSERT INTO checkpoints (repository_id, identity_generation_id, last_record_cursor, "
+        "last_record_hash, halted_oversized, reduced_confidence, availability, updated_at) "
+        "VALUES (?, 1, NULL, NULL, 0, 0, 'AVAILABLE', '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    resp = client.get(f"/api/repositories/{repo_id}/runs/r1")
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "INDEX_PREPARING"
+
+
+def test_execution_detail_returns_503_index_preparing_when_repo_not_ready(tmp_path):
+    client, app = _client(tmp_path)
+    repo_id = _register(client, tmp_path)
+    app.state.db.execute(
+        "INSERT INTO identity_generations (id, repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, ?, 1, 'l', 1, 1, 1, '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    app.state.db.execute(
+        "INSERT INTO checkpoints (repository_id, identity_generation_id, last_record_cursor, "
+        "last_record_hash, halted_oversized, reduced_confidence, availability, updated_at) "
+        "VALUES (?, 1, NULL, NULL, 0, 0, 'AVAILABLE', '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    resp = client.get(f"/api/repositories/{repo_id}/executions/e1")
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "INDEX_PREPARING"
 
 
 def test_timeline_endpoint(tmp_path):
@@ -288,6 +443,12 @@ def test_topology_endpoint(tmp_path):
     app.state.db.execute(
         "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
         "VALUES (?, 1, 'i1', 'DONE', '2026-08-23T00:00:00Z')", (repo_id,),
+    )
+    app.state.db.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, 1, 'READY', 0, '2026-08-23T00:00:00Z', '2026-08-23T00:00:00Z', NULL)",
+        (repo_id,),
     )
     resp = client.get(f"/api/repositories/{repo_id}/issues/i1/topology")
     assert resp.status_code == 200

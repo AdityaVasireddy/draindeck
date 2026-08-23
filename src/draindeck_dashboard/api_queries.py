@@ -13,7 +13,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
-from .errors import InvalidFilterError, InvalidSortError, PageOutOfRangeError
+from .errors import IndexPreparingError, InvalidFilterError, InvalidSortError, PageOutOfRangeError
+from .read_models import read_model_status
 
 NEW_ROUTE_OFFSET_CAP = 10_000
 LEGACY_EVIDENCE_OFFSET_CAP = 100_000
@@ -27,6 +28,56 @@ def check_offset_cap(offset: int, *, cap: int) -> None:
 
 def _paginate(items: list, *, limit: int, offset: int, total: int) -> dict:
     return {"items": items, "limit": limit, "offset": offset, "total": total}
+
+
+def check_read_model_readiness(conn: sqlite3.Connection, repository_id: Optional[int]) -> Optional[dict]:
+    """docs/27 SS3.2 decision 9: an endpoint scoped to ONE repository whose
+    issue_views/run_views/execution_views/containment_views may not yet
+    reflect a complete snapshot must never silently answer with what looks
+    like a genuine (if empty) result. `repository_id=None` means a
+    cross-repository endpoint -- callers instead attach `projectionState`
+    (see `projection_state_summary`) rather than blocking the whole
+    response over one repository's readiness.
+
+    Returns `None` when nothing needs to be labelled (repository_id is
+    None, or genuinely READY). Returns `{"stale": True}` when a complete
+    snapshot exists but is now known out of date (REBUILDING) -- callers
+    serve the existing rows anyway, just labelled. Raises
+    `IndexPreparingError` when no complete snapshot exists at all
+    (PREPARING, FAILED, or no read_model_state row yet)."""
+    if repository_id is None:
+        return None
+    status = read_model_status(conn, repository_id)
+    if status is None or status["status"] in ("PREPARING", "FAILED"):
+        raise IndexPreparingError()
+    if status["status"] == "REBUILDING":
+        return {"stale": True}
+    return None
+
+
+def projection_state_summary(conn: sqlite3.Connection) -> dict:
+    """The cross-repository counterpart to `check_read_model_readiness`:
+    never blocks, just discloses which repositories' rows (if any) are
+    not part of a complete snapshot, so a caller aggregating across many
+    repositories can honestly label the result rather than presenting a
+    silently-incomplete total as complete."""
+    # A repository with NO read_model_state row at all (registered, but
+    # not yet through its very first tick) is at least as "not ready" as
+    # one explicitly marked PREPARING -- the LEFT JOIN catches that case
+    # too, not just an explicit status value.
+    preparing = [row[0] for row in conn.execute(
+        "SELECT r.id FROM repositories r LEFT JOIN read_model_state rms "
+        "ON rms.repository_id = r.id "
+        "WHERE rms.repository_id IS NULL OR rms.status IN ('PREPARING', 'FAILED')"
+    ).fetchall()]
+    stale = [row[0] for row in conn.execute(
+        "SELECT repository_id FROM read_model_state WHERE status = 'REBUILDING'"
+    ).fetchall()]
+    return {
+        "complete": not preparing and not stale,
+        "preparingRepositoryIds": preparing,
+        "staleRepositoryIds": stale,
+    }
 
 
 # --- repository summaries ---
@@ -176,13 +227,6 @@ def overview(conn: sqlite3.Connection) -> dict:
         "GROUP BY e.integrity"
     ).fetchall())
 
-    preparing = [row[0] for row in conn.execute(
-        "SELECT repository_id FROM read_model_state WHERE status = 'PREPARING'"
-    ).fetchall()]
-    stale = [row[0] for row in conn.execute(
-        "SELECT repository_id FROM read_model_state WHERE status = 'REBUILDING'"
-    ).fetchall()]
-
     return {
         "repositories": {"total": repo_total, "byAvailability": by_availability},
         "attention": {"current": attention_current, **attention_by_severity},
@@ -191,11 +235,7 @@ def overview(conn: sqlite3.Connection) -> dict:
         "executions": {"total": sum(executions_by_state.values()), "byState": executions_by_state},
         "evidence": {"total": sum(evidence_by_integrity.values()), "byIntegrity": evidence_by_integrity},
         "basis": "current identity generation per registered repository",
-        "projectionState": {
-            "complete": not preparing and not stale,
-            "staleRepositoryIds": stale,
-            "preparingRepositoryIds": preparing,
-        },
+        "projectionState": projection_state_summary(conn),
     }
 
 
@@ -220,6 +260,7 @@ def cross_repository_issues(conn: sqlite3.Connection, *, limit: int = 50, offset
                             repository_id: Optional[int] = None, state: Optional[str] = None,
                             sort: str = "issueId", direction: str = "asc") -> dict:
     check_offset_cap(offset, cap=NEW_ROUTE_OFFSET_CAP)
+    readiness = check_read_model_readiness(conn, repository_id)  # raises if a scoped repo isn't ready
     column = _ISSUE_SORT_COLUMNS.get(sort)
     if column is None:
         raise InvalidSortError(f"unsupported issue sort {sort!r}")
@@ -252,13 +293,19 @@ def cross_repository_issues(conn: sqlite3.Connection, *, limit: int = 50, offset
          "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]}}
         for issue_id, state_, title, inconsistent, last_event_id, repo_id, path in rows
     ]
-    return _paginate(items, limit=limit, offset=offset, total=total)
+    result = _paginate(items, limit=limit, offset=offset, total=total)
+    if readiness is not None:
+        result.update(readiness)
+    elif repository_id is None:
+        result["projectionState"] = projection_state_summary(conn)
+    return result
 
 
 def cross_repository_runs(conn: sqlite3.Connection, *, limit: int = 50, offset: int = 0,
                           repository_id: Optional[int] = None, outcome: Optional[str] = None,
                           sort: str = "runId", direction: str = "asc") -> dict:
     check_offset_cap(offset, cap=NEW_ROUTE_OFFSET_CAP)
+    readiness = check_read_model_readiness(conn, repository_id)
     column = _RUN_SORT_COLUMNS.get(sort)
     if column is None:
         raise InvalidSortError(f"unsupported run sort {sort!r}")
@@ -294,7 +341,12 @@ def cross_repository_runs(conn: sqlite3.Connection, *, limit: int = 50, offset: 
         for (run_id, engine, reviewer, outcome_, inconsistent, last_event_id, started_at, finished_at,
              repo_id, path) in rows
     ]
-    return _paginate(items, limit=limit, offset=offset, total=total)
+    result = _paginate(items, limit=limit, offset=offset, total=total)
+    if readiness is not None:
+        result.update(readiness)
+    elif repository_id is None:
+        result["projectionState"] = projection_state_summary(conn)
+    return result
 
 
 def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, offset: int = 0,
@@ -302,6 +354,7 @@ def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, of
                                 group_by: str = "execution", sort: str = "executionId",
                                 direction: str = "asc") -> dict:
     check_offset_cap(offset, cap=NEW_ROUTE_OFFSET_CAP)
+    readiness = check_read_model_readiness(conn, repository_id)
     if group_by not in ("execution", "issue"):
         raise InvalidFilterError(f"unsupported groupBy {group_by!r}")
 
@@ -317,6 +370,13 @@ def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, of
         "FROM execution_views ev " + _current_generation_join("execution_views", "ev") +
         f" WHERE {' AND '.join(where)}"
     )
+
+    def _attach_readiness(result: dict) -> dict:
+        if readiness is not None:
+            result.update(readiness)
+        elif repository_id is None:
+            result["projectionState"] = projection_state_summary(conn)
+        return result
 
     if group_by == "execution":
         column = _EXECUTION_SORT_COLUMNS.get(sort)
@@ -337,7 +397,7 @@ def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, of
              "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]}}
             for xid, issue_id, state_, inconsistent, last_event_id, run_id, repo_id, path in rows
         ]
-        return _paginate(items, limit=limit, offset=offset, total=total)
+        return _attach_readiness(_paginate(items, limit=limit, offset=offset, total=total))
 
     # groupBy=issue: paginate ISSUE groups, not a client-page join.
     group_base = (
@@ -362,7 +422,7 @@ def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, of
         for repo_id, _gen_id, issue_id, issue_state, title, path in group_rows
     ]
     if not group_rows:
-        return _paginate(items, limit=limit, offset=offset, total=total)
+        return _attach_readiness(_paginate(items, limit=limit, offset=offset, total=total))
 
     # Two fixed-cost queries covering every group on this page -- never one
     # pair of queries per group -- using a tuple-membership VALUES list
@@ -401,7 +461,7 @@ def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, of
         item["newestExecutions"] = newest_map.get((repo_id, issue_id), [])
         item["executionsTruncated"] = total_executions > _EXECUTION_GROUP_PREVIEW_LIMIT
 
-    return _paginate(items, limit=limit, offset=offset, total=total)
+    return _attach_readiness(_paginate(items, limit=limit, offset=offset, total=total))
 
 
 # --- evidence: cross-repository keyset pagination ---
@@ -525,6 +585,7 @@ def entity_topology(conn: sqlite3.Connection, repo_id: int, entity_type: str, en
     column = _TOPOLOGY_ENTITY_COLUMNS.get(entity_type)
     if column is None:
         raise InvalidFilterError(f"unsupported entityType {entity_type!r}")
+    check_read_model_readiness(conn, repo_id)  # this function always reads execution_views
 
     gen_row = conn.execute(
         "SELECT identity_generation_id FROM checkpoints WHERE repository_id = ?", (repo_id,)
