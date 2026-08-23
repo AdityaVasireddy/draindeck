@@ -12,12 +12,35 @@ real observer subprocess or file-cursor mechanics.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from draindeck_dashboard import indexer, lease
 from draindeck_dashboard import scheduler as scheduler_module
 from draindeck_dashboard.db import connect_and_init
-from draindeck_dashboard.read_models import mark_preparing, mark_rebuilding, read_model_status
+from draindeck_dashboard.read_models import (
+    LeaseLostError,
+    mark_preparing,
+    mark_rebuilding,
+    read_model_status,
+    rebuild_read_models,
+)
 from draindeck_dashboard.repositories import register_repository
+
+
+def _seed_ready_baseline_then_release_lease(conn, repo_id, gen_id):
+    """Establishes a READY baseline via a standalone rebuild under a
+    throwaway owner, then backdates the lease so the real Scheduler
+    started afterward (which uses its own random owner_token) can
+    immediately take over -- without this, the Scheduler's own
+    acquire_or_renew would see an unexpired lease held by a DIFFERENT
+    owner and never become leader (rebuild_read_models now requires the
+    caller to actually hold the lease, this session's merge-blocker fix)."""
+    owner = "setup-owner"
+    lease.acquire_or_renew(conn, owner)
+    rebuild_read_models(conn, repo_id, gen_id, owner)
+    stale = datetime.now(timezone.utc) - timedelta(seconds=lease.TTL_SECONDS + 1)
+    conn.execute("UPDATE indexer_lease SET heartbeat_at = ? WHERE id = 1",
+                (stale.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),))
 
 
 def _register(conn, tmp_path, name="repo"):
@@ -143,8 +166,7 @@ def test_unsafe_mutation_marks_rebuilding_then_rebuild_restores_ready(tmp_path, 
     repo_id = _register(conn, tmp_path)
     gen_id = _seed_generation_and_checkpoint(conn, repo_id)
     _insert_evidence(conn, repo_id, gen_id, 1)
-    from draindeck_dashboard.read_models import rebuild_read_models
-    rebuild_read_models(conn, repo_id, gen_id)  # establish a READY baseline
+    _seed_ready_baseline_then_release_lease(conn, repo_id, gen_id)  # establish a READY baseline
     assert read_model_status(conn, repo_id)["status"] == "READY"
 
     call_count = {"n": 0}
@@ -175,10 +197,10 @@ def test_generation_rollover_reaches_ready_for_the_new_generation(tmp_path, monk
     repo_id = _register(conn, tmp_path)
     old_gen_id = _seed_generation_and_checkpoint(conn, repo_id)
     _insert_evidence(conn, repo_id, old_gen_id, 1)
-    from draindeck_dashboard.read_models import rebuild_read_models
-    rebuild_read_models(conn, repo_id, old_gen_id)
+    _seed_ready_baseline_then_release_lease(conn, repo_id, old_gen_id)
 
     call_count = {"n": 0}
+    old_gen_row_count_during_preparing = {"n": None}
 
     async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
         call_count["n"] += 1
@@ -199,6 +221,16 @@ def test_generation_rollover_reaches_ready_for_the_new_generation(tmp_path, monk
                 (new_gen_id, repo_id_arg),
             )
             return indexer.TickOutcome(status="cursor_replaced_rolled", pages_ingested=0)
+        if call_count["n"] == 2:
+            # Captured right as the second tick starts -- i.e. immediately
+            # after the first (rollover) tick's own rebuild-eligibility
+            # check already ran and found nothing to rebuild yet (PREPARING
+            # with 0 pages doesn't count as caught up). The old generation's
+            # rows must still be intact at this point.
+            old_gen_row_count_during_preparing["n"] = conn.execute(
+                "SELECT COUNT(*) FROM issue_views WHERE repository_id=? AND identity_generation_id=?",
+                (repo_id_arg, old_gen_id),
+            ).fetchone()[0]
         # A subsequent, ordinary tick actually catches the new generation up.
         gen_id = conn.execute(
             "SELECT identity_generation_id FROM checkpoints WHERE repository_id = ?", (repo_id_arg,)
@@ -217,6 +249,66 @@ def test_generation_rollover_reaches_ready_for_the_new_generation(tmp_path, monk
     final = read_model_status(conn, repo_id)
     assert final["status"] == "READY"
     assert final["identityGenerationId"] != old_gen_id
+    # Preserved while PREPARING...
+    assert old_gen_row_count_during_preparing["n"] == 1
+    # ...and pruned only now, after the new generation's own successful
+    # publish (docs/27 SS8.4; this session's merge-blocker fix).
+    remaining_old = conn.execute(
+        "SELECT COUNT(*) FROM issue_views WHERE repository_id=? AND identity_generation_id=?",
+        (repo_id, old_gen_id),
+    ).fetchone()[0]
+    assert remaining_old == 0
+
+
+def test_cancellation_mid_rollover_preserves_the_old_generations_snapshot(tmp_path, monkeypatch):
+    """Cancellation: stopping the scheduler while the new generation is
+    still only PREPARING (its rebuild never got the chance to even be
+    dispatched) must leave the old generation's complete snapshot
+    entirely intact -- nothing here ever touches the old rows until a
+    NEW generation's rebuild actually commits."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo_id = _register(conn, tmp_path)
+    old_gen_id = _seed_generation_and_checkpoint(conn, repo_id)
+    _insert_evidence(conn, repo_id, old_gen_id, 1)
+    _seed_ready_baseline_then_release_lease(conn, repo_id, old_gen_id)
+
+    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
+        new_gen_id = conn.execute(
+            "INSERT INTO identity_generations (repository_id, generation_number, "
+            "content_lineage, file_generation_device, file_generation_file_index, "
+            "file_generation_available, opened_at) VALUES (?, 2, 'lineage2', 1, 1, 1, "
+            "'2026-08-23T00:00:00Z')",
+            (repo_id_arg,),
+        ).lastrowid
+        mark_preparing(conn, repo_id_arg, new_gen_id)
+        conn.execute(
+            "UPDATE checkpoints SET identity_generation_id = ? WHERE repository_id = ?",
+            (new_gen_id, repo_id_arg),
+        )
+        # No evidence inserted -- pages_ingested=0, so _maybe_rebuild's own
+        # "caught_up" check is false and it never even attempts a rebuild
+        # this tick, matching a real rollover tick's own shape exactly.
+        return indexer.TickOutcome(status="cursor_replaced_rolled", pages_ingested=0)
+
+    monkeypatch.setattr(scheduler_module, "ingest_repository_tick", fake_tick)
+    monkeypatch.setattr(scheduler_module, "NORMAL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(lease, "HEARTBEAT_SECONDS", 0.01)
+
+    async def run():
+        s = scheduler_module.Scheduler(conn, "exe")
+        s.start()
+        await asyncio.sleep(0.03)
+        await s.stop()  # cancels the repo task mid-flight
+
+    asyncio.run(run())
+
+    status = read_model_status(conn, repo_id)
+    assert status["status"] == "PREPARING"  # the new generation never reached READY
+    remaining_old = conn.execute(
+        "SELECT COUNT(*) FROM issue_views WHERE repository_id=? AND identity_generation_id=?",
+        (repo_id, old_gen_id),
+    ).fetchone()[0]
+    assert remaining_old == 1  # untouched
 
 
 def test_preparing_status_visible_immediately_before_any_rebuild_completes(tmp_path, monkeypatch):
@@ -255,8 +347,7 @@ def test_rebuilding_status_serves_the_last_complete_snapshot_labelled_stale(tmp_
     repo_id = _register(conn, tmp_path)
     gen_id = _seed_generation_and_checkpoint(conn, repo_id)
     _insert_evidence(conn, repo_id, gen_id, 1)
-    from draindeck_dashboard.read_models import rebuild_read_models
-    rebuild_read_models(conn, repo_id, gen_id)
+    _seed_ready_baseline_then_release_lease(conn, repo_id, gen_id)
     ready_status = read_model_status(conn, repo_id)
 
     mark_rebuilding(conn, repo_id)
@@ -273,11 +364,11 @@ def test_rebuild_failure_marks_failed_and_is_retried_on_a_later_tick(tmp_path, m
     call_count = {"n": 0}
     real_rebuild = scheduler_module.rebuild_read_models
 
-    def flaky_rebuild(conn_arg, repo_id_arg, gen_id_arg):
+    def flaky_rebuild(conn_arg, repo_id_arg, gen_id_arg, owner_token_arg):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("simulated rebuild crash")
-        return real_rebuild(conn_arg, repo_id_arg, gen_id_arg)
+        return real_rebuild(conn_arg, repo_id_arg, gen_id_arg, owner_token_arg)
 
     async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
         if call_count["n"] == 0:
@@ -298,44 +389,125 @@ def test_rebuild_failure_marks_failed_and_is_retried_on_a_later_tick(tmp_path, m
     assert call_count["n"] >= 2  # the first (failed) attempt, plus at least one retry
 
 
-def test_lease_loss_mid_rebuild_leaves_the_database_in_a_consistent_state(tmp_path, monkeypatch):
-    """A rebuild job already dispatched to the worker thread runs to
-    completion even if the awaiting task is cancelled by a lease-loss
-    stop() (asyncio cancellation cannot interrupt synchronous SQL already
-    executing on a separate thread) -- rebuild_read_models' own atomic
-    BEGIN IMMEDIATE/COMMIT means this is safe by construction: either the
-    full rebuild committed, or it didn't, never a torn intermediate state."""
+def test_lease_loss_rejects_publication_instead_of_permitting_it(tmp_path, monkeypatch):
+    """Merge-blocker regression (replaces a prior test that only asserted
+    generic internal consistency -- weak enough to still pass even if
+    lease loss silently permitted publication, which it did before this
+    session's fix). This test asserts the actual required property: once
+    the lease is no longer held by the candidate rebuild's owner_token,
+    NOTHING is published -- no READY status, no view rows -- regardless
+    of how much candidate work had already been computed.
+
+    Simulated deterministically (single-threaded, no real second process
+    needed): `rebuild_read_models`'s own pre-publication ownership
+    re-check is exercised for real, against a lease row that a fake
+    `ingest_repository_tick` mutates to a DIFFERENT owner partway through
+    the scheduler's normal tick/rebuild cycle -- by the time the
+    scheduler's dispatched rebuild reaches its pre-publication check, the
+    lease it re-reads genuinely no longer matches its own owner_token."""
     conn = connect_and_init(tmp_path / "dash.sqlite3")
     repo_id = _register(conn, tmp_path)
+    call_count = {"n": 0}
 
     async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] > 1:
+            # Once the lease is gone, _lease_loop's own next heartbeat
+            # check stops this process's repo tasks -- but if a second
+            # tick manages to slip in first, it must stay a harmless no-op
+            # rather than re-seeding a duplicate generation/checkpoint.
+            return indexer.TickOutcome(status="ok", pages_ingested=0)
         gen_id = _seed_generation_and_checkpoint(conn, repo_id_arg)
         mark_preparing(conn, repo_id_arg, gen_id)
         _insert_evidence(conn, repo_id_arg, gen_id, 1)
+        # Simulates a competing process winning the lease in the window
+        # between this tick's own lease renewal and the rebuild job the
+        # scheduler is about to dispatch -- a real cross-process takeover
+        # would only succeed once this process's heartbeat goes stale, so
+        # backdate it to make the takeover itself legitimate, not just the
+        # owner_token swap.
+        stale = datetime.now(timezone.utc) - timedelta(seconds=lease.TTL_SECONDS + 1)
+        conn.execute(
+            "UPDATE indexer_lease SET owner_token = 'competing-process', heartbeat_at = ? "
+            "WHERE id = 1", (stale.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),),
+        )
+        lease.acquire_or_renew(conn, "competing-process")
         return indexer.TickOutcome(status="ok", pages_ingested=1)
 
     monkeypatch.setattr(scheduler_module, "ingest_repository_tick", fake_tick)
     monkeypatch.setattr(scheduler_module, "NORMAL_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(lease, "HEARTBEAT_SECONDS", 0.01)
 
+    mark_failed_calls = []
+    real_mark_failed = scheduler_module.mark_failed
+
+    def spy_mark_failed(conn_arg, repo_id_arg, gen_id_arg, error_code_arg):
+        mark_failed_calls.append(error_code_arg)
+        return real_mark_failed(conn_arg, repo_id_arg, gen_id_arg, error_code_arg)
+
+    monkeypatch.setattr(scheduler_module, "mark_failed", spy_mark_failed)
+
     async def run():
         s = scheduler_module.Scheduler(conn, "exe")
         s.start()
-        await asyncio.sleep(0.03)  # let the tick + rebuild dispatch, but stop almost immediately
-        await s.stop()  # cancels the repo task while a rebuild job may still be in flight
+        await asyncio.sleep(0.05)  # let the tick run, the lease get stolen, and the rebuild attempt
+        await s.stop()
 
     asyncio.run(run())
 
-    # Whatever state resulted, it must be internally consistent -- never a
-    # status of READY with a NULL completed_evidence_id, or vice versa.
+    # The core property: lease loss must never permit publication.
     status = read_model_status(conn, repo_id)
-    if status is not None and status["status"] == "READY":
-        assert status["completedEvidenceId"] is not None
-    # And the view tables themselves must never be left half-written --
-    # rebuild_read_models' DELETE+re-INSERT is one atomic transaction, so
-    # either the issue exists with real state or the whole rebuild never
-    # committed at all.
+    assert status is None or status["status"] != "READY"
     row = conn.execute(
-        "SELECT state FROM issue_views WHERE repository_id = ? AND issue_id = '42'", (repo_id,)
+        "SELECT 1 FROM issue_views WHERE repository_id = ? AND issue_id = '42'", (repo_id,)
     ).fetchone()
-    assert row is None or row[0] is not None
+    assert row is None  # the candidate rebuild's view rows were never published
+
+    # And lease loss must never trigger a mark_failed() write either --
+    # that write would be exactly as illegitimate post-loss as publishing
+    # the rebuild itself; the new lease holder owns this repository now.
+    assert mark_failed_calls == []
+
+
+def test_rebuild_read_models_rejects_publication_when_lease_changes_before_publish(tmp_path, monkeypatch):
+    """Unit-level proof of the mechanism itself (docs/27 SS8.4, this
+    session's merge-blocker fix): `rebuild_read_models`'s own
+    pre-publication re-check, exercised directly rather than through the
+    scheduler, must raise LeaseLostError and publish nothing when the
+    lease no longer matches `owner_token` by the time it re-checks --
+    even though the pre-check at the very start of the call passed."""
+    import draindeck_dashboard.read_models as read_models_module
+
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo_id = _register(conn, tmp_path)
+    gen_id = _seed_generation_and_checkpoint(conn, repo_id)
+    _insert_evidence(conn, repo_id, gen_id, 1)
+    lease.acquire_or_renew(conn, "original-owner")
+
+    real_fetch = read_models_module.fetch_ok_evidence_rows
+
+    def fetch_then_steal_lease(conn_arg, repo_id_arg, gen_id_arg):
+        rows = real_fetch(conn_arg, repo_id_arg, gen_id_arg)
+        # Simulates the lease already having been taken over by another
+        # process before this rebuild's BEGIN IMMEDIATE acquired SQLite's
+        # exclusive write lock (the only window a real takeover could
+        # happen in -- see rebuild_read_models' own docstring).
+        conn_arg.execute(
+            "UPDATE indexer_lease SET owner_token = 'other-owner' WHERE id = 1"
+        )
+        return rows
+
+    monkeypatch.setattr(read_models_module, "fetch_ok_evidence_rows", fetch_then_steal_lease)
+
+    try:
+        rebuild_read_models(conn, repo_id, gen_id, "original-owner")
+        assert False, "expected LeaseLostError"
+    except LeaseLostError:
+        pass
+
+    status = read_model_status(conn, repo_id)
+    assert status is None or status["status"] != "READY"
+    row = conn.execute(
+        "SELECT 1 FROM issue_views WHERE repository_id = ? AND issue_id = '42'", (repo_id,)
+    ).fetchone()
+    assert row is None

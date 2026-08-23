@@ -34,6 +34,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
+from . import lease
 from .projections import (
     ContainmentGenView,
     ExecutionView,
@@ -44,8 +45,27 @@ from .projections import (
     fetch_ok_evidence_rows,
 )
 
+
+class LeaseLostError(Exception):
+    """Raised by ``rebuild_read_models`` when ``owner_token`` no longer
+    holds the indexer lease -- either before the candidate rebuild starts
+    (a cheap early exit) or, decisively, immediately before atomic
+    publication. The candidate is always discarded (transaction rolled
+    back, if one was open); nothing is ever published or left partially
+    written after lease loss."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _require_owned_lease(conn: sqlite3.Connection, owner_token: str, *, when: str) -> None:
+    state = lease.read_state(conn)
+    if state.status != "held" or state.owner_token != owner_token:
+        raise LeaseLostError(
+            f"lease not held by {owner_token!r} {when} (status={state.status!r}, "
+            f"actual_owner={state.owner_token!r})"
+        )
 
 
 def read_model_status(conn: sqlite3.Connection, repo_id: int) -> Optional[dict]:
@@ -209,15 +229,44 @@ def mark_failed(conn: sqlite3.Connection, repo_id: int, identity_generation_id: 
         conn.execute("COMMIT")
 
 
-def rebuild_read_models(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int) -> None:
+def rebuild_read_models(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int,
+                        owner_token: str) -> None:
     """Full-generation candidate rebuild: recompute every entity from its
     OK evidence and atomically replace this generation's view rows in one
-    transaction. Idempotent -- safe to call repeatedly/on retry."""
+    transaction. Idempotent -- safe to call repeatedly/on retry.
+
+    Lease-owned (ADR-27 decision 8; this session's merge-blocker review):
+    ``owner_token`` must hold the indexer lease both before the candidate
+    is computed AND immediately before it is published, or the whole
+    candidate is discarded (``LeaseLostError``, transaction rolled back if
+    one was open) -- this process must never publish READY or replace
+    view rows once another process has taken over the lease. The second
+    check runs AFTER ``BEGIN IMMEDIATE`` has acquired SQLite's exclusive
+    write lock, so it is linearizable against any competing takeover: a
+    competitor's own lease-acquire UPDATE cannot execute concurrently
+    with this transaction (SQLite serializes writers on one file), so if
+    the second check still sees this ``owner_token``, no takeover can
+    have happened, or ever will, before this transaction commits.
+
+    Pruning any OTHER (older) generation's now-obsolete view rows happens
+    INSIDE this same transaction, only after the new generation's own
+    rows have been published -- so a reader can only ever see the old
+    generation's complete snapshot destroyed at the exact moment the new
+    one's complete snapshot replaces it, never before. A failed rebuild,
+    a lease-loss abort, or a cancelled-but-uncommitted attempt all roll
+    the whole transaction back, leaving the OLD generation's view rows
+    exactly as they were."""
+    _require_owned_lease(conn, owner_token, when="before candidate rebuild")
+
     started_at = _now()
     conn.execute("BEGIN IMMEDIATE")
     try:
         rows = fetch_ok_evidence_rows(conn, repo_id, identity_generation_id)
         result = apply_ok_evidence_rows(rows)
+
+        # Decisive check: immediately before atomic publication, while
+        # still holding the write lock BEGIN IMMEDIATE acquired above.
+        _require_owned_lease(conn, owner_token, when="immediately before publication")
 
         conn.execute(
             "DELETE FROM issue_views WHERE repository_id = ? AND identity_generation_id = ?",
@@ -249,6 +298,11 @@ def rebuild_read_models(conn: sqlite3.Connection, repo_id: int, identity_generat
             "started_at=excluded.started_at, completed_at=excluded.completed_at, error_code=NULL",
             (repo_id, identity_generation_id, completed_evidence_id, started_at, completed_at),
         )
+
+        # Only now, atomically together with this generation's own
+        # successful publication, may any OTHER generation's now-obsolete
+        # rows be pruned (docs/27 SS8.4; see the docstring above).
+        _prune_old_generation_views_locked(conn, repo_id, identity_generation_id)
     except BaseException:
         conn.execute("ROLLBACK")
         raise
@@ -324,21 +378,34 @@ def apply_changed_entities_locked(conn: sqlite3.Connection, repo_id: int,
     # of defect decision 9 exists to prevent.
 
 
-def prune_old_generation_views(conn: sqlite3.Connection, repo_id: int, keep_generation_id: int) -> None:
-    """Generation rollover (docs/27 SS8.4): delete every view/readiness row
-    for this repository NOT belonging to the current generation. Source
-    evidence/history is never touched."""
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        for table in ("issue_views", "run_views", "execution_views", "containment_views"):
-            conn.execute(
-                f"DELETE FROM {table} WHERE repository_id = ? AND identity_generation_id != ?",
-                (repo_id, keep_generation_id),
-            )
+def _prune_old_generation_views_locked(conn: sqlite3.Connection, repo_id: int,
+                                       keep_generation_id: int) -> None:
+    """Body of `prune_old_generation_views`, without its own transaction --
+    for `rebuild_read_models` to call from inside its own already-open
+    one (docs/27 SS8.4: pruning must happen atomically WITH, and only
+    upon, the new generation's successful READY publish -- never before
+    it, or a still-PREPARING/REBUILDING generation would have destroyed
+    the one complete snapshot a reader could otherwise have been served).
+    Source evidence/history is never touched."""
+    for table in ("issue_views", "run_views", "execution_views", "containment_views"):
         conn.execute(
-            "DELETE FROM read_model_state WHERE repository_id = ? AND identity_generation_id != ?",
+            f"DELETE FROM {table} WHERE repository_id = ? AND identity_generation_id != ?",
             (repo_id, keep_generation_id),
         )
+    conn.execute(
+        "DELETE FROM read_model_state WHERE repository_id = ? AND identity_generation_id != ?",
+        (repo_id, keep_generation_id),
+    )
+
+
+def prune_old_generation_views(conn: sqlite3.Connection, repo_id: int, keep_generation_id: int) -> None:
+    """Standalone entry point (owns its own transaction) for callers that
+    are not already inside one -- e.g. tests. Production pruning happens
+    from inside `rebuild_read_models` itself via the locked variant above,
+    not from this function."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _prune_old_generation_views_locked(conn, repo_id, keep_generation_id)
     except BaseException:
         conn.execute("ROLLBACK")
         raise

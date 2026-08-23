@@ -24,7 +24,7 @@ from . import attention, lease
 from .indexer import ingest_repository_tick
 from .poller import MAX_PAGES_PER_TICK, NORMAL_INTERVAL_SECONDS, next_backoff_seconds
 from .read_model_worker import ReadModelWorker
-from .read_models import mark_failed, read_model_status, rebuild_read_models
+from .read_models import LeaseLostError, mark_failed, read_model_status, rebuild_read_models
 
 # Statuses that must back off even if the checkpoint's last-known
 # availability is stale (docs/19: "transient/unavailable probes retain
@@ -192,8 +192,18 @@ class Scheduler:
             return
         try:
             await self._worker.submit(
-                lambda c, _rid=repo_id, _gid=generation_id: rebuild_read_models(c, _rid, _gid)
+                lambda c, _rid=repo_id, _gid=generation_id, _tok=self._owner_token:
+                    rebuild_read_models(c, _rid, _gid, _tok)
             )
+        except LeaseLostError:
+            # This process is no longer the indexer -- it must not write
+            # ANYTHING further for this repository (mark_failed included:
+            # that write is exactly as illegitimate post-lease-loss as
+            # publishing the rebuild itself would have been). The new
+            # lease holder owns this repository's rebuild lifecycle now;
+            # _lease_loop's own next tick will already have stopped this
+            # process's repo tasks once it observes the loss.
+            pass
         except Exception as exc:
             await self._worker.submit(
                 lambda c, _rid=repo_id, _gid=generation_id, _code=type(exc).__name__:

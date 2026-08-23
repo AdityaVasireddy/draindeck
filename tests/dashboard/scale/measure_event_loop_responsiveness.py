@@ -115,18 +115,25 @@ async def _lease_renewal_probe(worker: ReadModelWorker, conn: sqlite3.Connection
 async def _run_rebuild_scenario(db_path: Path) -> tuple[list[float], list[float], float]:
     lease_conn = connect_and_init(db_path)
     repo_id, gen_id = _seed_single_repo(lease_conn, n_evidence=N_EVIDENCE_SINGLE_REPO)
+    owner_token = "rebuild-scenario-owner"
 
     worker = ReadModelWorker(str(db_path.resolve()))
     worker.start()
+    # Acquire the lease for this scenario's owner_token BEFORE submitting
+    # the rebuild job -- rebuild_read_models now requires the caller to
+    # already hold the lease (this session's merge-blocker fix), and the
+    # renewal probe task below isn't guaranteed to have run its first
+    # iteration yet by the time the rebuild is submitted.
+    await worker.submit(lambda c: lease.acquire_or_renew(c, owner_token), priority=True)
     stop = asyncio.Event()
     gaps_ms: list[float] = []
     lease_latencies_s: list[float] = []
     probe_task = asyncio.create_task(_event_loop_probe(stop, gaps_ms))
     lease_task = asyncio.create_task(
-        _lease_renewal_probe(worker, lease_conn, "rebuild-scenario-owner", stop, lease_latencies_s))
+        _lease_renewal_probe(worker, lease_conn, owner_token, stop, lease_latencies_s))
 
     t0 = time.perf_counter()
-    await worker.submit(lambda c: rebuild_read_models(c, repo_id, gen_id))
+    await worker.submit(lambda c: rebuild_read_models(c, repo_id, gen_id, owner_token))
     rebuild_elapsed = time.perf_counter() - t0
 
     # Let the probes observe a bit more steady-state after the rebuild

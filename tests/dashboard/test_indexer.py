@@ -138,7 +138,10 @@ def test_a_previously_ok_rows_content_changing_marks_read_model_state_rebuilding
         "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
         "VALUES (1, 1, 'lineage', 1, 1, 1, '2026-08-23T00:00:00Z')"
     ).lastrowid
+    from draindeck_dashboard import lease
     from draindeck_dashboard.read_models import rebuild_read_models, read_model_status
+
+    lease.acquire_or_renew(conn, "test-owner")
 
     def _ok_record(cursor, event_id, record_hash, payload_obj):
         import base64
@@ -156,7 +159,7 @@ def test_a_previously_ok_rows_content_changing_marks_read_model_state_rebuilding
     first = indexer._upsert_evidence_and_detect_corrupt(
         conn, 1, gen_id, [_ok_record("c1", 1, "hash-a", {"title": "original"})])
     assert first["unsafe_mutation"] is False
-    rebuild_read_models(conn, 1, gen_id)  # establish a READY baseline snapshot
+    rebuild_read_models(conn, 1, gen_id, "test-owner")  # establish a READY baseline snapshot
     assert read_model_status(conn, 1)["status"] == "READY"
 
     # The SAME cursor's OK content now differs (different hash/payload) --

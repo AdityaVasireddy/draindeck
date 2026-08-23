@@ -25,7 +25,6 @@ from .read_models import (
     apply_changed_entities_locked,
     mark_preparing,
     mark_rebuilding,
-    prune_old_generation_views,
 )
 from .sse import prune_changes
 
@@ -295,12 +294,12 @@ async def _handle_cursor_log_replaced(conn: sqlite3.Connection, repo_id: int,
         return new_generation_id
 
     new_generation_id = await persist(_open_generation_and_checkpoint)
-    # Old-generation view/readiness rows are pruned only after the new
-    # generation's rollover has already committed (docs/27 SS8.4) --
-    # evidence/history is never touched either way. A separate persist()
-    # call, not nested in the transaction above (prune_old_generation_views
-    # owns its own transaction).
-    await persist(lambda c: prune_old_generation_views(c, repo_id, keep_generation_id=new_generation_id))
+    # Old-generation view rows are deliberately NOT pruned here. The new
+    # generation is only PREPARING at this point -- pruning now would
+    # destroy the one complete snapshot a reader could otherwise still be
+    # served (docs/27 SS8.4; this session's merge-blocker review).
+    # Pruning happens later, atomically together with the new generation's
+    # own successful publication, inside rebuild_read_models itself.
     return TickOutcome(status="cursor_replaced_rolled",
                        detail=f"identity replaced; generation {new_generation_id} opened")
 
