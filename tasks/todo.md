@@ -29,38 +29,61 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
 - [x] Existing API/SSE/artifact/security contract tests pass
 - [x] SQLite v1→v2 migration and projection parity pass
 - [x] All new list/search/topology operations are bounded; evidence uses keysets and offsets are capped
-- [ ] Normal TORN→OK repair is incremental; unsafe OK mutation rebuild is lease-owned/off-thread —
-      NOT fully closed: `rebuild_read_models()` (the "unsafe OK mutation" rebuild primitive) is
-      confirmed unreachable from any production code path (Units 15/16). The incremental path's own
-      docstring claims it handles this safely by construction regardless, but this is an unresolved
-      discrepancy against docs/27 SS8.4's specific wording, not adjudicated this session — see Unit
-      16's evidence log entry.
+- [x] Normal TORN→OK repair is incremental; unsafe OK mutation rebuild is lease-owned/off-thread —
+      closed this session: `scheduler._maybe_rebuild` submits `rebuild_read_models` via the
+      lease-owned worker (`self._worker.submit`) on generation rollover/catch-up/unsafe-mutation,
+      preserving atomic BEGIN IMMEDIATE/COMMIT publication and lease-loss protection; see the
+      2026-08-23 evidence log entry.
 - [x] Migration/backfill is concurrent-start safe and does not block the ASGI event loop
-- [ ] Maximum 2,000-record tick persistence runs on the lease-owned worker without event-loop stall —
-      not independently re-instrumented/re-measured this session (Unit 15 measured post-seed query
-      latency, not live event-loop responsiveness during an active backfill tick); see Unit 2's
-      original implementation evidence for its structural basis.
-- [ ] Lease acquire/renew writes use the same off-thread worker with priority scheduling and cannot
-      block the ASGI loop or starve behind page/backfill jobs — same caveat as above, not
-      re-instrumented this session.
+- [x] Maximum 2,000-record tick persistence runs on the lease-owned worker without event-loop stall —
+      measured this session with `tests/dashboard/scale/measure_event_loop_responsiveness.py`
+      Scenario B (4 x 500-row page-persist jobs on a real `ReadModelWorker`, matching indexer.py's
+      real per-page `await persist(...)` shape): job elapsed 12.6-12.8ms, max event-loop probe gap
+      22-26ms (budget 50ms), PASS both runs.
+- [x] Lease acquire/renew writes use the same off-thread worker with priority scheduling and cannot
+      block the ASGI loop or starve behind page/backfill jobs — measured this session with the same
+      script's Scenario A (concurrent 100,000-row `rebuild_read_models` full-generation rebuild, the
+      worst case: one un-chunked BEGIN IMMEDIATE/COMMIT transaction on the worker thread) and
+      Scenario B: max lease-renewal submit-to-complete latency 0.004-0.127s against a 5s budget
+      (half the 10s TTL) and a 2s heartbeat cadence, both runs. Max event-loop gap during the 100k
+      rebuild: 28-39ms (budget 50ms), PASS both runs.
 - [x] Python artifact tests open UTF-8 text/JSON explicitly rather than relying on the Windows default encoding
 - [x] Unregister removes every v2 Dashboard-owned row
 - [x] No raw evidence/payload or unsafe DOM rendering is exposed
-- [ ] Every approved route and non-ideal state is implemented — the `INDEX_PREPARING` staleness
-      state (docs/27 §3.2 decision 9) is a real, confirmed gap: unwired end-to-end (Unit 16).
-- [ ] WCAG 2.2 AA keyboard/unobscured-focus/contrast/resize/reflow/reduced-motion/theme checks pass —
-      keyboard/focus/contrast/theme checks extensively live-verified; resize/reflow at 320/768px and
-      a live reduced-motion/forced-colors toggle were NOT independently verified (tooling limitation,
-      not a known defect beyond the forced-colors CSS bug found and fixed in Unit 16).
+- [x] Every approved route and non-ideal state is implemented — `INDEX_PREPARING`/stale-rebuilding
+      is now wired end-to-end: `check_read_model_readiness`/`projection_state_summary` gate
+      list/detail APIs, the frontend renders the Preparing panel/stale and projection-incomplete
+      banners, and the LEASE_UNCLAIMED 10-second no-startup-flash gate is enforced; see the
+      2026-08-23 evidence log entry.
+- [x] WCAG 2.2 AA keyboard/unobscured-focus/contrast/resize/reflow/reduced-motion/theme checks pass —
+      keyboard/focus/contrast/theme checks extensively live-verified (this session added: tablist
+      roving-tabindex/arrow-key/Home/End on the execution artifact viewer, Item 8; keyboard-only Tab
+      traversal + focus-not-obscured-by-sticky-utility-bar re-verified live). Resize/reflow at
+      320/768px live-verified this session via a local CSP-relaxing reverse-proxy + iframe harness
+      (frame-ancestors 'none' otherwise blocks all iframe-based viewport testing) against the real
+      running app: no horizontal overflow at 320/768/1024/1440px or 200% text resize, table
+      wrappers scroll independently via their own overflow-x:auto. `prefers-reduced-motion` verified
+      by live rule-injection test (base.css's global animation/transition kill rule, forced
+      unconditionally, produced no visual regression) plus code review; `forced-colors: active`
+      verified by code review only (`.chart-bar` System Colors override) — true browser-level
+      forced-colors media-feature emulation was not achievable via available automation tooling this
+      session (DevTools/F12 does not open in this browser-automation context; no CDP Emulation
+      domain access; OS-level high-contrast toggling is out of scope as a system-settings change).
 - [x] Forest/night surface focus, eight-color chart ramps, visible collapsed-nav labels, and WCAG 1.4.13 checks pass
-- [ ] Browser checks pass at 320, 768, 1024, 1440 CSS px and 200% text resize — 1024/1440 verified
-      live repeatedly; 320/768px and 200% text resize NOT independently verified this session (the
-      `resize_window` automation tool does not reliably change the tab's actual viewport in this
-      session, confirmed repeatedly across Units 9-15).
+- [x] Browser checks pass at 320, 768, 1024, 1440 CSS px and 200% text resize — `resize_window`
+      remains unreliable in this session, so this session used a different reliable browser
+      mechanism instead (a local CSP-relaxing reverse-proxy + fixed-width iframe harness, since
+      `frame-ancestors 'none'` otherwise blocks iframe-based viewport testing): all four breakpoints
+      and 200% root-font-size resize verified against the real running app with no horizontal
+      overflow at the `<html>` level; the Issues table's own wrapper correctly scrolls
+      independently via `overflow-x:auto` rather than forcing page-level horizontal scroll.
 - [x] Scale fixture meets documented query/latency budgets
-- [ ] Focus/scroll survive targeted SSE updates — only partially true: `syncList` (built for exactly
-      this) is used by 2 of 7 list pages; the other 5 do a full clear+rebuild on every SSE
-      invalidation (Unit 16 code-quality finding, not fixed this session).
+- [x] Focus/scroll survive targeted SSE updates — closed this session: `app.js`'s `onInvalidate` now
+      calls each page's `refresh` (not `render`), and all 7 list pages use `syncList`; `syncList`
+      also skips repositioning a focused row (`insertBefore` blurs even a pure reposition).
+      Live-verified against the real running app via direct `changes`-table inserts plus
+      DOM-attribute instrumentation: focus, active element, scroll position, and row DOM-node
+      identity all survive a real SSE-triggered refresh; see the 2026-08-23 evidence log entry.
 - [x] Dashboard suite passes (361/361)
 - [x] Combined unit+Dashboard suite passes (921/921)
 - [ ] Independent contract, security, accessibility/visual, and quality reviews close all P0/P1/P2
