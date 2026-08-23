@@ -28,6 +28,7 @@ def _client(tmp_path: Path):
 _NEW_STYLESHEETS = ["tokens.css", "base.css", "shell.css", "components.css"]
 _NEW_JS_MODULES = [
     "app.js", "dom.js", "format.js", "state.js", "components/shell.js", "api.js", "stream.js",
+    "router.js",
 ]
 
 

@@ -5,10 +5,10 @@
 // router and page modules; this module owns only the chrome (docs/27
 // SS9.1) so it is stable across that migration.
 import { initRailExpandToggle, initThemeControl, renderRailNav } from "./components/shell.js";
+import { createRouter } from "./router.js";
 
 function boot() {
   const navList = document.getElementById("rail-nav-list");
-  if (navList) renderRailNav(navList, window.location.pathname);
 
   const themeButton = document.getElementById("theme-toggle");
   if (themeButton) initThemeControl(themeButton);
@@ -16,6 +16,18 @@ function boot() {
   const railExpandToggle = document.getElementById("rail-expand-toggle");
   const rail = document.getElementById("app-rail");
   if (railExpandToggle && rail) initRailExpandToggle(railExpandToggle, rail);
+
+  // Route dispatch is wired now so History API navigation and the rail's
+  // active-state work end-to-end; Units 9-14 replace #page-root's fixed
+  // Part 2 markup with real per-route page modules driven from the same
+  // `match` this callback already receives.
+  createRouter({
+    onNavigate(match, location) {
+      if (navList) renderRailNav(navList, location.pathname);
+      document.title = match ? `${match.name.replace(/-/g, " ")} — Draindeck Dashboard`
+        : "Not found — Draindeck Dashboard";
+    },
+  });
 }
 
 if (document.readyState === "loading") {

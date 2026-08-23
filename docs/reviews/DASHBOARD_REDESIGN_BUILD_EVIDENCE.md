@@ -821,6 +821,54 @@ control" acceptance bullet is deferred with `dom.js`'s `syncList` (Unit 7)
 to whichever Unit 9+ page first uses it against live SSE-driven data,
 since there is no redesigned live-updating screen to probe yet.
 
+### Correction — client-side router.js (2026-08-23, before Unit 9)
+
+**Files:** `static/js/router.js` (new), `static/js/app.js`,
+`tests/dashboard/js/test_router.mjs` (new),
+`tests/dashboard/test_app_shell_contract.py`.
+
+**Gap found and fixed before it could block Unit 9:** `tasks/plan.md`'s
+Unit 6 file list names `static/js/router.js (new)`, but Unit 6's actual
+work (this build evidence log's own Unit 6 entry) only built the
+SERVER-SIDE half -- the explicit FastAPI route allowlist serving
+`index.html` for a direct reload/deep-link. No CLIENT-SIDE History-API
+router existed yet to intercept link clicks for SPA-style navigation or
+to tell a page module which route is active. Building Unit 9's actual
+page content without this would have meant either full page reloads on
+every navigation (defeating docs/27 SS9.2's "same-origin clicks enhance
+through History API") or duplicating ad hoc routing logic per page.
+Fixed now, before Unit 9, rather than silently discovering it mid-page-build.
+
+**Implementation:** `router.js`'s `matchRoute(pathname, routes)` is a
+pure function (Node-tested, 7 tests, all passed on first run) matching
+the exact same 18 approved patterns as `app.py`'s server-side allowlist
+-- a dedicated test asserts every one of those 18 literal example paths
+resolves to a client match, and that the literal `/repositories/new`
+wins over the parameterized `/repositories/:repoId` (same
+registration-order-wins rule as the server side). `createRouter`
+intercepts only a plain same-origin left-click on an `a[href]` (never a
+modified click, a `download` link, or a `target="_blank"` link -- native
+open-in-new-tab/copy-link behavior is preserved), calls
+`history.pushState`, and dispatches to `onNavigate(match, location)` on
+boot, on click-navigation, and on `popstate`. Wired into `app.js`: the
+rail's active-state and `document.title` now update on every navigation;
+`#page-root`'s actual per-route content remains the Part 2 markup until
+Units 9-14 replace it.
+
+**Live verification (real browser):** planted a `window.__navMarker`
+sentinel, clicked the Executions rail link -- URL became `/executions`,
+title updated to `"executions — Draindeck Dashboard"`, the rail's
+`aria-current="page"` moved to the Executions link, and the sentinel
+SURVIVED (proving no full page reload occurred -- a real pushState
+navigation, not a normal link follow). Browser back button correctly
+triggered `popstate` back to `/` with the same no-reload/marker-survives
+proof and zero console errors.
+
+**Commands run:**
+- `node tests/dashboard/js/test_router.mjs` → 7 passed
+- `pytest tests/dashboard -q` → **340 passed**
+- `pytest tests/unit tests/dashboard -q` → **900 passed**, 70.48s, 1 pre-existing warning
+
 ### Unit 9–16
 
 Not started. Add one dated subsection per completed unit; never combine
