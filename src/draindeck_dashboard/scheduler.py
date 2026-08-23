@@ -20,7 +20,7 @@ import sqlite3
 import uuid
 from typing import Optional
 
-from . import lease
+from . import attention, lease
 from .indexer import ingest_repository_tick
 from .poller import NORMAL_INTERVAL_SECONDS, next_backoff_seconds
 from .read_model_worker import ReadModelWorker
@@ -96,14 +96,26 @@ class Scheduler:
                 # exception here must never block the rest of stop().
                 pass
 
+    def _reconcile_system_then_acquire(self, conn: sqlite3.Connection) -> bool:
+        """One worker job: reconcile system (lease) attention conditions
+        from the state observed BEFORE this attempt, then acquire/renew.
+        Reading first means a process that is about to take over a
+        stale/unclaimed lease still gets one accurate reconciliation
+        against the pre-takeover state (docs/27 SS8.5) instead of always
+        observing its own about-to-succeed "held" outcome. The upsert-open
+        step is idempotent, so a losing competitor observing the same
+        transient state is harmless even without a strict single-writer
+        gate here."""
+        attention.reconcile_system_conditions(conn, attention.derive_system_conditions(conn))
+        return lease.acquire_or_renew(conn, self._owner_token)
+
     async def _lease_loop(self) -> None:
         try:
             while True:
                 # Priority lane: a backed-up ordinary (page/backfill) queue
                 # must never delay this heartbeat past the 10s TTL.
                 acquired = await self._worker.submit(
-                    lambda conn: lease.acquire_or_renew(conn, self._owner_token),
-                    priority=True,
+                    self._reconcile_system_then_acquire, priority=True,
                 )
                 if acquired:
                     self._is_leader = True
@@ -164,6 +176,14 @@ class Scheduler:
                         self._conn, repo_id, self._observer_executable, log_path,
                         persist=_persist)
                     needs_backoff = self._tick_needs_backoff(repo_id, outcome)
+                    if outcome.status != "error":
+                        # Reconcile after the tick's own write has
+                        # committed -- a second, separate worker job, not
+                        # nested in the tick's own transaction.
+                        await self._worker.submit(
+                            lambda conn, _rid=repo_id: attention.reconcile_repository_conditions(
+                                conn, _rid, attention.derive_repository_conditions(conn, _rid))
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception:

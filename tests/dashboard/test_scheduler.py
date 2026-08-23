@@ -155,8 +155,12 @@ def test_normal_cadence_and_exponential_backoff(tmp_path, monkeypatch):
     s = scheduler_module.Scheduler(conn, "exe")
 
     async def run():
-        with pytest.raises(asyncio.CancelledError):
-            await s._repo_loop(repo_id, "irrelevant-log-path")
+        s._worker.start()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await s._repo_loop(repo_id, "irrelevant-log-path")
+        finally:
+            await s._worker.stop()
 
     asyncio.run(run())
 
@@ -191,8 +195,12 @@ def test_backoff_resets_to_normal_cadence_once_available_again(tmp_path, monkeyp
     s = scheduler_module.Scheduler(conn, "exe")
 
     async def run():
-        with pytest.raises(asyncio.CancelledError):
-            await s._repo_loop(repo_id, "irrelevant-log-path")
+        s._worker.start()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await s._repo_loop(repo_id, "irrelevant-log-path")
+        finally:
+            await s._worker.stop()
 
     asyncio.run(run())
 
@@ -391,6 +399,38 @@ def test_writes_execute_on_the_worker_thread_not_the_event_loop(tmp_path, monkey
         assert row[0] == 1  # visible via scheduler._conn -- proves the worker's
                              # separate connection committed to the same WAL file
         assert s._worker.is_alive() is False  # clean shutdown
+
+    asyncio.run(run())
+
+
+def test_a_tick_reconciles_attention_conditions(tmp_path, monkeypatch):
+    """Unit 3: after a real tick, scheduler must reconcile attention
+    conditions (via the worker) so a repository's derived condition set
+    actually gets persisted, not just evidence/read models."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo_id = _register(conn, tmp_path)
+
+    async def fake_tick(conn_arg, repo_id_arg, executable, log_path_arg, **kwargs):
+        _set_availability(conn, repo_id_arg, "OFFLINE")
+        return indexer.TickOutcome(status="ok")
+
+    monkeypatch.setattr(scheduler_module, "ingest_repository_tick", fake_tick)
+    monkeypatch.setattr(scheduler_module, "NORMAL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(lease, "HEARTBEAT_SECONDS", 0.01)
+
+    async def run():
+        s = scheduler_module.Scheduler(conn, "exe")
+        s.start()
+        for _ in range(30):
+            await asyncio.sleep(0.02)
+            row = conn.execute(
+                "SELECT kind FROM attention_conditions WHERE repository_id = ? AND resolved_at IS NULL",
+                (repo_id,),
+            ).fetchone()
+            if row is not None:
+                break
+        await s.stop()
+        assert row is not None and row[0] == "REPOSITORY_OFFLINE"
 
     asyncio.run(run())
 

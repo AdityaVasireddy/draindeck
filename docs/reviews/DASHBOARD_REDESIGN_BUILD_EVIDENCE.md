@@ -356,7 +356,96 @@ recomputes rather than one bulk rebuild -- a potential performance gap
 that scale testing should surface and, if real, be addressed by explicitly
 calling `rebuild_read_models` once on first registration instead.
 
-### Unit 3–16
+### Unit 3 — Attention detection history (2026-08-23)
+
+**Files:** `src/draindeck_dashboard/attention.py` (new),
+`src/draindeck_dashboard/scheduler.py`,
+`tests/dashboard/test_attention.py` (new), `tests/dashboard/test_scheduler.py`.
+
+**Test-first:** 24 tests written in new `test_attention.py` (RED:
+`ImportError: cannot import name 'attention'`), 1 new scheduler
+integration test, 2 pre-existing direct-`_repo_loop` tests updated to
+start/stop the worker (a real, necessary contract update -- they drive
+`_repo_loop` directly, bypassing `Scheduler.start()`, and `_repo_loop` now
+genuinely depends on a running worker for its new attention-reconciliation
+step).
+
+**Real spec ambiguity found and resolved, documented rather than
+silently guessed past:** docs/27 SS8.5 says "Only the lease-owning writer
+persists attention changes," but under the CURRENT single-active-leader
+architecture, a continuously-leading process's own lease read is always
+"held" (it just renewed it) -- meaning a naive "derive after acquiring"
+design would make `LEASE_STALE`/`LEASE_UNCLAIMED` effectively
+unreachable in practice (a newly-electing process's own successful
+acquisition always makes its own subsequent read show "held", never the
+stale/unclaimed state it just took over from). Resolved by having
+`Scheduler._reconcile_system_then_acquire` read+derive+reconcile system
+conditions from the lease state observed BEFORE each attempt, then
+call `acquire_or_renew` -- so a takeover is preceded by one accurate
+reconciliation against the real pre-takeover state, and a genuinely fresh
+database observes-then-immediately-resolves `LEASE_UNCLAIMED` on
+consecutive heartbeats (a real, testable, meaningful transition instead of
+dead code). The idempotent upsert-open design makes this safe without a
+strict single-writer gate even if a losing competitor observes the same
+transient state.
+
+**Scoping decision, explicitly deferred (not silently dropped):** the
+`LEASE_UNCLAIMED` "opens as warning only after one full 10-second TTL"
+visibility gate (docs/27 SS6.4, preventing a startup flash) is
+intentionally NOT enforced in `attention.py` -- the condition row opens
+immediately on first detection (so its `first_detected_at` is an accurate
+anchor for that gate), and the actual 10-second suppression is left to
+Unit 4's `/api/attention` query layer, which is the natural owner of
+"what's visible right now" filtering per the plan's own unit boundaries.
+Similarly, `repository_health`-kind SSE invalidations ("repository
+availability/health changes emit repository_health," SS8.5) are not
+emitted by this unit -- they require diffing against a PRIOR observed
+health snapshot, which is more naturally Unit 4's health/overview
+endpoint work than attention.py's condition-derivation job. Both
+deferrals are recorded here so they are not forgotten, not silently
+dropped.
+
+**Implementation:**
+- `attention.py` (new): `Condition` dataclass; `_condition_key` (stable
+  SHA-256 over repository-or-system / generation-or-none / kind /
+  disambiguator) -- containment conditions fold `containment_generation`
+  into the disambiguator so two generations of the same execution never
+  collide into one attention row. `derive_repository_conditions` reads
+  only Dashboard's own persisted checkpoint/corruptions/evidence/
+  issue_views/execution_views/containment_views/run_views rows for the
+  CURRENT generation and returns the closed docs/27 SS6.4 vocabulary
+  exactly (12 repo-scoped kinds); `derive_system_conditions` returns
+  `LEASE_STALE`/`LEASE_UNCLAIMED` (mutually exclusive, from
+  `lease.read_state`). `reconcile_repository_conditions`/
+  `reconcile_system_conditions` upsert-open each derived condition
+  (refreshing `last_detected_at` for an already-open key, or inserting a
+  new row with an incremented `occurrence` if the key was previously
+  resolved and has now recurred) and resolve any previously-open row
+  whose key is no longer present -- generation rollover therefore
+  self-resolves stale generation-scoped conditions with no special-case
+  code, since the freshly-derived current-generation set simply omits the
+  old generation's keys. Exactly one `changes` table `attention`
+  invalidation is recorded per open/resolve transition (never for a mere
+  refresh); system-wide invalidations use the reserved
+  `SYSTEM_CHANGE_REPOSITORY_ID = 0`.
+- `scheduler.py`: `_repo_loop` reconciles repository conditions in a
+  separate worker job right after each non-error tick commits.
+  `_lease_loop` routes `_reconcile_system_then_acquire` through the
+  priority lane (same job as the heartbeat itself, so system reconciliation
+  never falls behind or races the acquire/renew write).
+
+**Commands run:**
+- `pytest tests/dashboard/test_attention.py -q` → 24 passed
+- `pytest tests/dashboard/test_scheduler.py -q` (x3 for flake-check) → 13 passed each run
+- `pytest tests/dashboard -q` → **261 passed**
+- `pytest tests/unit tests/dashboard -q` → **821 passed**, 73.60s, 1 pre-existing warning
+
+**Checkpoint:** attention/scheduler tests green; repeated reconciliation
+is idempotent and does not create duplicate open occurrences (verified
+directly). No `repository_health`/TTL-visibility work remains outstanding
+for Unit 3 itself -- both are explicitly Unit 4 scope per above.
+
+### Unit 4–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.
