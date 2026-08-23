@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
@@ -51,6 +52,13 @@ _PAGE_LIMIT_DEFAULT = 50
 _PAGE_LIMIT_MAX = 200
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _dashboard_version() -> str:
+    try:
+        return _pkg_version("draindeck")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 class _RegisterRepositoryRequest(BaseModel):
@@ -102,6 +110,15 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/api/about")
+    async def about() -> dict:
+        return {
+            "host": cfg.host,
+            "port": cfg.port,
+            "dbPath": cfg.db_path,
+            "version": _dashboard_version(),
+        }
 
     @app.post("/api/repositories", status_code=201)
     async def create_repository(payload: _RegisterRepositoryRequest) -> dict:

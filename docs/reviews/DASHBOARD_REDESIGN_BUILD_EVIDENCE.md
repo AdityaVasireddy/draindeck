@@ -1290,7 +1290,102 @@ change was needed; the direct DOM click confirmed the feature works.
 implemented, tested, and verified live against 843 real evidence records
 including correct keyset pagination in both directions.
 
-### Unit 14–16
+### Unit 14 — About & Safety, exhaustive states, and hardening audit (2026-08-23)
+
+**Files:** `app.py` (new `/api/about` route, `_dashboard_version()` via
+`importlib.metadata`), `static/js/pages/about.js` (new), `static/js/app.js`
+(about route wired into `_PAGE_MODULES`), `static/js/pages/repository-detail.js`
+(dialog focus-return fix), `tests/dashboard/test_app_about_api.py` (new),
+`tests/dashboard/js/test_about_page.mjs` (new, 2 tests),
+`tests/dashboard/test_app_shell_contract.py` (`pages/about.js` added to
+`_NEW_JS_MODULES`).
+
+**Test-first:** `test_app_about_api.py` written and confirmed failing
+(404) before the route existed; 2 Node tests for `buildAboutFacts`
+(correct Host/Port/Database/Version ordering) and the exact
+`MUTATION_BOUNDARY_TEXT` wording (docs/27 SS6.9's quoted string) written
+and confirmed failing (module not found) before `about.js` existed. Both
+passed on first implementation run.
+
+**Implementation:**
+- `/api/about`: returns only what's genuinely config/build-dependent
+  (`host`, `port`, `dbPath`, `version` via `importlib.metadata.version
+  ("draindeck")`, falling back to `"unknown"` rather than raising if the
+  package metadata is ever unavailable). Every other disclosure docs/27
+  SS6.9 requires (loopback-only binding, Host/Origin enforcement,
+  self-only CSP/no framing, update-stream meaning, theme storage, no
+  auth/remote access) is static text owned entirely by `about.js` -- none
+  of it is genuinely a live server fact.
+- `about.js`: renders the mutation-boundary quote verbatim plus the five
+  other disclosure paragraphs, then a `<dl>` of the four live facts,
+  fetched through the same request-coordinator pattern as every other
+  page.
+
+**Exhaustive-states and hardening audit (docs/27 SS14, plan Unit 14):**
+reviewed every page module's empty/error-state coverage (all nine already
+correctly distinguish, e.g., Home/Repositories's "No repositories
+registered" vs. "Repositories registered; no data observed yet." per
+spec SS6.1), sticky-header focus-not-obscured (`scroll-padding-top` /
+`scroll-margin-top`, already correct from Units 7/11), long-path/hash
+overflow (`.text-mono { word-break: break-all }`, `.artifact-viewer
+{ word-break: break-word }`, already correct from Units 9/12), horizontal
+table containment (`.ledger-table-wrapper { overflow-x: auto }`, already
+correct from Unit 9), the connection-status live region (`aria-live=
+"polite"`, only updated on genuine status-change per Unit 8's state
+machine -- no spam), touch target sizes (`.filter-chip` measured live at
+65x28 CSS px, comfortably above the WCAG 2.2 SC 2.5.8 AA 24x24 minimum),
+and reduced-motion/forced-colors coverage (present in `base.css`/
+`tokens.css`/`components.css` since Units 7/13).
+
+**Real gap found and fixed:** the Unregister confirmation dialog
+(`repository-detail.js`) moved focus into itself on open but never
+returned it to the triggering "Unregister repository" button on close
+(Cancel or Escape) -- focus was left to fall back to `<body>` when the
+dialog's backdrop was removed, a real keyboard-navigation regression.
+Fixed by passing the trigger element into `renderUnregisterDialog` and
+restoring focus to it in `close()`, except on a successful delete (where
+the trigger no longer means anything and the outgoing route's own
+focus-on-navigate correctly takes over). This is DOM-focus behavior with
+no headless-Node equivalent (same category as `router.js`'s own
+documented Node-test exemption) -- verified live instead.
+
+**Automation-tool artifact caught and re-verified, not an app bug:** a
+first live check of the focus-return fix (single combined script:
+open dialog, click Cancel, read `document.activeElement`, all in one
+`javascript_exec` call) showed focus landing on `<body>`, appearing to
+contradict the fix. Splitting the same sequence across two separate
+`javascript_exec` calls (open in one, Cancel + assertion in the next)
+reproduced cleanly and correctly: `document.activeElement === triggerEl`
+on both the Cancel and Escape paths. Treated as the same class of
+automation-tool timing artifact already logged in Units 9/11/13, not a
+regression -- the isolated, more careful reproduction is the trustworthy
+result. A resize-window check at 1024 CSS px also produced one
+apparently-clipped screenshot frame that DOM measurement
+(`scrollWidth === clientWidth` at every ancestor level, `white-space:
+normal` on the paragraphs) immediately proved was a stale capture frame,
+not a reflow bug -- logged here as a reminder to cross-check any
+suspicious screenshot against a DOM measurement before treating it as a
+finding.
+
+**Scope note:** pixel-exact 320/768/1024/1440 browser acceptance with
+screenshots is explicitly Unit 15's plan item ("Run browser acceptance at
+320/768/1024/1440..."), not Unit 14's ("exhaustive states, and responsive
+hardening" -- an audit/implementation pass). The `resize_window` tool's
+inability to reliably change the tab's actual viewport in this session
+(previously logged) still applies and is carried to Unit 15 unchanged.
+
+**Commands run:**
+- `node tests/dashboard/js/test_about_page.mjs` → passed
+- `pytest tests/dashboard -q` → **350 passed**
+- `pytest tests/unit tests/dashboard -q` → **910 passed**, 69.01s, 1 pre-existing warning
+
+**Checkpoint:** About & Safety is implemented and live-verified against
+the real running config (host/port/db path/version), every existing
+page's non-ideal states were audited and confirmed correct, and the one
+real gap found (dialog focus-return) is fixed and live-verified on both
+the Cancel and Escape paths.
+
+### Unit 15–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

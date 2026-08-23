@@ -19,7 +19,7 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
 - [x] Unit 11 — Runs and Issues explorers/details/timelines/topology
 - [x] Unit 12 — Executions, transcript, and diff workspace
 - [x] Unit 13 — Evidence explorer/detail and visual analytics
-- [ ] Unit 14 — About & Safety, exhaustive states, responsive hardening
+- [x] Unit 14 — About & Safety, exhaustive states, responsive hardening
 - [ ] Unit 15 — Scale, security, full suites, real-browser acceptance
 - [ ] Unit 16 — Independent reviews, remediation, final documentation/handoff
 

@@ -19,6 +19,7 @@ import * as runsPage from "./pages/runs.js";
 import * as issuesPage from "./pages/issues.js";
 import * as executionsPage from "./pages/executions.js";
 import * as evidencePage from "./pages/evidence.js";
+import * as aboutPage from "./pages/about.js";
 
 const _PAGE_MODULES = {
   home: (root, params, ctx) => homePage.render(root, params, ctx),
@@ -38,6 +39,7 @@ const _PAGE_MODULES = {
   evidence: (root, params, ctx) => evidencePage.render(root, params, ctx),
   "repository-evidence": (root, params, ctx) => evidencePage.render(root, params, ctx),
   "evidence-detail": (root, params) => evidencePage.renderDetail(root, params),
+  about: (root, params, ctx) => aboutPage.render(root, params, ctx),
 };
 
 function renderNotYetAvailable(root, routeName) {

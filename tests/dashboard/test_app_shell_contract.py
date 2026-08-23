@@ -31,7 +31,7 @@ _NEW_JS_MODULES = [
     "router.js", "pages/home.js", "pages/repositories.js", "pages/repository-detail.js",
     "pages/attention.js", "components/search.js", "pages/runs.js", "pages/issues.js",
     "components/timeline-topology.js", "pages/executions.js", "pages/evidence.js",
-    "components/chart.js",
+    "components/chart.js", "pages/about.js",
 ]
 
 

@@ -64,7 +64,7 @@ function renderAttentionPanel(root, overview) {
   root.appendChild(list);
 }
 
-function renderUnregisterDialog(root, repoId, repoDisplayName) {
+function renderUnregisterDialog(root, repoId, repoDisplayName, triggerEl) {
   const backdrop = el("div", { className: "dialog-backdrop", role: "presentation" });
   const dialog = el("div", { className: "dialog", role: "alertdialog", "aria-modal": "true",
                             "aria-labelledby": "unregister-dialog-heading" });
@@ -81,20 +81,28 @@ function renderUnregisterDialog(root, repoId, repoDisplayName) {
   document.body.appendChild(backdrop);
   confirmBtn.focus();
 
-  function close() {
+  // Focus must return to whatever opened the dialog on every close path
+  // (cancel, Escape, or a successful delete) -- never left on a removed
+  // node or silently dropped to <body>.
+  function close({ returnFocus = true } = {}) {
     backdrop.remove();
     document.removeEventListener("keydown", onKeydown);
+    if (returnFocus && triggerEl && triggerEl.isConnected) triggerEl.focus();
   }
   function onKeydown(event) {
     if (event.key === "Escape") close();
   }
   document.addEventListener("keydown", onKeydown);
-  cancelBtn.addEventListener("click", close);
+  cancelBtn.addEventListener("click", () => close());
 
   confirmBtn.addEventListener("click", async () => {
     try {
       await apiFetch(`/api/repositories/${repoId}`, { method: "DELETE" });
-      close();
+      // The repository is gone and we're navigating away -- returning
+      // focus to a now-meaningless trigger button would be worse than
+      // leaving it at the removed dialog's position (browsers fall back
+      // to <body>, and the new route's own focus-on-navigate takes over).
+      close({ returnFocus: false });
       window.history.pushState({}, "", "/repositories");
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (err) {
@@ -150,7 +158,7 @@ export async function render(root, params, ctx) {
   const unregisterBtn = el("button", { type: "button", className: "btn btn-destructive" },
     ["Unregister repository"]);
   unregisterBtn.addEventListener("click", () => {
-    renderUnregisterDialog(root, repoId, registration.projectPath);
+    renderUnregisterDialog(root, repoId, registration.projectPath, unregisterBtn);
   });
   unregisterSection.appendChild(unregisterBtn);
   root.appendChild(unregisterSection);
