@@ -30,7 +30,7 @@ _NEW_JS_MODULES = [
     "app.js", "dom.js", "format.js", "state.js", "components/shell.js", "api.js", "stream.js",
     "router.js", "pages/home.js", "pages/repositories.js", "pages/repository-detail.js",
     "pages/attention.js", "components/search.js", "pages/runs.js", "pages/issues.js",
-    "components/timeline-topology.js",
+    "components/timeline-topology.js", "pages/executions.js",
 ]
 
 

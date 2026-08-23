@@ -1151,7 +1151,70 @@ visibility rather than fixed silently.
 inconsistency/relationship data are both honestly and completely
 rendered, verified live against real evidence, not fixtures alone.
 
-### Unit 12–16
+### Unit 12 — Executions, transcript, and diff workspace (2026-08-23)
+
+**Files:** `static/js/pages/executions.js` (new), `static/js/api.js`
+(new `apiFetchText`), `static/js/app.js`, `static/styles/pages.css`,
+`tests/dashboard/js/test_executions_page.mjs` (new),
+`tests/dashboard/js/test_api.mjs` (extended).
+
+**Test-first:** 3 Node tests for `parseGroupBy` (safe fallback to
+`"execution"` on any unrecognized value); 2 new tests for `api.js`'s
+`apiFetchText` (returns raw text on success without attempting JSON
+parse; parses the JSON error envelope on a non-2xx response) added to
+the existing `test_api.mjs`. All passed on first run.
+
+**Real gap identified before it could cause a live bug:** the transcript
+endpoint returns plain text on success but the standard JSON error
+envelope on failure -- `apiFetch` always calls `.json()` and would have
+thrown attempting to parse a transcript body as JSON. Added
+`apiFetchText` (checks `resp.ok` first, only attempts JSON parsing on
+the error path) rather than reusing `apiFetch` and working around the
+mismatch in `executions.js` itself.
+
+**Implementation:**
+- `executions.js`: explorer with a `groupBy=execution|issue` toggle
+  (server-backed via the existing `/api/executions` groupBy support --
+  never a client-side join of one page), pagination-correct issue-group
+  rows showing exact total/by-state counts. Detail page: metadata rail
+  (issue/run/last-event links, nested run metadata handled by the
+  existing API contract), a containment-generation list using the exact
+  `PREPARED`/`ESTABLISHED`/`UNCONFIRMED`/`RELEASED` states, and a
+  `role="tablist"` Transcript/Diff workspace -- both artifacts render as
+  `<pre>` text via `textContent` only (verified live, never markup), no
+  duration is ever displayed (the contract establishes none), and each
+  tab's error/empty state (`ArtifactPathInvalid`/`ArtifactOutsideRoot`/
+  `ArtifactNotFound` for transcript; `DiffInvalidCommit`/`DiffUnavailable`
+  family for diff) surfaces the real backend message rather than a
+  generic failure string.
+
+**Live verification (real browser, against Draindeck's own real
+execution history):** Executions Explorer showed real `ACCEPTED`/
+`CRASHED`/`REJECTED` state chips across dozens of real executions; the
+"By issue" toggle showed real per-issue execution counts with correct
+by-state breakdowns (e.g. "3 total (CRASHED: 2, ACCEPTED: 1)"). Execution
+`1-e1`'s detail page correctly surfaced two REAL legacy-data edge cases
+through the honest error path, not fabricated content: the Transcript
+tab showed the real `ArtifactPathInvalid` message ("stored artifact path
+must be absolute, got 'state\\artifacts\\1-e1\\transcript.jsonl'" -- this
+execution predates the absolute-path requirement), and the Diff tab
+showed the real `git diff exited with a non-zero status` message (this
+execution's stored commit refs are no longer resolvable in Draindeck's
+own evolved git history). Tab switching verified directly: clicking Diff
+correctly set `aria-selected="true"`/`"false"` on the two tabs and
+toggled both panels' `hidden` state. Zero console errors across every
+check.
+
+**Commands run:**
+- `node tests/dashboard/js/test_executions_page.mjs` / `test_api.mjs` → both passed
+- `pytest tests/dashboard -q` → **346 passed**
+- `pytest tests/unit tests/dashboard -q` → **906 passed**, 70.10s, 1 pre-existing warning
+
+**Checkpoint:** every existing artifact/diff error path maps to a
+designed, honest state -- verified live against two REAL legacy-data
+edge cases in Draindeck's own history, not synthesized fixtures.
+
+### Unit 13–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.

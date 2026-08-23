@@ -33,6 +33,31 @@ export async function apiFetch(path, options) {
   return body;
 }
 
+/** For endpoints that return raw text on success (e.g. the transcript
+    endpoint) but the standard {error:{code,message}} JSON envelope on
+    failure -- apiFetch() always parses JSON and would fail on a
+    successful plain-text body. */
+export async function apiFetchText(path, options) {
+  let resp;
+  try {
+    resp = await fetch(path, options);
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    throw new ApiError(`network error: ${e && e.message ? e.message : e}`, { code: "NETWORK_ERROR" });
+  }
+  if (!resp.ok) {
+    let body = null;
+    try {
+      body = await resp.json();
+    } catch (e) {
+      body = null;
+    }
+    const message = (body && body.error && body.error.message) || `request failed (${resp.status})`;
+    throw new ApiError(message, { code: body && body.error && body.error.code, status: resp.status });
+  }
+  return resp.text();
+}
+
 /** Coordinates concurrent fetches keyed by an arbitrary string (usually
     "route:resource"). Starting a new fetch under the same key aborts any
     still-in-flight fetch for that key; a stale response (aborted, or

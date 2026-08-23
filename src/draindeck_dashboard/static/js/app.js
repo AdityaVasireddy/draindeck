@@ -17,6 +17,7 @@ import * as repositoryDetailPage from "./pages/repository-detail.js";
 import * as attentionPage from "./pages/attention.js";
 import * as runsPage from "./pages/runs.js";
 import * as issuesPage from "./pages/issues.js";
+import * as executionsPage from "./pages/executions.js";
 
 const _PAGE_MODULES = {
   home: (root, params, ctx) => homePage.render(root, params, ctx),
@@ -30,6 +31,9 @@ const _PAGE_MODULES = {
   issues: (root, params, ctx) => issuesPage.render(root, params, ctx),
   "repository-issues": (root, params, ctx) => issuesPage.render(root, params, ctx),
   "issue-detail": (root, params) => issuesPage.renderDetail(root, params),
+  executions: (root, params, ctx) => executionsPage.render(root, params, ctx),
+  "repository-executions": (root, params, ctx) => executionsPage.render(root, params, ctx),
+  "execution-detail": (root, params) => executionsPage.renderDetail(root, params),
 };
 
 function renderNotYetAvailable(root, routeName) {

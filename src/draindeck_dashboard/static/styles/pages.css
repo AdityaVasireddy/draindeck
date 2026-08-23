@@ -126,6 +126,42 @@
   gap: var(--space-xxs);
 }
 
+/* --- executions: tabs and artifact viewer --- */
+
+.tab-list {
+  display: flex;
+  gap: var(--space-xs);
+  border-bottom: 1px solid var(--color-divider);
+  margin-bottom: var(--space-sm);
+}
+
+.tab-list [role="tab"] {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-xs) var(--space-sm);
+  cursor: pointer;
+  font: inherit;
+  color: var(--color-text-muted);
+}
+
+.tab-list [role="tab"][aria-selected="true"] {
+  color: var(--color-text-primary);
+  border-bottom-color: var(--color-action-primary-bg);
+  font-weight: 650;
+}
+
+.artifact-viewer {
+  max-height: 32rem;
+  overflow: auto;
+  padding: var(--space-sm);
+  background: var(--color-canvas);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-surface-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* --- register / add form --- */
 
 .register-form {

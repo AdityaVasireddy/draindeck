@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { apiFetch, ApiError, createRequestCoordinator } from
+import { apiFetch, apiFetchText, ApiError, createRequestCoordinator } from
   "../../../src/draindeck_dashboard/static/js/api.js";
 
 let count = 0;
@@ -96,6 +96,25 @@ await asyncTest("coordinator: abortAll suppresses every in-flight key", async ()
   const [r1, r2] = await Promise.all([p1, p2]);
   assert.equal(r1, undefined);
   assert.equal(r2, undefined);
+});
+
+await asyncTest("apiFetchText returns the raw text body on success (never tries to parse JSON)", async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => "line 1\nline 2\n" });
+  const text = await apiFetchText("/api/x/transcript");
+  assert.equal(text, "line 1\nline 2\n");
+});
+
+await asyncTest("apiFetchText parses the JSON error envelope on a non-2xx response", async () => {
+  globalThis.fetch = async () => ({
+    ok: false, status: 404,
+    json: async () => ({ error: { code: "ARTIFACT_NOT_FOUND", message: "artifact not found" } }),
+  });
+  await assert.rejects(apiFetchText("/api/x/transcript"), (err) => {
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.code, "ARTIFACT_NOT_FOUND");
+    assert.equal(err.status, 404);
+    return true;
+  });
 });
 
 console.log(`api.js: ${count} test(s) passed`);
