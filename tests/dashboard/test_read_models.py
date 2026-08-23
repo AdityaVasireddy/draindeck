@@ -261,7 +261,7 @@ def test_mark_rebuilding_is_a_no_op_when_status_is_still_preparing(tmp_path):
 def test_mark_error_records_error_code(tmp_path):
     conn, gen_id = _setup(tmp_path)
     mark_preparing(conn, 1, gen_id)
-    mark_error(conn, 1, gen_id, "REBUILD_CRASHED")
+    mark_error(conn, 1, gen_id, "REBUILD_CRASHED", _OWNER)
     status = read_model_status(conn, 1)
     assert status["status"] == "ERROR"
     assert status["errorCode"] == "REBUILD_CRASHED"
@@ -282,11 +282,35 @@ def test_mark_error_for_a_stale_generation_id_does_not_overwrite_a_newer_ready_s
     _insert_evidence(conn, 1, new_gen_id, 1, "IssueCreated", issue_id="42")
     rebuild_read_models(conn, 1, new_gen_id, _OWNER)  # current generation is READY
 
-    mark_error(conn, 1, gen_id, "REBUILD_CRASHED")  # a stale report for the OLD generation
+    mark_error(conn, 1, gen_id, "REBUILD_CRASHED", _OWNER)  # a stale report for the OLD generation
 
     status = read_model_status(conn, 1)
     assert status["status"] == "READY"
     assert status["identityGenerationId"] == new_gen_id
+
+
+def test_mark_error_rejects_the_write_when_the_lease_is_no_longer_held_by_owner_token(tmp_path):
+    """Security-review regression, this session: a non-LeaseLostError
+    exception racing a real concurrent takeover must not let this
+    process's mark_error overwrite a status the NEW lease holder may
+    already have published for the same generation."""
+    conn, gen_id = _setup(tmp_path)
+    mark_preparing(conn, 1, gen_id)
+    # Directly simulates a different process now holding the lease --
+    # acquire_or_renew's own takeover path requires the prior heartbeat to
+    # already be stale, which isn't the scenario under test here (that
+    # path is covered by the rebuild_read_models lease-loss tests above).
+    conn.execute("UPDATE indexer_lease SET owner_token = 'other-owner' WHERE id = 1")
+
+    try:
+        mark_error(conn, 1, gen_id, "REBUILD_CRASHED", _OWNER)
+        assert False, "expected LeaseLostError"
+    except LeaseLostError:
+        pass
+
+    status = read_model_status(conn, 1)
+    assert status["status"] == "PREPARING"  # untouched by the rejected write
+    assert status["errorCode"] is None
 
 
 def test_apply_changed_entities_incrementally_updates_a_single_issue(tmp_path):

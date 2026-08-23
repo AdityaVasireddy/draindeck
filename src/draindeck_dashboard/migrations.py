@@ -241,6 +241,22 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             if version < SCHEMA_VERSION:
                 _apply_v1_to_v2_ddl(conn)
                 conn.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
+        # One-time idempotent data correction (this session's merge-blocker
+        # security review), not a schema/DDL change so it doesn't need its
+        # own SCHEMA_VERSION bump: an earlier, undocumented deviation wrote
+        # the read_model_state status value 'FAILED' where docs/27 SS8.4's
+        # frozen contract requires 'ERROR'. Runs every startup -- a no-op
+        # once corrected, since the table can no longer contain 'FAILED'
+        # rows after the first successful run. Table always exists by this
+        # point (created unconditionally by _apply_v1_to_v2_ddl above,
+        # whichever branch ran) except on a fresh database whose very
+        # first CREATE just happened in this same transaction -- harmless
+        # either way since IF NOT EXISTS already guarantees the table.
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='read_model_state'"
+        ).fetchone()
+        if table_exists:
+            conn.execute("UPDATE read_model_state SET status = 'ERROR' WHERE status = 'FAILED'")
     except BaseException:
         conn.execute("ROLLBACK")
         raise

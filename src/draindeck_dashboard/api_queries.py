@@ -44,11 +44,20 @@ def check_read_model_readiness(conn: sqlite3.Connection, repository_id: Optional
     snapshot exists but is now known out of date (REBUILDING) -- callers
     serve the existing rows anyway, just labelled. Raises
     `IndexPreparingError` when no complete snapshot exists at all
-    (PREPARING, ERROR, or no read_model_state row yet)."""
+    (PREPARING, ERROR, no read_model_state row yet, or any OTHER,
+    unrecognized status value).
+
+    Deliberately an ALLOWLIST (only READY/REBUILDING pass) rather than a
+    denylist of the known not-ready values -- fails CLOSED on anything
+    unrecognized (security review, this session's merge-blocker round).
+    A denylist previously let a legacy `status='FAILED'` row (the value
+    this exact codebase wrote before the FAILED->ERROR rename, never
+    rewritten in place by any migration) silently fall through as if it
+    were a genuine complete snapshot."""
     if repository_id is None:
         return None
     status = read_model_status(conn, repository_id)
-    if status is None or status["status"] in ("PREPARING", "ERROR"):
+    if status is None or status["status"] not in ("READY", "REBUILDING"):
         raise IndexPreparingError()
     if status["status"] == "REBUILDING":
         return {"stale": True}
@@ -64,11 +73,13 @@ def projection_state_summary(conn: sqlite3.Connection) -> dict:
     # A repository with NO read_model_state row at all (registered, but
     # not yet through its very first tick) is at least as "not ready" as
     # one explicitly marked PREPARING -- the LEFT JOIN catches that case
-    # too, not just an explicit status value.
+    # too, not just an explicit status value. Allowlist (NOT IN
+    # READY/REBUILDING), not a denylist -- same fail-closed reasoning as
+    # check_read_model_readiness's docstring above.
     preparing = [row[0] for row in conn.execute(
         "SELECT r.id FROM repositories r LEFT JOIN read_model_state rms "
         "ON rms.repository_id = r.id "
-        "WHERE rms.repository_id IS NULL OR rms.status IN ('PREPARING', 'ERROR')"
+        "WHERE rms.repository_id IS NULL OR rms.status NOT IN ('READY', 'REBUILDING')"
     ).fetchall()]
     stale = [row[0] for row in conn.execute(
         "SELECT repository_id FROM read_model_state WHERE status = 'REBUILDING'"

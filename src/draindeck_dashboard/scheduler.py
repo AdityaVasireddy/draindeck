@@ -205,10 +205,19 @@ class Scheduler:
             # process's repo tasks once it observes the loss.
             pass
         except Exception as exc:
-            await self._worker.submit(
-                lambda c, _rid=repo_id, _gid=generation_id, _code=type(exc).__name__:
-                    mark_error(c, _rid, _gid, _code)
-            )
+            try:
+                await self._worker.submit(
+                    lambda c, _rid=repo_id, _gid=generation_id, _code=type(exc).__name__,
+                          _tok=self._owner_token:
+                        mark_error(c, _rid, _gid, _code, _tok)
+                )
+            except LeaseLostError:
+                # A non-LeaseLostError exception (exc) raced an actual
+                # concurrent takeover -- mark_error's own lease check
+                # caught it: this process must not overwrite whatever
+                # status the new lease holder may have already published
+                # for this generation (security review, this session).
+                pass
 
     def _tick_needs_backoff(self, repo_id: int, outcome) -> bool:
         if outcome.status in _BACKOFF_STATUSES:

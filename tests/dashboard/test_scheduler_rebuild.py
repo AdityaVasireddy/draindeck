@@ -441,9 +441,9 @@ def test_lease_loss_rejects_publication_instead_of_permitting_it(tmp_path, monke
     mark_error_calls = []
     real_mark_error = scheduler_module.mark_error
 
-    def spy_mark_error(conn_arg, repo_id_arg, gen_id_arg, error_code_arg):
+    def spy_mark_error(conn_arg, repo_id_arg, gen_id_arg, error_code_arg, owner_token_arg):
         mark_error_calls.append(error_code_arg)
-        return real_mark_error(conn_arg, repo_id_arg, gen_id_arg, error_code_arg)
+        return real_mark_error(conn_arg, repo_id_arg, gen_id_arg, error_code_arg, owner_token_arg)
 
     monkeypatch.setattr(scheduler_module, "mark_error", spy_mark_error)
 

@@ -149,6 +149,41 @@ def test_migration_is_idempotent_under_restart(tmp_path):
         conn2.close()
 
 
+def test_legacy_failed_status_rows_are_corrected_to_error_on_migration(tmp_path):
+    """Merge-blocker regression (security review, this session): an
+    earlier, undocumented deviation wrote read_model_state.status='FAILED'
+    where docs/27 SS8.4's frozen contract requires 'ERROR'. No structural
+    DDL change is needed for this table (it already exists), but any
+    row already written with the old value must be corrected on the next
+    startup -- otherwise api_queries.py's fail-closed readiness gate has
+    nothing to protect against a database that already has such a row."""
+    db_path = tmp_path / "d.sqlite3"
+    conn = db.connect_and_init(db_path)
+    conn.execute(
+        "INSERT INTO repositories (project_path, log_path, canonical_log_path, created_at) "
+        "VALUES ('C:/repo', NULL, NULL, '2026-08-23T00:00:00Z')"
+    )
+    gen_id = conn.execute(
+        "INSERT INTO identity_generations (repository_id, generation_number, content_lineage, "
+        "file_generation_device, file_generation_file_index, file_generation_available, opened_at) "
+        "VALUES (1, 1, 'lineage', 1, 1, 1, '2026-08-23T00:00:00Z')"
+    ).lastrowid
+    # Simulates a row a pre-rename version of this codebase actually wrote.
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (1, ?, 'FAILED', NULL, '2026-08-23T00:00:00Z', NULL, 'RuntimeError')",
+        (gen_id,),
+    )
+
+    run_migrations(conn)  # simulates the next process startup, post-rename code
+
+    status = conn.execute(
+        "SELECT status FROM read_model_state WHERE repository_id = 1"
+    ).fetchone()[0]
+    assert status == "ERROR"
+
+
 def test_newer_than_supported_version_is_rejected(tmp_path):
     db_path = tmp_path / "d.sqlite3"
     conn = db.connect(db_path)

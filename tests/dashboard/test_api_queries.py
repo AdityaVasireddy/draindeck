@@ -247,6 +247,39 @@ def test_repository_scoped_executions_query_raises_index_preparing_on_error_stat
         api_queries.cross_repository_executions(conn, limit=50, offset=0, repository_id=repo_id)
 
 
+def test_repository_scoped_query_raises_index_preparing_on_an_unrecognized_status_value(tmp_path):
+    """Merge-blocker regression (security review): the readiness gate must
+    fail CLOSED (allowlist READY/REBUILDING) rather than fail open
+    (denylist PREPARING/ERROR) -- an unrecognized status value, including
+    a legacy 'FAILED' row from before this session's ERROR rename (no
+    data migration rewrites those in place), must never be silently
+    treated as a genuine complete snapshot."""
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'FAILED', NULL, '2026-08-23T00:00:00Z', NULL, 'RuntimeError')",
+        (repo_id, gen_id),
+    )
+    with pytest.raises(IndexPreparingError):
+        api_queries.cross_repository_issues(conn, limit=50, offset=0, repository_id=repo_id)
+
+
+def test_projection_state_summary_treats_an_unrecognized_status_value_as_preparing(tmp_path):
+    conn = _setup(tmp_path)
+    repo_id, gen_id = _repo(conn, "a")
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status, "
+        "completed_evidence_id, started_at, completed_at, error_code) "
+        "VALUES (?, ?, 'FAILED', NULL, '2026-08-23T00:00:00Z', NULL, 'RuntimeError')",
+        (repo_id, gen_id),
+    )
+    result = api_queries.projection_state_summary(conn)
+    assert repo_id in result["preparingRepositoryIds"]
+    assert result["complete"] is False
+
+
 def test_repository_scoped_query_labels_rebuilding_status_stale_and_still_serves_data(tmp_path):
     conn = _setup(tmp_path)
     repo_id, gen_id = _repo(conn, "a")

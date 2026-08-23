@@ -55,7 +55,7 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
       list/detail APIs, the frontend renders the Preparing panel/stale and projection-incomplete
       banners, and the LEASE_UNCLAIMED 10-second no-startup-flash gate is enforced; see the
       2026-08-23 evidence log entry.
-- [x] WCAG 2.2 AA keyboard/unobscured-focus/contrast/resize/reflow/reduced-motion/theme checks pass —
+- [ ] WCAG 2.2 AA keyboard/unobscured-focus/contrast/resize/reflow/reduced-motion/theme checks pass —
       keyboard/focus/contrast/theme checks extensively live-verified (this session added: tablist
       roving-tabindex/arrow-key/Home/End on the execution artifact viewer, Item 8; keyboard-only Tab
       traversal + focus-not-obscured-by-sticky-utility-bar re-verified live). Resize/reflow at
@@ -64,11 +64,20 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
       running app: no horizontal overflow at 320/768/1024/1440px or 200% text resize, table
       wrappers scroll independently via their own overflow-x:auto. `prefers-reduced-motion` verified
       by live rule-injection test (base.css's global animation/transition kill rule, forced
-      unconditionally, produced no visual regression) plus code review; `forced-colors: active`
-      verified by code review only (`.chart-bar` System Colors override) — true browser-level
-      forced-colors media-feature emulation was not achievable via available automation tooling this
-      session (DevTools/F12 does not open in this browser-automation context; no CDP Emulation
-      domain access; OS-level high-contrast toggling is out of scope as a system-settings change).
+      unconditionally, produced no visual regression) plus code review. `forced-colors: active`
+      remains genuinely NOT live-verified, and this checkbox is left open rather than claiming
+      code-review as live acceptance (explicit instruction, this session): real browser/OS-level
+      forced-colors validation was attempted with the user's active cooperation --
+      (1) F12/DevTools would not open in the browser-automation context (tried twice, including
+      click-then-F12 to rule out a focus-routing artifact); (2) the user enabled real Windows High
+      Contrast on their own desktop and confirmed it visible there, but the automated tab still
+      reported `matchMedia('(forced-colors: active)') === false` after a hard reload; (3) the user
+      authorized a full `taskkill chrome.exe` + relaunch so Chrome would pick up the OS theme at
+      startup -- still `false` after relaunch, with no visible remapping in a fresh screenshot. This
+      points to a session/profile boundary between the automated browser surface and the user's
+      visible desktop that no available tool could bridge. The user was asked and explicitly chose
+      to WAIVE this specific sub-check (2026-08-23) rather than continue searching for a mechanism;
+      `.chart-bar`'s System Colors override (components.css) remains verified by code review only.
 - [x] Forest/night surface focus, eight-color chart ramps, visible collapsed-nav labels, and WCAG 1.4.13 checks pass
 - [x] Browser checks pass at 320, 768, 1024, 1440 CSS px and 200% text resize — `resize_window`
       remains unreliable in this session, so this session used a different reliable browser

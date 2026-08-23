@@ -208,7 +208,7 @@ def mark_rebuilding(conn: sqlite3.Connection, repo_id: int) -> None:
 
 
 def mark_error(conn: sqlite3.Connection, repo_id: int, identity_generation_id: int,
-               error_code: str) -> None:
+               error_code: str, owner_token: str) -> None:
     """A rebuild attempt raised -- own transaction (called standalone from
     the scheduler after a worker job fails, never nested in the failed
     rebuild's own already-rolled-back transaction). Never regresses a
@@ -220,9 +220,18 @@ def mark_error(conn: sqlite3.Connection, repo_id: int, identity_generation_id: i
     "Status is `PREPARING|READY|REBUILDING|ERROR`." An earlier,
     undocumented deviation used ``FAILED`` instead; corrected everywhere
     (schema value, this helper's name, callers, tests, evidence) as part
-    of this session's merge-blocker review."""
+    of this session's merge-blocker review.
+
+    Lease-owned like ``rebuild_read_models`` (security review, this
+    session): a non-``LeaseLostError`` exception racing a real concurrent
+    takeover must not let this process overwrite a status the NEW lease
+    holder may have already published for the same generation. Checked
+    once, immediately before the write, while holding ``BEGIN
+    IMMEDIATE``'s exclusive write lock -- the same linearizability
+    argument as ``rebuild_read_models``'s decisive check applies here."""
     conn.execute("BEGIN IMMEDIATE")
     try:
+        _require_owned_lease(conn, owner_token, when="immediately before recording an error status")
         conn.execute(
             "UPDATE read_model_state SET status = 'ERROR', error_code = ? "
             "WHERE repository_id = ? AND identity_generation_id = ?",
@@ -398,6 +407,14 @@ def _prune_old_generation_views_locked(conn: sqlite3.Connection, repo_id: int,
             f"DELETE FROM {table} WHERE repository_id = ? AND identity_generation_id != ?",
             (repo_id, keep_generation_id),
         )
+    # read_model_state has a UNIQUE constraint on repository_id alone (see
+    # the ON CONFLICT(repository_id) upserts in mark_preparing/
+    # rebuild_read_models) -- there is only ever one row per repo, and
+    # when called from rebuild_read_models it was just upserted to
+    # identity_generation_id=keep_generation_id a few lines above, so this
+    # DELETE is a no-op safeguard here, not the real pruning work (that's
+    # the four view tables above). Kept for `prune_old_generation_views`'s
+    # standalone (test-only) callers, where no such prior upsert exists.
     conn.execute(
         "DELETE FROM read_model_state WHERE repository_id = ? AND identity_generation_id != ?",
         (repo_id, keep_generation_id),

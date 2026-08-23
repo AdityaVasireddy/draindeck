@@ -1,6 +1,6 @@
 # Dashboard redesign final validation disposition
 
-**Date:** 2026-08-22  
+**Date:** 2026-08-22<br>
 **Scope:** pre-approval planning artifacts only; no implementation source or tests
 
 ## Result
