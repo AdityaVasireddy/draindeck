@@ -258,10 +258,13 @@ export async function renderDetail(root, params) {
   root.appendChild(el("h2", { className: "text-headline" }, ["Artifacts"]));
   const tabList = el("div", { role: "tablist", "aria-label": "Artifact viewer", className: "tab-list" });
   const transcriptTab = el("button", { type: "button", role: "tab", "aria-selected": "true",
+                                      tabindex: "0",
                                       id: "tab-transcript", "aria-controls": "panel-transcript" },
     ["Transcript"]);
   const diffTab = el("button", { type: "button", role: "tab", "aria-selected": "false",
+                                tabindex: "-1",
                                 id: "tab-diff", "aria-controls": "panel-diff" }, ["Diff"]);
+  const tabs = [transcriptTab, diffTab];
   tabList.append(transcriptTab, diffTab);
   root.appendChild(tabList);
 
@@ -275,11 +278,33 @@ export async function renderDetail(root, params) {
     const showTranscript = tab === "transcript";
     transcriptTab.setAttribute("aria-selected", String(showTranscript));
     diffTab.setAttribute("aria-selected", String(!showTranscript));
+    transcriptTab.tabIndex = showTranscript ? 0 : -1;
+    diffTab.tabIndex = showTranscript ? -1 : 0;
     transcriptPanel.hidden = !showTranscript;
     diffPanel.hidden = showTranscript;
   }
   transcriptTab.addEventListener("click", () => activate("transcript"));
   diffTab.addEventListener("click", () => activate("diff"));
+
+  /** WAI-ARIA APG tablist pattern (automatic activation): Left/Right move
+      focus AND select the adjacent tab, wrapping at the ends; Home/End
+      jump to the first/last tab. Only the selected tab is in the Tab
+      order (roving tabindex, set in `activate`) -- Left/Right/Home/End
+      move focus WITHIN the tablist without another Tab press. */
+  tabList.addEventListener("keydown", (event) => {
+    const currentIndex = tabs.indexOf(document.activeElement);
+    if (currentIndex === -1) return;
+    let nextIndex = null;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    activate(nextTab === transcriptTab ? "transcript" : "diff");
+    nextTab.focus();
+  });
 
   await renderTranscriptTab(transcriptPanel, repoId, executionId);
   await renderDiffTab(diffPanel, repoId, executionId);
