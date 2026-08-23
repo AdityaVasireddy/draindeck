@@ -107,6 +107,25 @@
   margin-top: var(--space-md);
 }
 
+/* --- timeline / topology (Runs, Issues, Executions detail) --- */
+
+.timeline-list li {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.topology-container {
+  margin-bottom: var(--space-md);
+}
+
+.topology-text-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
 /* --- register / add form --- */
 
 .register-form {

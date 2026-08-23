@@ -15,6 +15,8 @@ import * as homePage from "./pages/home.js";
 import * as repositoriesPage from "./pages/repositories.js";
 import * as repositoryDetailPage from "./pages/repository-detail.js";
 import * as attentionPage from "./pages/attention.js";
+import * as runsPage from "./pages/runs.js";
+import * as issuesPage from "./pages/issues.js";
 
 const _PAGE_MODULES = {
   home: (root, params, ctx) => homePage.render(root, params, ctx),
@@ -22,6 +24,12 @@ const _PAGE_MODULES = {
   "repository-add": (root) => repositoriesPage.renderAdd(root),
   "repository-overview": (root, params, ctx) => repositoryDetailPage.render(root, params, ctx),
   attention: (root, params, ctx) => attentionPage.render(root, params, ctx),
+  runs: (root, params, ctx) => runsPage.render(root, params, ctx),
+  "repository-runs": (root, params, ctx) => runsPage.render(root, params, ctx),
+  "run-detail": (root, params) => runsPage.renderDetail(root, params),
+  issues: (root, params, ctx) => issuesPage.render(root, params, ctx),
+  "repository-issues": (root, params, ctx) => issuesPage.render(root, params, ctx),
+  "issue-detail": (root, params) => issuesPage.renderDetail(root, params),
 };
 
 function renderNotYetAvailable(root, routeName) {

@@ -16,7 +16,7 @@ in Unit 0. See `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md` for evidence.
 - [x] Unit 8 — API client, SSE, focus-safe keyed reconciliation
 - [x] Unit 9 — Home, repositories, registration, repository overview
 - [x] Unit 10 — Attention Center and global search
-- [ ] Unit 11 — Runs and Issues explorers/details/timelines/topology
+- [x] Unit 11 — Runs and Issues explorers/details/timelines/topology
 - [ ] Unit 12 — Executions, transcript, and diff workspace
 - [ ] Unit 13 — Evidence explorer/detail and visual analytics
 - [ ] Unit 14 — About & Safety, exhaustive states, responsive hardening

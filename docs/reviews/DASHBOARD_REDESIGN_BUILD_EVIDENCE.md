@@ -1067,7 +1067,91 @@ was then verified multiple further times.
 **Checkpoint:** keyboard-only search-to-detail flow and resolved-attention
 filtering both pass, verified live end-to-end, not just via unit tests.
 
-### Unit 11–16
+### Unit 11 — Runs and Issues workspaces (2026-08-23)
+
+**Files:** `static/js/pages/runs.js`, `issues.js` (both new),
+`static/js/components/timeline-topology.js` (new, shared), `app.js`,
+`static/styles/pages.css`, `tests/dashboard/js/test_timeline_topology.mjs` (new).
+
+**Test-first:** 1 Node test locking `entityUrl`'s kind-to-URL-segment
+mapping (issue/run/execution/evidence, correct pluralization) -- the
+rest of these three modules is DOM-rendering code, browser-verified per
+this build's established pattern for anything requiring live rendering.
+
+**Real bug caught live, fixed immediately, and re-verified clean:**
+`timeline-topology.js`'s `renderTopology` threw `ReferenceError:
+_entityUrl is not defined` on every Issue/Run detail page. Root cause:
+an earlier `replace_all` edit (renaming the private `_entityUrl` helper
+to the now-exported `entityUrl`) only matched the exact string
+`_entityUrl(repoId, edge.source)` -- the second call site,
+`_entityUrl(repoId, edge.target)`, has different arguments and so was a
+different string that the same `replace_all` never touched, leaving a
+dangling reference to a function that no longer existed. Caught within
+seconds of loading the first real Issue Detail page (a live console
+error, not silent), fixed, and re-verified with a genuinely fresh
+navigation + cleared console (the first re-check after the fix still
+showed the old error because the console-message tool accumulates
+messages across calls unless explicitly cleared -- clearing and
+reloading confirmed zero errors). A worthwhile reminder that
+`replace_all` on a specific call-site string, not a bare identifier, can
+silently miss sibling call sites.
+
+**Implementation:**
+- `timeline-topology.js` (shared): `renderTimeline` -- metadata-only rows
+  (event type, linked entity ids, paired absolute/relative timestamp,
+  integrity), never payload text. `renderTopology` -- a text-list
+  equivalent (the primary accessible representation) of the bounded
+  `/api/.../topology` response, with a `truncated` notice linking onward
+  rather than implying completeness; `entityUrl` maps each node kind to
+  its real detail URL.
+- `runs.js`: explorer (Repository/Run/Observed start/Engine/Reviewer/
+  Outcome/Inconsistency/Last event columns, cross-repo or
+  repository-scoped via the same `render()`) and detail (exact
+  "Observed finish: X" / "no controlled finish observed" outcome banner
+  -- never "Active"/"Running"; the full configured budget rendered as a
+  definition list, never a progress bar; related-entity topology;
+  metadata timeline).
+- `issues.js`: explorer (Repository/Issue/Title/State/Inconsistency/Last
+  event) and detail (state chip, exact "No inconsistency observed" /
+  "Inconsistency observed" text, topology, timeline).
+- `app.js`: both cross-repo and repository-scoped route names
+  (`runs`/`repository-runs`, `issues`/`repository-issues`) map to the
+  same explorer render function, which branches on `params.repoId`;
+  `run-detail`/`issue-detail` map to the respective detail renderers.
+
+**Live verification (real browser, against Draindeck's own real event
+log):** Issues Explorer showed real titles/states (`DONE`/`NEEDS_HUMAN`)
+with exact "No inconsistency observed" text; Issue 12's detail page
+rendered a real 12-edge topology (issue -> 2 executions -> their runs and
+8 evidence rows, all correctly linked) and a real chronological timeline
+(`IssueCreated`, `IssueActivated`, `ExecutionSpawned`, `ExecutionFinished`,
+...) with correct relative+absolute timestamps. A Run Detail page for a
+legacy run_id correctly returned "Run not found." -- this log predates
+the RunStarted/RunFinished amendment, so no `run_views` row exists for
+it, and the honest 404 is exactly the doc 03 amendment's intended
+behavior, not a bug. Runs Explorer correctly showed "No runs observed
+yet." for the same reason. Zero console errors on every page after the
+one fix above.
+
+**Minor, non-blocking observation (not fixed, not a spec violation):**
+`shell.js`'s prefix-based `isActiveRoute` highlights "Repositories" (not
+"Runs"/"Issues") for repository-scoped nested detail pages like
+`/repositories/1/runs/{runId}`, since that URL structurally starts with
+`/repositories/`. This is a defensible interpretation (the page IS
+reached via a specific repository) rather than an error; left as-is
+given no explicit spec requirement dictates otherwise, flagged here for
+visibility rather than fixed silently.
+
+**Commands run:**
+- `node tests/dashboard/js/test_timeline_topology.mjs` → passed
+- `pytest tests/dashboard -q` → **345 passed**
+- `pytest tests/unit tests/dashboard -q` → **905 passed**, 71.19s, 1 pre-existing warning
+
+**Checkpoint:** a run with no observed finish and an issue with real
+inconsistency/relationship data are both honestly and completely
+rendered, verified live against real evidence, not fixtures alone.
+
+### Unit 12–16
 
 Not started. Add one dated subsection per completed unit; never combine
 untested partial work with a completed checkpoint.
