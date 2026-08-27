@@ -14,14 +14,17 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done (with evidence).
       `usage`); `apply_ok_evidence_rows` reaches it; `_finish` transition reads
       `outcome`, `usage` is a sibling key; dependency-carveout test present
 
-## Unit 1 — Validation + projection capture (pure)
-- [ ] `validate_dollars` / `validate_tokens` helpers (test-first)
-- [ ] `ExecutionView` gains proxy_micro_usd/cost_valid/input_tokens/
+## Unit 1 — Validation + projection capture (pure) ✅
+- [x] `validate_dollars` / `validate_tokens` helpers (`proxy_cost.py`, test-first)
+- [x] `ExecutionView` gains proxy_micro_usd/cost_valid/input_tokens/
       output_tokens/tokens_valid
-- [ ] Capture only at accepted EXECUTION_FINISHED transition
-- [ ] Tests: validation truth table (bool/neg/non-finite/decimals/zero), tokens,
+- [x] Capture only at accepted EXECUTION_FINISHED transition (`_capture_usage`)
+- [x] Tests: validation truth table (bool/neg/non-finite/decimals/zero), tokens,
       accepted-only capture, duplicate no-overwrite (D1/D2), crash → no cost,
-      independent cost/token coverage
+      independent cost/token coverage — 38 new, dashboard suite 448 passed
+      (410→448), no regressions. Decision: tokens_valid requires BOTH input and
+      output valid (single per-execution token-metered notion, matches the
+      single `tokenMeteredExecutions` count in the API shape).
 
 ## Unit 2 — Migration v2→v3 chain + backfill trigger
 - [ ] `SCHEMA_VERSION = 3`; ordered step chain (fresh/v1/v2/v3)

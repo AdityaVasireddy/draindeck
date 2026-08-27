@@ -28,6 +28,8 @@ from runtime.events.schema import EventType
 from runtime.state.model import ExecutionState, IssueState
 from runtime.state.transitions import EXECUTION_TRANSITIONS, ISSUE_TRANSITIONS
 
+from .proxy_cost import validate_dollars, validate_tokens
+
 _ISSUE_TRANSITION_TYPES = frozenset({
     EventType.ISSUE_ACTIVATED, EventType.ISSUE_COMPLETED, EventType.ISSUE_ESCALATED,
 })
@@ -60,6 +62,15 @@ class ExecutionView:
     last_event_id: Optional[int] = None
     inconsistent: bool = False
     run_id: Optional[str] = None
+    # Proxy cost/tokens captured at the single ACCEPTED ExecutionFinished
+    # transition (spec §2.1). None/False mean "unknown", never zero. A metered
+    # valid zero is proxy_micro_usd=0, cost_valid=True. Cost and token coverage
+    # are independent (spec §2.3).
+    proxy_micro_usd: Optional[int] = None
+    cost_valid: bool = False
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    tokens_valid: bool = False
 
 
 # Dashboard's own message for a run_id with no matching RunStarted evidence
@@ -506,12 +517,39 @@ def _apply_execution_transition(result: ProjectionResult, etype: EventType,
     if fn is None:
         view.inconsistent = True
         return
+    payload = _load_payload(payload_json)
     try:
-        view.state = fn(_load_payload(payload_json)).value
+        view.state = fn(payload).value
     except Exception:
         view.inconsistent = True
         return
     view.last_event_id = event_id
+    # Capture proxy cost/tokens ONLY at the single accepted ExecutionFinished
+    # transition (spec §2.1) -- a duplicate/out-of-order second finish never
+    # reaches here (its (state, EXECUTION_FINISHED) has no transition fn, so it
+    # is flagged inconsistent and returns above), so cost is never
+    # double-counted or overwritten.
+    if etype is EventType.EXECUTION_FINISHED:
+        _capture_usage(view, payload)
+
+
+def _capture_usage(view: ExecutionView, payload: dict) -> None:
+    """Populate the ExecutionView's proxy cost/token fields from an accepted
+    ExecutionFinished payload's ``usage`` object. Cost and token validity are
+    independent (spec §2.3); a missing/malformed ``usage`` leaves both unknown."""
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return
+    micro = validate_dollars(usage.get("dollars"))
+    if micro is not None:
+        view.proxy_micro_usd = micro
+        view.cost_valid = True
+    input_tokens = validate_tokens(usage.get("input_tokens"))
+    output_tokens = validate_tokens(usage.get("output_tokens"))
+    if input_tokens is not None and output_tokens is not None:
+        view.input_tokens = input_tokens
+        view.output_tokens = output_tokens
+        view.tokens_valid = True
 
 
 def _apply_containment_event(result: ProjectionResult, etype: EventType,
