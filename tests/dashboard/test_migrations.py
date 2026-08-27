@@ -80,7 +80,7 @@ def test_fresh_database_lands_directly_at_v2_with_all_new_tables(tmp_path):
     conn = db.connect_and_init(tmp_path / "d.sqlite3")
     try:
         version = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == SCHEMA_VERSION == 2
+        assert version == SCHEMA_VERSION == 3
         for table in (
             "issue_views", "run_views", "execution_views", "containment_views",
             "read_model_state", "attention_conditions",
@@ -118,7 +118,7 @@ def test_v1_database_migrates_to_v2_and_preserves_existing_rows(tmp_path):
     try:
         run_migrations(conn)
         version = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == 2
+        assert version == SCHEMA_VERSION
 
         repos = conn.execute("SELECT project_path FROM repositories").fetchall()
         assert repos == [("C:\\repo",)]
@@ -142,7 +142,7 @@ def test_migration_is_idempotent_under_restart(tmp_path):
     try:
         run_migrations(conn2)  # must not raise on an already-v2 database
         version = conn2.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == 2
+        assert version == SCHEMA_VERSION
         count = conn2.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0]
         assert count == 1
     finally:
@@ -266,7 +266,7 @@ def test_simultaneous_process_start_serializes_and_both_converge_on_v2(tmp_path)
     conn = db.connect(db_path)
     try:
         version = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == 2
+        assert version == SCHEMA_VERSION
         count = conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0]
         assert count == 1
     finally:

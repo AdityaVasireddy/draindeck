@@ -109,13 +109,18 @@ def _write_issue_view(conn, repo_id, gen_id, view: IssueView) -> None:
 def _write_execution_view(conn, repo_id, gen_id, view: ExecutionView) -> None:
     conn.execute(
         "INSERT INTO execution_views (repository_id, identity_generation_id, execution_id, "
-        "issue_id, state, inconsistent, last_event_id, run_id, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "issue_id, state, inconsistent, last_event_id, run_id, proxy_micro_usd, cost_valid, "
+        "input_tokens, output_tokens, tokens_valid, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(repository_id, identity_generation_id, execution_id) DO UPDATE SET "
         "issue_id=excluded.issue_id, state=excluded.state, inconsistent=excluded.inconsistent, "
-        "last_event_id=excluded.last_event_id, run_id=excluded.run_id, updated_at=excluded.updated_at",
+        "last_event_id=excluded.last_event_id, run_id=excluded.run_id, "
+        "proxy_micro_usd=excluded.proxy_micro_usd, cost_valid=excluded.cost_valid, "
+        "input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, "
+        "tokens_valid=excluded.tokens_valid, updated_at=excluded.updated_at",
         (repo_id, gen_id, view.execution_id, view.issue_id, view.state, int(view.inconsistent),
-         view.last_event_id, view.run_id, _now()),
+         view.last_event_id, view.run_id, view.proxy_micro_usd, int(view.cost_valid),
+         view.input_tokens, view.output_tokens, int(view.tokens_valid), _now()),
     )
 
 

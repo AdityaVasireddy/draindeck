@@ -26,13 +26,17 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done (with evidence).
       output valid (single per-execution token-metered notion, matches the
       single `tokenMeteredExecutions` count in the API shape).
 
-## Unit 2 — Migration v2→v3 chain + backfill trigger
-- [ ] `SCHEMA_VERSION = 3`; ordered step chain (fresh/v1/v2/v3)
-- [ ] `_apply_v2_to_v3_ddl`: ALTER execution_views ADD COLUMN ×5
-- [ ] Retain FAILED→ERROR correction; v2→v3 flips READY→REBUILDING (no scan)
-- [ ] `_write_execution_view` + fetch/publish/incremental carry new columns
-- [ ] Tests: fresh→v3, v2→v3 data preserved, concurrent-start, rollback,
-      version>3 refused, READY→REBUILDING flip, defaults/nullability
+## Unit 2 — Migration v2→v3 chain + backfill trigger ✅
+- [x] `SCHEMA_VERSION = 3`; ordered `_MIGRATIONS` step chain (fresh/v1/v2/v3)
+- [x] `_apply_v2_to_v3_ddl`: ALTER execution_views ADD COLUMN ×5
+- [x] Retain FAILED→ERROR correction; v2→v3 flips READY→REBUILDING one-time
+      (no evidence scan); not re-flipped on later v3 restart
+- [x] `_write_execution_view` carries new columns (rebuild + incremental)
+- [x] Tests: fresh→v3, v2→v3 data preserved, concurrent-start, rollback→v2,
+      version>3 refused, READY→REBUILDING flip, defaults/nullability, read-model
+      persistence (11 new). Updated 5 pre-existing version-literal assertions
+      (test_migrations ×4, test_db ×1) to the SCHEMA_VERSION constant. Dashboard
+      suite 448→459, no regressions.
 
 ## Unit 3 — Aggregation query layer
 - [ ] `proxyCost` builder per scope (execution/issue/run/repo/global)

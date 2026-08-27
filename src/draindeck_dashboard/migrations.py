@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# The conceptual version of a fresh database once db.py's ``init_schema`` has
+# created the v1 base tables but before any migration step runs. The runner
+# treats a fresh DB as sitting at this baseline and applies every step above it.
+_BASELINE_VERSION = 1
 
 
 class SchemaVersionError(ValueError):
@@ -213,8 +218,50 @@ def _apply_v1_to_v2_ddl(conn: sqlite3.Connection) -> None:
     )
 
 
+def _apply_v2_to_v3_ddl(conn: sqlite3.Connection) -> None:
+    """v2->v3 (spec `spec/coding-engine-proxy-cost.md` §4): add nullable
+    proxy-cost/token columns to execution_views, and mark existing complete
+    read models for the lease-owned async rebuild so historical cost is
+    backfilled honestly -- WITHOUT scanning evidence at startup.
+
+    Additive only: ``ALTER TABLE ... ADD COLUMN`` never rewrites existing
+    execution_views rows (the new value columns are NULL, the validity flags
+    default 0 = "unknown, never zero"). None/0 is exactly the correct
+    pre-backfill state -- cost stays unknown until a genuine rebuild republishes
+    it. Every step runs inside ``run_migrations``' single BEGIN IMMEDIATE
+    transaction, so a failure here rolls the whole chain back."""
+    conn.execute("ALTER TABLE execution_views ADD COLUMN proxy_micro_usd INTEGER")
+    conn.execute("ALTER TABLE execution_views ADD COLUMN cost_valid INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE execution_views ADD COLUMN input_tokens INTEGER")
+    conn.execute("ALTER TABLE execution_views ADD COLUMN output_tokens INTEGER")
+    conn.execute("ALTER TABLE execution_views ADD COLUMN tokens_valid INTEGER NOT NULL DEFAULT 0")
+
+    # Backfill trigger, NOT an evidence scan (spec §4.3): flip every currently
+    # complete (READY) read model to REBUILDING. The scheduler's existing
+    # _maybe_rebuild treats REBUILDING as urgent and runs a real full-generation
+    # rebuild_read_models on its next tick, populating the new columns from OK
+    # evidence and returning the model to READY (or ERROR on failure). Read
+    # models that were not READY (PREPARING/ERROR/absent) are already scheduled
+    # for rebuild by the existing logic, so they need no flip. This lives inside
+    # the v2->v3 step (not the every-startup section below) so it fires exactly
+    # once, at the moment of migration -- never re-flipping a READY snapshot on
+    # a later restart of an already-v3 database.
+    conn.execute("UPDATE read_model_state SET status = 'REBUILDING' WHERE status = 'READY'")
+
+
+# Ordered migration chain (spec §4.2). Each step (from_version, to_version,
+# apply_fn) is additive and idempotent within its own version gap; the runner
+# applies every step whose to_version exceeds the database's current version, in
+# order, inside one transaction. ``_apply_v1_to_v2_ddl`` is unchanged from the
+# original single-step migration.
+_MIGRATIONS = [
+    (1, 2, _apply_v1_to_v2_ddl),
+    (2, 3, _apply_v2_to_v3_ddl),
+]
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
-    """Idempotent, concurrent-start-safe v1->v2 migration.
+    """Idempotent, concurrent-start-safe ordered v1->v2->v3 migration chain.
 
     ``BEGIN IMMEDIATE`` acquires SQLite's write lock before anything else
     happens; the version SELECT below therefore always sees either "no
@@ -223,24 +270,32 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     SQLite's busy_timeout (db.py) blocks up to 5s and then raises
     ``sqlite3.OperationalError`` (database is locked) -- a clean,
     retryable startup failure, not a second migration path.
+
+    A fresh database (no ``schema_meta`` row) is treated as sitting at
+    ``_BASELINE_VERSION`` (its v1 base tables were just created by
+    ``db.init_schema``) and the whole chain is applied to reach
+    ``SCHEMA_VERSION``. An existing database applies only the steps above its
+    recorded version. A newer-than-supported version is refused. The entire
+    chain commits (or, on any failure, rolls back) as one transaction.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)")
         row = conn.execute("SELECT version FROM schema_meta").fetchone()
-        if row is None:
-            _apply_v1_to_v2_ddl(conn)
+        fresh = row is None
+        version = _BASELINE_VERSION if fresh else row[0]
+        if not fresh and version > SCHEMA_VERSION:
+            raise SchemaVersionError(
+                f"database schema version {version} is newer than "
+                f"supported version {SCHEMA_VERSION}"
+            )
+        for _from_v, to_v, apply_fn in _MIGRATIONS:
+            if version < to_v:
+                apply_fn(conn)
+        if fresh:
             conn.execute("INSERT INTO schema_meta (version) VALUES (?)", (SCHEMA_VERSION,))
-        else:
-            version = row[0]
-            if version > SCHEMA_VERSION:
-                raise SchemaVersionError(
-                    f"database schema version {version} is newer than "
-                    f"supported version {SCHEMA_VERSION}"
-                )
-            if version < SCHEMA_VERSION:
-                _apply_v1_to_v2_ddl(conn)
-                conn.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
+        elif version < SCHEMA_VERSION:
+            conn.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
         # One-time idempotent data correction (this session's merge-blocker
         # security review), not a schema/DDL change so it doesn't need its
         # own SCHEMA_VERSION bump: an earlier, undocumented deviation wrote

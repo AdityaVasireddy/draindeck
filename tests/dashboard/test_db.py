@@ -3,6 +3,7 @@ indexed monotonic change_sequence."""
 from __future__ import annotations
 
 from draindeck_dashboard.db import connect_and_init
+from draindeck_dashboard.migrations import SCHEMA_VERSION
 
 
 def test_wal_mode_and_five_second_busy_timeout(tmp_path):
@@ -48,7 +49,7 @@ def test_init_schema_is_idempotent(tmp_path):
     conn2 = connect_and_init(db_path)  # must not raise on re-init
     try:
         version = conn2.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == 2
+        assert version == SCHEMA_VERSION
         count = conn2.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0]
         assert count == 1
     finally:
