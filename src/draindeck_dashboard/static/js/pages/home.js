@@ -6,7 +6,8 @@ import { apiFetch } from "../api.js";
 import { renderBarChart } from "../components/chart.js";
 import { clear, el, statusChip, syncList, text, timeElement } from "../dom.js";
 import {
-  availabilityLabel, displayName, formatAbsoluteTimestamp, formatRelativeTime, runDisplayOutcome,
+  availabilityLabel, averageCostText, coverageText, displayName, formatAbsoluteTimestamp,
+  formatRelativeTime, proxyCostText, runDisplayOutcome,
 } from "../format.js";
 import { projectionIncompleteBanner } from "../readiness.js";
 
@@ -48,6 +49,19 @@ export function buildHomeViewModel({ overview, repositorySummaries, attention, r
       issuesByState: overview.issues.byState,
       runsByOutcome: overview.runs.byDisplayOutcome,
       evidenceByIntegrity: overview.evidence.byIntegrity,
+    },
+    // Coding-engine proxy cost (spec §5): total, observed average per completed
+    // issue, coverage, and the top-cost issues (chart + accessible table with
+    // stable links). Defaults tolerate an older overview payload with no cost.
+    proxyCost: {
+      total: overview.proxyCost || null,
+      average: overview.averageProxyCostPerCompletedIssue || null,
+      topCostIssues: (overview.topCostIssues || []).map((i) => ({
+        issueId: i.issueId,
+        repositoryId: i.repository ? i.repository.id : null,
+        repositoryDisplayName: i.repository ? i.repository.displayName : null,
+        proxyCost: i.proxyCost,
+      })),
     },
     projectionState: overview.projectionState,
   };
@@ -106,6 +120,67 @@ function renderAnalyticsBand(root, analytics) {
     card.appendChild(el("a", { href: group.url, className: "btn-ghost" }, ["View all"]));
     root.appendChild(card);
   }
+}
+
+function renderProxyCost(root, proxyCost) {
+  clear(root);
+  const total = proxyCost.total;
+  const summary = el("div", { className: "card" });
+  summary.appendChild(el("h3", { className: "text-title" }, ["Total observed proxy cost"]));
+  summary.appendChild(el("p", { className: "text-display" }, [proxyCostText(total)]));
+  summary.appendChild(el("p", { className: "text-muted" }, [
+    total ? coverageText(total) : "No executions observed",
+  ]));
+  if (total && total.completeness === "PARTIAL") {
+    summary.appendChild(statusChip("Partial", "warn"));
+  }
+  summary.appendChild(el("h3", { className: "text-title" }, ["Observed average per completed issue"]));
+  summary.appendChild(el("p", { className: "text-headline" }, [averageCostText(proxyCost.average)]));
+  if (proxyCost.average && proxyCost.average.observed) {
+    summary.appendChild(statusChip("Observed average", "warn"));
+  }
+  root.appendChild(summary);
+
+  // Top-cost issues: chart is supplementary; the table below is the primary
+  // accessible representation with stable per-issue links (DESIGN.md chart rule).
+  const top = proxyCost.topCostIssues;
+  const card = el("div", { className: "card" });
+  card.appendChild(el("h3", { className: "text-title" }, ["Top-cost issues"]));
+  if (!top || top.length === 0) {
+    card.appendChild(el("p", { className: "text-muted" }, ["No observed proxy cost yet."]));
+    root.appendChild(card);
+    return;
+  }
+  const chartContainer = el("div", { className: "analytics-chart" });
+  renderBarChart(chartContainer, {
+    title: "Top-cost issues",
+    entries: top.map((i) => ({
+      label: i.issueId,
+      value: (i.proxyCost && i.proxyCost.observedMicroUsd) || 0,
+    })),
+    basis: "Engine-reported API-list-rate proxy",
+  });
+  card.appendChild(chartContainer);
+
+  const table = el("table", { className: "data-table", "aria-label": "Top-cost issues" });
+  const thead = el("thead", null, [el("tr", null, [
+    el("th", null, ["Issue"]), el("th", null, ["Repository"]),
+    el("th", null, ["Observed proxy cost"]), el("th", null, ["Coverage"]),
+  ])]);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  for (const i of top) {
+    const link = el("a", { href: `/repositories/${i.repositoryId}/issues/${i.issueId}` }, [i.issueId]);
+    tbody.appendChild(el("tr", null, [
+      el("td", null, [link]),
+      el("td", null, [i.repositoryDisplayName || String(i.repositoryId)]),
+      el("td", null, [proxyCostText(i.proxyCost)]),
+      el("td", null, [coverageText(i.proxyCost)]),
+    ]));
+  }
+  table.appendChild(tbody);
+  card.appendChild(table);
+  root.appendChild(card);
 }
 
 function renderRepositoryLedger(listEl, repositories) {
@@ -198,6 +273,14 @@ export async function render(root, params, ctx) {
   }
   root.appendChild(attentionSection);
 
+  const costSection = el("section", { "aria-labelledby": "home-cost-heading" }, [
+    el("h2", { id: "home-cost-heading", className: "text-headline" }, ["Proxy cost"]),
+  ]);
+  const costBand = el("div", { className: "analytics-band", "aria-label": "Proxy cost" });
+  renderProxyCost(costBand, vm.proxyCost);
+  costSection.appendChild(costBand);
+  root.appendChild(costSection);
+
   const analyticsSection = el("section", { "aria-labelledby": "home-analytics-heading" }, [
     el("h2", { id: "home-analytics-heading", className: "text-headline" }, ["Derived from indexed evidence"]),
   ]);
@@ -227,9 +310,11 @@ export async function render(root, params, ctx) {
 export async function refresh(root, params, ctx) {
   const ledgerList = root.querySelector('[aria-label="Repository ledger"]');
   const attentionList = root.querySelector('[aria-label="Current attention"]');
-  const analyticsGrid = root.querySelector(".analytics-band");
+  const costBand = root.querySelector('[aria-label="Proxy cost"]');
+  const analyticsGrid = root.querySelector(".analytics-band:not([aria-label='Proxy cost'])")
+    || root.querySelectorAll(".analytics-band")[1];
   const activityList = root.querySelector('[aria-label="Recent observed activity"]');
-  if (!ledgerList || !attentionList || !analyticsGrid || !activityList) {
+  if (!ledgerList || !attentionList || !costBand || !analyticsGrid || !activityList) {
     await render(root, params, ctx);
     return;
   }
@@ -249,6 +334,7 @@ export async function refresh(root, params, ctx) {
   }
   renderRepositoryLedger(ledgerList, vm.repositories);
   renderAttentionPreview(attentionList, vm.attentionPreview);
+  renderProxyCost(costBand, vm.proxyCost);
   renderAnalyticsBand(analyticsGrid, vm.analytics);
   renderRecentActivity(activityList, vm.recentEvidence);
 }

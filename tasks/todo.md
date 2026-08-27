@@ -65,19 +65,21 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done (with evidence).
       backward-compat (existing fields unchanged; updated 1 exact-dict assertion);
       exclusions asserted — 11 new. Dashboard suite 483→494.
 
-## Unit 5 — Frontend (all placement screens)
-- [ ] `format.js` currency/coverage/completeness helpers
-- [ ] Home: total, avg, coverage, top-cost chart + accessible table + stable links
-- [ ] Repository Overview: total, avg, coverage
-- [ ] Issues list AND Issue Detail: sortable cost, completeness, per-attempt
-      breakdown, visible Partial label, "$X observed" copy
-- [ ] Runs list AND Run Detail: aggregate cost, completeness, coverage
-- [ ] Executions list AND Execution Detail: per-exec cost + validity
-- [ ] About & Safety: "proxy, not invoice" definition + full exclusion list
-      (reviewer / validation / orchestration / subscription / crashed-execution
-      usage + Evidence/Search/Attention)
-- [ ] Tests: JS contracts (formatting, null/partial, chart-has-table, copy,
-      Runs/About content)
+## Unit 5 — Frontend (all placement screens) ✅
+- [x] `format.js` helpers: formatMicroUsd, proxyCostText, isPartialCost,
+      coverageText, averageCostText, PROXY_COST_UNAVAILABLE_TEXT
+- [x] Home: total, observed avg, coverage, top-cost chart + accessible table +
+      stable links (view-model Node-tested)
+- [x] Repository Overview: total, avg, coverage
+- [x] Issues list (cost column + Partial chip + cost-sort toggle) AND Issue
+      Detail (proxy cost + per-execution-attempt breakdown table)
+- [x] Runs list (cost column + Partial chip) AND Run Detail (cost + coverage)
+- [x] Executions list (cost column + Partial chip) AND Execution Detail (cost)
+- [x] About & Safety: "proxy, not invoice" definition + full exclusion list
+      incl. orchestration (Node-tested for all excluded terms)
+- [x] Tests: JS contracts (format 6, home +2, about +2); el() on*-attribute
+      contract respected (addEventListener); node --check on all pages; static
+      contract 17. Combined suite 1055 (560 unit unchanged + 495 dashboard).
 
 ## Unit 6 — Automated suites, docs, scale measurement
 - [ ] Full `tests\unit tests\dashboard -q` green; dependency-carveout green;

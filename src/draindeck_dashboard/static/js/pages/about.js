@@ -25,6 +25,14 @@ export const THEME_TEXT =
 export const NO_AUTH_TEXT =
   "There is no login, no user account, and no remote access support: anyone who can reach 127.0.0.1 on this machine can use this Dashboard.";
 
+// Proxy cost, defined honestly (spec §5): a proxy, never an invoice, with the
+// full exclusion list stated plainly.
+export const PROXY_COST_DEFINITION_TEXT =
+  "Proxy cost is the coding engine's own reported token usage priced at API list rates (basis ENGINE_REPORTED_API_LIST_RATE_PROXY). It is a proxy, not an invoice: it is not a bill, and missing cost is shown as unknown, never as $0.00.";
+
+export const PROXY_COST_EXCLUSIONS_TEXT =
+  "Excluded from proxy cost: reviewer-LLM cost, validation compute, orchestration cost (the Draindeck runtime's own coordinating compute -- the orchestrator loop, Git operations, recovery), subscription fees, and usage from crashed executions that never reported a terminal result. Proxy cost is also not shown on the Evidence, Search, or Attention screens.";
+
 /** Pure: turns the `/api/about` response into an ordered facts list for
     display. */
 export function buildAboutFacts(data) {
@@ -50,6 +58,13 @@ export async function render(root, params, ctx) {
     el("p", null, [NO_AUTH_TEXT]),
   );
   root.appendChild(section);
+
+  const costSection = el("section", { "aria-labelledby": "about-cost-heading" }, [
+    el("h2", { id: "about-cost-heading", className: "text-headline" }, ["Proxy cost"]),
+    el("p", null, [PROXY_COST_DEFINITION_TEXT]),
+    el("p", null, [PROXY_COST_EXCLUSIONS_TEXT]),
+  ]);
+  root.appendChild(costSection);
 
   const factsContainer = el("div");
   root.appendChild(factsContainer);

@@ -5,7 +5,9 @@
 // Dashboard-owned rows -- never the target repository/log/artifacts.
 import { ApiError, apiFetch } from "../api.js";
 import { clear, el, statusChip } from "../dom.js";
-import { availabilityLabel, formatAbsoluteTimestamp } from "../format.js";
+import {
+  availabilityLabel, averageCostText, coverageText, formatAbsoluteTimestamp, proxyCostText,
+} from "../format.js";
 
 const _AVAILABILITY_TONE = { AVAILABLE: "ok", EMPTY: "muted", NOT_INITIALIZED: "warn", OFFLINE: "danger" };
 const _SEVERITY_TONE = { critical: "danger", warning: "warn", information: "muted" };
@@ -159,6 +161,20 @@ export async function render(root, params, ctx) {
   ]);
   renderAttentionPanel(attentionSection, overview);
   root.appendChild(attentionSection);
+
+  // Proxy cost (spec §5): repository total, completed-issue average, coverage.
+  const costSection = el("section", { "aria-label": "Proxy cost" }, [
+    el("h2", { className: "text-headline" }, ["Proxy cost"]),
+    el("dl", { className: "identity-block" }, [
+      el("dt", null, ["Total observed proxy cost"]),
+      el("dd", null, [proxyCostText(overview.proxyCost)]),
+      el("dt", null, ["Coverage"]),
+      el("dd", null, [coverageText(overview.proxyCost)]),
+      el("dt", null, ["Observed average per completed issue"]),
+      el("dd", null, [averageCostText(overview.averageProxyCostPerCompletedIssue)]),
+    ]),
+  ]);
+  root.appendChild(costSection);
 
   const navSection = el("section", { className: "detail-nav" }, [
     el("a", { href: `/repositories/${repoId}/runs`, className: "btn-ghost" }, ["Runs"]),

@@ -5,7 +5,9 @@
 // is ever shown (the contract establishes none).
 import { ApiError, apiFetch, apiFetchText } from "../api.js";
 import { clear, el, syncList } from "../dom.js";
-import { inconsistencyLabel, runMetadataText } from "../format.js";
+import {
+  coverageText, inconsistencyLabel, isPartialCost, proxyCostText, runMetadataText,
+} from "../format.js";
 import {
   isIndexPreparingError, preparingRow, projectionIncompleteBanner, removeReadinessBanner,
   renderPreparingPanel, staleBanner,
@@ -40,9 +42,19 @@ function renderExecutionRows(tbody, items) {
               [execution.issueId])
           : "none"]),
         el("td", null, [el("span", { className: `chip chip--${tone}` }, [execution.state])]),
+        _execCostCell(execution.proxyCost),
         el("td", null, [inconsistencyLabel(execution.inconsistent)]),
       );
-    }, el("td", { colspan: "5" }, ["No executions observed yet."]), "tr");
+    }, el("td", { colspan: "6" }, ["No executions observed yet."]), "tr");
+}
+
+function _execCostCell(proxyCost) {
+  const cell = el("td", null, [proxyCostText(proxyCost)]);
+  if (isPartialCost(proxyCost)) {
+    cell.appendChild(el("span", { className: "chip chip--warn", title: coverageText(proxyCost) },
+      ["Partial"]));
+  }
+  return cell;
 }
 
 function renderIssueGroups(tbody, items) {
@@ -95,7 +107,7 @@ export async function render(root, params, ctx) {
   const isIssueGroup = groupBy === "issue";
   const headerCells = isIssueGroup
     ? ["Repository", "Issue", "Executions", "Newest"]
-    : ["Repository", "Execution", "Issue", "State", "Inconsistency"];
+    : ["Repository", "Execution", "Issue", "State", "Proxy cost", "Inconsistency"];
   const wrapper = el("div", { className: "ledger-table-wrapper" });
   const table = el("table", { className: "ledger-table" }, [
     el("caption", { className: "visually-hidden" }, ["Executions"]),
@@ -245,6 +257,8 @@ export async function renderDetail(root, params) {
       : "none"]),
     el("dt", null, ["Run metadata"]),
     el("dd", null, [runMetadataText(execution.runMetadata)]),
+    el("dt", null, ["Proxy cost"]),
+    el("dd", null, [proxyCostText(execution.proxyCost)]),
     el("dt", null, ["Last event"]),
     el("dd", null, [execution.lastEventId != null ? String(execution.lastEventId) : "none"]),
   ]);

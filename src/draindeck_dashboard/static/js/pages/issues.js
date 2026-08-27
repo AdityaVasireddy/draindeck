@@ -3,7 +3,7 @@
 import { ApiError, apiFetch } from "../api.js";
 import { renderTimeline, renderTopology } from "../components/timeline-topology.js";
 import { clear, el, syncList } from "../dom.js";
-import { inconsistencyLabel } from "../format.js";
+import { coverageText, inconsistencyLabel, isPartialCost, proxyCostText } from "../format.js";
 import {
   isIndexPreparingError, preparingRow, projectionIncompleteBanner, removeReadinessBanner,
   renderPreparingPanel, staleBanner,
@@ -27,17 +27,33 @@ export async function render(root, params, ctx) {
         el("th", { scope: "col" }, ["Issue"]),
         el("th", { scope: "col" }, ["Title"]),
         el("th", { scope: "col" }, ["State"]),
+        el("th", { scope: "col" }, ["Proxy cost"]),
         el("th", { scope: "col" }, ["Inconsistency"]),
         el("th", { scope: "col" }, ["Last event"]),
       ]),
     ]),
     el("tbody"),
   ]);
-  wrapper.appendChild(table);
-  root.appendChild(wrapper);
 
   const repoId = params && params.repoId;
   const tbody = table.querySelector("tbody");
+  const sortByIssue = el("button", { type: "button", className: "btn-ghost" }, ["Issue"]);
+  sortByIssue.addEventListener("click", () => {
+    table.dataset.sort = "issueId";
+    loadIssues(root, wrapper, tbody, repoId, ctx);
+  });
+  const sortByCost = el("button", { type: "button", className: "btn-ghost" }, ["Proxy cost (desc)"]);
+  sortByCost.addEventListener("click", () => {
+    table.dataset.sort = "cost";
+    loadIssues(root, wrapper, tbody, repoId, ctx);
+  });
+  const controls = el("div", { className: "table-controls" }, [
+    el("span", { className: "text-muted" }, ["Sort:"]), sortByIssue, sortByCost,
+  ]);
+  root.appendChild(controls);
+  wrapper.appendChild(table);
+  root.appendChild(wrapper);
+
   await loadIssues(root, wrapper, tbody, repoId, ctx);
 }
 
@@ -45,6 +61,11 @@ function renderRows(tbody, items) {
   syncList(tbody, items, (issue) => `${issue.repository.id}:${issue.issueId}`, (row, issue) => {
     clear(row);
     const tone = _STATE_TONE[issue.state] || "muted";
+    const costCell = el("td", null, [proxyCostText(issue.proxyCost)]);
+    if (isPartialCost(issue.proxyCost)) {
+      costCell.appendChild(el("span", { className: "chip chip--warn", title: coverageText(issue.proxyCost) },
+        ["Partial"]));
+    }
     row.append(
       el("td", null, [issue.repository.displayName]),
       el("th", { scope: "row" }, [
@@ -53,14 +74,19 @@ function renderRows(tbody, items) {
       ]),
       el("td", null, [issue.title || ""]),
       el("td", null, [el("span", { className: `chip chip--${tone}` }, [issue.state])]),
+      costCell,
       el("td", null, [inconsistencyLabel(issue.inconsistent)]),
       el("td", null, [issue.lastEventId != null ? String(issue.lastEventId) : "none"]),
     );
-  }, el("td", { colspan: "6" }, ["No issues observed yet."]), "tr");
+  }, el("td", { colspan: "7" }, ["No issues observed yet."]), "tr");
 }
 
 async function loadIssues(root, wrapper, tbody, repoId, ctx) {
-  const url = repoId ? `/api/issues?repositoryId=${repoId}&limit=100` : "/api/issues?limit=100";
+  const table = tbody.closest("table");
+  const sort = (table && table.dataset.sort) || "issueId";
+  const sortQuery = sort === "cost" ? "&sort=cost&direction=desc" : "";
+  const base = repoId ? `/api/issues?repositoryId=${repoId}&limit=100` : "/api/issues?limit=100";
+  const url = base + sortQuery;
   try {
     const coordinator = ctx && ctx.coordinator;
     const data = coordinator ? await coordinator.fetch("issues:list", url) : await apiFetch(url);
@@ -73,9 +99,9 @@ async function loadIssues(root, wrapper, tbody, repoId, ctx) {
     renderRows(tbody, data.items);
   } catch (err) {
     clear(tbody);
-    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(6));
+    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(7));
     else tbody.appendChild(el("tr", null, [
-      el("td", { colspan: "6", role: "alert" }, [`Could not load issues: ${err.message}`]),
+      el("td", { colspan: "7", role: "alert" }, [`Could not load issues: ${err.message}`]),
     ]));
   }
 }
@@ -119,6 +145,40 @@ export async function renderDetail(root, params) {
     el("span", { className: `chip chip--${tone}` }, [issue.state]),
     ` Issue ${issue.issueId} — ${inconsistencyLabel(issue.inconsistent)}`,
   ]));
+
+  // Proxy cost: issue total + coverage, then a per-execution-attempt breakdown
+  // (spec §5). Every attempt is included -- retries, rejections, failures.
+  root.appendChild(el("h2", { className: "text-headline" }, ["Proxy cost"]));
+  const costLine = el("p", null, [
+    el("span", { className: "text-headline" }, [proxyCostText(issue.proxyCost)]),
+    ` — ${coverageText(issue.proxyCost)}`,
+  ]);
+  if (isPartialCost(issue.proxyCost)) {
+    costLine.appendChild(el("span", { className: "chip chip--warn" }, ["Partial"]));
+  }
+  root.appendChild(costLine);
+  const attempts = issue.executionAttempts || [];
+  if (attempts.length > 0) {
+    const attemptTable = el("table", { className: "data-table", "aria-label": "Per-execution proxy cost" }, [
+      el("thead", null, [el("tr", null, [
+        el("th", { scope: "col" }, ["Execution"]), el("th", { scope: "col" }, ["State"]),
+        el("th", { scope: "col" }, ["Proxy cost"]),
+      ])]),
+    ]);
+    const attemptBody = el("tbody");
+    for (const a of attempts) {
+      attemptBody.appendChild(el("tr", null, [
+        el("th", { scope: "row" }, [
+          el("a", { href: `/repositories/${repoId}/executions/${encodeURIComponent(a.executionId)}` },
+            [a.executionId]),
+        ]),
+        el("td", null, [a.state]),
+        el("td", null, [proxyCostText(a.proxyCost)]),
+      ]));
+    }
+    attemptTable.appendChild(attemptBody);
+    root.appendChild(attemptTable);
+  }
 
   root.appendChild(el("h2", { className: "text-headline" }, ["Related entities"]));
   const topologyContainer = el("div", { className: "topology-container" });

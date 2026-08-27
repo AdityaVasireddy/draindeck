@@ -85,4 +85,35 @@ test("analytics band passes through only the real observed counts, no fabricated
   assert.deepEqual(vm.analytics.evidenceByIntegrity, { OK: 10 });
 });
 
+test("proxyCost view-model carries total/average/topCostIssues with stable links", () => {
+  const vm = buildHomeViewModel({
+    overview: {
+      ...baseOverview,
+      proxyCost: { basis: "ENGINE_REPORTED_API_LIST_RATE_PROXY", observedMicroUsd: 1840000,
+        completeness: "PARTIAL", meteredExecutions: 2, totalExecutions: 3 },
+      averageProxyCostPerCompletedIssue: { observedMicroUsd: 920000, observed: true, completedIssues: 2 },
+      topCostIssues: [
+        { issueId: "42", repository: { id: 1, displayName: "alpha" },
+          proxyCost: { completeness: "COMPLETE", observedMicroUsd: 1840000 } },
+      ],
+    },
+    repositorySummaries: { items: [] }, attention: { items: [], total: 0 },
+    recentEvidence: { items: [] },
+  });
+  assert.equal(vm.proxyCost.total.observedMicroUsd, 1840000);
+  assert.equal(vm.proxyCost.average.observed, true);
+  assert.equal(vm.proxyCost.topCostIssues[0].issueId, "42");
+  assert.equal(vm.proxyCost.topCostIssues[0].repositoryId, 1);
+});
+
+test("proxyCost view-model tolerates an overview payload with no cost keys", () => {
+  const vm = buildHomeViewModel({
+    overview: baseOverview, repositorySummaries: { items: [] },
+    attention: { items: [], total: 0 }, recentEvidence: { items: [] },
+  });
+  assert.equal(vm.proxyCost.total, null);
+  assert.equal(vm.proxyCost.average, null);
+  assert.deepEqual(vm.proxyCost.topCostIssues, []);
+});
+
 console.log(`home.js: ${count} test(s) passed`);

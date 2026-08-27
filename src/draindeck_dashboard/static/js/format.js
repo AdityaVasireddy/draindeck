@@ -97,3 +97,51 @@ export function pageToOffset(page, pageSize) {
 export function offsetToPage(offset, pageSize) {
   return Math.floor(offset / pageSize) + 1;
 }
+
+// --- Proxy cost (spec/coding-engine-proxy-cost.md §5) -----------------------
+// A proxy of engine-reported API-list-rate spend, never an invoice. Missing
+// cost is "Not observed", never "$0.00"; a metered valid $0.00 shows as $0.00.
+
+export const PROXY_COST_UNAVAILABLE_TEXT = "Not observed";
+
+/** Integer micro-USD -> "$1.84" (2dp display), or null. Derived from the
+    integer micro-USD the API already validated, never from a float total. */
+export function formatMicroUsd(micro) {
+  if (micro === null || micro === undefined || typeof micro !== "number") return null;
+  return "$" + (micro / 1000000).toFixed(2);
+}
+
+/** True iff this proxyCost object is a partial observation. */
+export function isPartialCost(proxyCost) {
+  return !!proxyCost && proxyCost.completeness === "PARTIAL";
+}
+
+/** Display string for a proxyCost object: "$1.84" (COMPLETE), "$1.84 observed"
+    (PARTIAL, with the visible-observed wording), or "Not observed"
+    (UNAVAILABLE). A metered valid $0.00 renders as "$0.00", not unavailable. */
+export function proxyCostText(proxyCost) {
+  if (!proxyCost || proxyCost.completeness === "UNAVAILABLE") {
+    return PROXY_COST_UNAVAILABLE_TEXT;
+  }
+  const amount = formatMicroUsd(proxyCost.observedMicroUsd);
+  if (amount === null) return PROXY_COST_UNAVAILABLE_TEXT;
+  return proxyCost.completeness === "PARTIAL" ? `${amount} observed` : amount;
+}
+
+/** Coverage disclosure, e.g. "2 of 3 executions metered". */
+export function coverageText(proxyCost) {
+  if (!proxyCost || proxyCost.totalExecutions === 0) return "No executions observed";
+  return `${proxyCost.meteredExecutions} of ${proxyCost.totalExecutions} executions metered`;
+}
+
+/** Average-per-completed-issue display: "Observed average" wording when
+    partial, "No completed issues" when the denominator is zero, "Not observed"
+    when there are completed issues but no metered cost. */
+export function averageCostText(average) {
+  if (!average || average.observedMicroUsd === null || average.observedMicroUsd === undefined) {
+    if (average && average.completedIssues === 0) return "No completed issues";
+    return PROXY_COST_UNAVAILABLE_TEXT;
+  }
+  const amount = formatMicroUsd(average.observedMicroUsd);
+  return average.observed ? `${amount} observed` : amount;
+}

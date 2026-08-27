@@ -5,7 +5,10 @@
 import { ApiError, apiFetch } from "../api.js";
 import { renderTimeline, renderTopology } from "../components/timeline-topology.js";
 import { clear, el, syncList } from "../dom.js";
-import { formatAbsoluteTimestamp, inconsistencyLabel, runDisplayOutcome } from "../format.js";
+import {
+  coverageText, formatAbsoluteTimestamp, inconsistencyLabel, isPartialCost, proxyCostText,
+  runDisplayOutcome,
+} from "../format.js";
 import {
   isIndexPreparingError, preparingRow, projectionIncompleteBanner, removeReadinessBanner,
   renderPreparingPanel, staleBanner,
@@ -32,6 +35,7 @@ export async function render(root, params, ctx) {
         el("th", { scope: "col" }, ["Engine"]),
         el("th", { scope: "col" }, ["Reviewer"]),
         el("th", { scope: "col" }, ["Outcome"]),
+        el("th", { scope: "col" }, ["Proxy cost"]),
         el("th", { scope: "col" }, ["Inconsistency"]),
         el("th", { scope: "col" }, ["Last event"]),
       ]),
@@ -44,6 +48,15 @@ export async function render(root, params, ctx) {
   const repoId = params && params.repoId;
   const tbody = table.querySelector("tbody");
   await loadRuns(root, wrapper, tbody, repoId, ctx);
+}
+
+function _costCell(proxyCost) {
+  const cell = el("td", null, [proxyCostText(proxyCost)]);
+  if (isPartialCost(proxyCost)) {
+    cell.appendChild(el("span", { className: "chip chip--warn", title: coverageText(proxyCost) },
+      ["Partial"]));
+  }
+  return cell;
 }
 
 function renderRows(tbody, items) {
@@ -59,10 +72,11 @@ function renderRows(tbody, items) {
       el("td", null, [run.engineProvider || "unknown"]),
       el("td", null, [run.reviewerProvider || "unknown"]),
       el("td", null, [run.displayOutcome]),
+      _costCell(run.proxyCost),
       el("td", null, [inconsistencyLabel(run.inconsistent)]),
       el("td", null, [run.lastEventId != null ? String(run.lastEventId) : "none"]),
     );
-  }, el("td", { colspan: "8" }, ["No runs observed yet."]), "tr");
+  }, el("td", { colspan: "9" }, ["No runs observed yet."]), "tr");
 }
 
 async function loadRuns(root, wrapper, tbody, repoId, ctx) {
@@ -79,9 +93,9 @@ async function loadRuns(root, wrapper, tbody, repoId, ctx) {
     renderRows(tbody, data.items);
   } catch (err) {
     clear(tbody);
-    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(8));
+    if (isIndexPreparingError(err)) tbody.appendChild(preparingRow(9));
     else tbody.appendChild(el("tr", null, [
-      el("td", { colspan: "8", role: "alert" }, [`Could not load runs: ${err.message}`]),
+      el("td", { colspan: "9", role: "alert" }, [`Could not load runs: ${err.message}`]),
     ]));
   }
 }
@@ -133,6 +147,8 @@ export async function renderDetail(root, params) {
     el("dt", null, ["Observed finished"]), el("dd", null, [formatAbsoluteTimestamp(run.observedFinishedAt) || "not observed"]),
     el("dt", null, ["Inconsistency"]), el("dd", null, [inconsistencyLabel(run.inconsistent)]),
     el("dt", null, ["Last event"]), el("dd", null, [run.lastEventId != null ? String(run.lastEventId) : "none"]),
+    el("dt", null, ["Proxy cost"]),
+    el("dd", null, [`${proxyCostText(run.proxyCost)} — ${coverageText(run.proxyCost)}`]),
   ]);
   root.appendChild(identityDl);
 
