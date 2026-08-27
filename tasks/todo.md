@@ -38,14 +38,19 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done (with evidence).
       (test_migrations ×4, test_db ×1) to the SCHEMA_VERSION constant. Dashboard
       suite 448→459, no regressions.
 
-## Unit 3 — Aggregation query layer
-- [ ] `proxyCost` builder per scope (execution/issue/run/repo/global)
-- [ ] average-per-DONE-issue builder (null-when-none, dual coverage, Observed)
-- [ ] Cost sort: UNAVAILABLE last both directions + stable ID tie-break
-- [ ] Batched fixed-query-count per page for lists
-- [ ] Exclusions preserved: Evidence/Search/Attention carry no proxyCost (test)
-- [ ] Tests: per-scope sums (all attempts), completeness incl. empty, average,
-      sort/null placement, bounded query count (large-scale measurement is Unit 6)
+## Unit 3 — Aggregation query layer ✅
+- [x] Pure builders (`proxy_cost.py`): `build_proxy_cost_object`,
+      `build_average_object`, `micro_to_usd_str`, `BASIS`
+- [x] SQL aggregation (`proxy_cost_agg.py`): scope (execution/issue/run/repo/
+      global), `by_group_proxy_cost` (one fixed query per page), average per
+      DONE issue
+- [x] Cost sort `cost_order_by`: UNAVAILABLE (NULL) last both directions +
+      stable ID tie-break; direction allowlisted
+- [x] Tests: per-scope sums (all attempts), completeness incl. empty/zero,
+      average (null-when-none, partial→Observed, extra null-when-no-metered),
+      current-generation isolation, batched groups, sort/null placement — 24 new
+      (11 pure + 13 SQL). Dashboard suite 459→483. (Exclusions asserted in
+      Unit 4; large-scale measurement in Unit 6.)
 
 ## Unit 4 — API wiring
 - [ ] Attach proxyCost/average to every §3.3 endpoint (additive only):
