@@ -143,6 +143,35 @@ def unavailable_object() -> dict:
                                    token_metered=0, input_tokens=None, output_tokens=None)
 
 
+def top_cost_issues(conn: sqlite3.Connection, *, limit: int = 10) -> list:
+    """The highest observed-cost issues across the current generation (spec §5,
+    Home). Only issues with at least one metered execution appear (UNAVAILABLE
+    issues are never "top cost"); ordered by observed micro-USD desc with a
+    stable issue_id tie-break, capped at ``limit``. Each item carries a stable
+    link identity (repository id + issue id) plus its full proxyCost object."""
+    limit = max(1, min(int(limit), 50))
+    rows = conn.execute(
+        f"SELECT ev.repository_id, ev.issue_id, r.project_path, {_agg_exprs()} "
+        f"FROM execution_views ev {_gen_join()} "
+        f"JOIN repositories r ON r.id = ev.repository_id "
+        f"WHERE ev.issue_id IS NOT NULL "
+        f"GROUP BY ev.repository_id, ev.issue_id "
+        f"HAVING SUM(ev.cost_valid) > 0 "
+        f"ORDER BY SUM(CASE WHEN ev.cost_valid = 1 THEN ev.proxy_micro_usd END) DESC, "
+        f"ev.issue_id ASC LIMIT ?",
+        [limit],
+    ).fetchall()
+    out = []
+    for repo_id, issue_id, project_path, *agg in rows:
+        out.append({
+            "issueId": issue_id,
+            "repository": {"id": repo_id,
+                          "displayName": project_path.replace("\\", "/").rsplit("/", 1)[-1]},
+            "proxyCost": _object_from_agg(agg),
+        })
+    return out
+
+
 def average_proxy_cost_per_completed_issue(conn: sqlite3.Connection,
                                            repo_id: Optional[int] = None) -> dict:
     """Average proxy cost per DONE issue (spec §2.6). Denominator: issues in

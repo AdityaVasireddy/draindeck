@@ -15,6 +15,7 @@ from typing import Optional
 
 from .errors import IndexPreparingError, InvalidFilterError, InvalidSortError, PageOutOfRangeError
 from .read_models import read_model_status
+from . import proxy_cost_agg
 
 NEW_ROUTE_OFFSET_CAP = 10_000
 LEGACY_EVIDENCE_OFFSET_CAP = 100_000
@@ -287,6 +288,10 @@ def overview(conn: sqlite3.Connection) -> dict:
         "evidence": {"total": sum(evidence_by_integrity.values()), "byIntegrity": evidence_by_integrity},
         "basis": "current identity generation per registered repository",
         "projectionState": projection_state_summary(conn),
+        "proxyCost": proxy_cost_agg.global_proxy_cost(conn),
+        "averageProxyCostPerCompletedIssue":
+            proxy_cost_agg.average_proxy_cost_per_completed_issue(conn),
+        "topCostIssues": proxy_cost_agg.top_cost_issues(conn),
     }
 
 
@@ -312,11 +317,12 @@ def cross_repository_issues(conn: sqlite3.Connection, *, limit: int = 50, offset
                             sort: str = "issueId", direction: str = "asc") -> dict:
     check_offset_cap(offset, cap=NEW_ROUTE_OFFSET_CAP)
     readiness = check_read_model_readiness(conn, repository_id)  # raises if a scoped repo isn't ready
-    column = _ISSUE_SORT_COLUMNS.get(sort)
-    if column is None:
-        raise InvalidSortError(f"unsupported issue sort {sort!r}")
     if direction not in ("asc", "desc"):
         raise InvalidSortError(f"unsupported sort direction {direction!r}")
+    cost_sort = sort == "cost"
+    column = _ISSUE_SORT_COLUMNS.get(sort)
+    if column is None and not cost_sort:
+        raise InvalidSortError(f"unsupported issue sort {sort!r}")
 
     where = ["1=1"]
     params: list = []
@@ -327,21 +333,41 @@ def cross_repository_issues(conn: sqlite3.Connection, *, limit: int = 50, offset
         where.append("iv.state = ?")
         params.append(state)
 
-    base = (
-        "FROM issue_views iv " + _current_generation_join("issue_views", "iv") +
-        f" WHERE {' AND '.join(where)}"
-    )
-    total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+    gen_join = _current_generation_join("issue_views", "iv")
+    # Cost sort needs the aggregated per-issue observed cost in ORDER BY; a
+    # LEFT JOIN keeps issues with no metered executions (NULL cost -> sorted
+    # last by cost_order_by). Non-cost sorts avoid the aggregate join entirely.
+    cost_join = (
+        " LEFT JOIN (SELECT ev.repository_id, ev.issue_id, "
+        "  SUM(CASE WHEN ev.cost_valid = 1 THEN ev.proxy_micro_usd END) AS observed_micro "
+        "  FROM execution_views ev JOIN checkpoints cc "
+        "    ON cc.repository_id = ev.repository_id "
+        "    AND cc.identity_generation_id = ev.identity_generation_id "
+        "  GROUP BY ev.repository_id, ev.issue_id) pc "
+        "  ON pc.repository_id = iv.repository_id AND pc.issue_id = iv.issue_id"
+    ) if cost_sort else ""
+    base = f"FROM issue_views iv {gen_join}{cost_join} WHERE {' AND '.join(where)}"
+    if cost_sort:
+        order_clause = proxy_cost_agg.cost_order_by("pc.observed_micro", "iv.issue_id", direction)
+    else:
+        order_clause = f"{column} {direction.upper()}, iv.issue_id"
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM issue_views iv {gen_join} WHERE {' AND '.join(where)}",
+        params,
+    ).fetchone()[0]
     rows = conn.execute(
         f"SELECT iv.issue_id, iv.state, iv.title, iv.inconsistent, iv.last_event_id, "
-        f"r.id, r.project_path {base} ORDER BY {column} {direction.upper()}, iv.issue_id "
+        f"r.id, r.project_path {base} ORDER BY {order_clause} "
         "LIMIT ? OFFSET ?",
         [*params, limit, offset],
     ).fetchall()
+    cost_by_issue = proxy_cost_agg.by_group_proxy_cost(
+        conn, "issue_id", [(r[5], r[0]) for r in rows])
     items = [
         {"issueId": issue_id, "state": state_, "title": title, "inconsistent": bool(inconsistent),
          "lastEventId": last_event_id,
-         "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]}}
+         "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]},
+         "proxyCost": cost_by_issue.get((repo_id, issue_id), proxy_cost_agg.unavailable_object())}
         for issue_id, state_, title, inconsistent, last_event_id, repo_id, path in rows
     ]
     result = _paginate(items, limit=limit, offset=offset, total=total)
@@ -384,11 +410,14 @@ def cross_repository_runs(conn: sqlite3.Connection, *, limit: int = 50, offset: 
         "LIMIT ? OFFSET ?",
         [*params, limit, offset],
     ).fetchall()
+    cost_by_run = proxy_cost_agg.by_group_proxy_cost(
+        conn, "run_id", [(r[8], r[0]) for r in rows])
     items = [
         {"runId": run_id, "engineProvider": engine, "reviewerProvider": reviewer, "outcome": outcome_,
          "displayOutcome": outcome_ or "no controlled finish observed", "inconsistent": bool(inconsistent),
          "lastEventId": last_event_id, "observedStartedAt": started_at, "observedFinishedAt": finished_at,
-         "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]}}
+         "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]},
+         "proxyCost": cost_by_run.get((repo_id, run_id), proxy_cost_agg.unavailable_object())}
         for (run_id, engine, reviewer, outcome_, inconsistent, last_event_id, started_at, finished_at,
              repo_id, path) in rows
     ]
@@ -430,23 +459,33 @@ def cross_repository_executions(conn: sqlite3.Connection, *, limit: int = 50, of
         return result
 
     if group_by == "execution":
-        column = _EXECUTION_SORT_COLUMNS.get(sort)
-        if column is None:
-            raise InvalidSortError(f"unsupported execution sort {sort!r}")
         if direction not in ("asc", "desc"):
             raise InvalidSortError(f"unsupported sort direction {direction!r}")
+        cost_sort = sort == "cost"
+        column = _EXECUTION_SORT_COLUMNS.get(sort)
+        if column is None and not cost_sort:
+            raise InvalidSortError(f"unsupported execution sort {sort!r}")
+        # Cost is a column on the execution_views row (NULL when cost_valid=0),
+        # so the NULL-last cost ordering needs no join.
+        order_clause = (
+            proxy_cost_agg.cost_order_by("ev.proxy_micro_usd", "ev.execution_id", direction)
+            if cost_sort else f"{column} {direction.upper()}, ev.execution_id"
+        )
         total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
         rows = conn.execute(
             f"SELECT ev.execution_id, ev.issue_id, ev.state, ev.inconsistent, ev.last_event_id, "
-            f"ev.run_id, r.id, r.project_path {base} ORDER BY {column} {direction.upper()}, "
-            "ev.execution_id LIMIT ? OFFSET ?",
+            f"ev.run_id, r.id, r.project_path, ev.proxy_micro_usd, ev.cost_valid, "
+            f"ev.input_tokens, ev.output_tokens, ev.tokens_valid {base} "
+            f"ORDER BY {order_clause} LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
         items = [
             {"executionId": xid, "issueId": issue_id, "state": state_, "inconsistent": bool(inconsistent),
              "lastEventId": last_event_id, "runId": run_id,
-             "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]}}
-            for xid, issue_id, state_, inconsistent, last_event_id, run_id, repo_id, path in rows
+             "repository": {"id": repo_id, "displayName": path.replace("\\", "/").rsplit("/", 1)[-1]},
+             "proxyCost": proxy_cost_agg.execution_proxy_cost(micro, cost_valid, in_tok, out_tok, tok_valid)}
+            for (xid, issue_id, state_, inconsistent, last_event_id, run_id, repo_id, path,
+                 micro, cost_valid, in_tok, out_tok, tok_valid) in rows
         ]
         return _attach_readiness(_paginate(items, limit=limit, offset=offset, total=total))
 

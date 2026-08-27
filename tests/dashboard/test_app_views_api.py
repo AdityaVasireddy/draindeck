@@ -89,7 +89,11 @@ def test_issues_and_executions_reflect_ingested_evidence(tmp_path, monkeypatch):
 
     issues = client.get(f"/api/repositories/{repo_id}/issues").json()
     assert issues["total"] == 1
-    assert issues["items"][0] == {
+    item = issues["items"][0]
+    # proxyCost is an additive key (this issue has no finished execution yet).
+    proxy_cost = item.pop("proxyCost")
+    assert proxy_cost["completeness"] == "UNAVAILABLE"
+    assert item == {
         "issueId": "42", "state": "ACTIVE", "title": "fix it",
         "inconsistent": False, "lastEventId": 2,
     }

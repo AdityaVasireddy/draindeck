@@ -135,3 +135,34 @@ def build_average_object(*, completed_issues: int, total_executions: int,
         "costMeteredExecutions": cost_metered_executions,
         "totalExecutions": total_executions,
     }
+
+
+def aggregate_execution_costs(items) -> dict:
+    """Build a ``proxyCost`` object by summing over an in-memory iterable of
+    objects carrying ``proxy_micro_usd``/``cost_valid``/``input_tokens``/
+    ``output_tokens``/``tokens_valid`` (e.g. projection ``ExecutionView``s). The
+    read-model list endpoints that build from ``build_projection`` use this
+    instead of a SQL round-trip; the semantics match ``proxy_cost_agg``'s SQL
+    exactly -- missing cost adds nothing, token coverage is independent."""
+    total = metered = token_metered = 0
+    sum_micro = 0
+    sum_in = sum_out = 0
+    has_micro = has_tok = False
+    for it in items:
+        total += 1
+        if getattr(it, "cost_valid", False):
+            metered += 1
+            has_micro = True
+            sum_micro += it.proxy_micro_usd or 0
+        if getattr(it, "tokens_valid", False):
+            token_metered += 1
+            has_tok = True
+            sum_in += it.input_tokens or 0
+            sum_out += it.output_tokens or 0
+    return build_proxy_cost_object(
+        total=total, metered=metered,
+        observed_micro=sum_micro if has_micro else None,
+        token_metered=token_metered,
+        input_tokens=sum_in if has_tok else None,
+        output_tokens=sum_out if has_tok else None,
+    )

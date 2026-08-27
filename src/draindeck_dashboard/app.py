@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from . import api_queries
+from . import proxy_cost_agg
 from .artifacts import artifact_root_for_log, resolve_contained_artifact
 from .config import DashboardConfig
 from .db import connect_and_init
@@ -363,6 +364,9 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
         return {
             "registration": registration, "health": health,
             "attention": api_queries.repository_attention_summary(app.state.db, repo_id),
+            "proxyCost": proxy_cost_agg.repository_proxy_cost(app.state.db, repo_id),
+            "averageProxyCostPerCompletedIssue":
+                proxy_cost_agg.average_proxy_cost_per_completed_issue(app.state.db, repo_id),
         }
 
     @app.get("/api/repositories/{repo_id}/issues/{issue_id}")
@@ -377,8 +381,23 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
         ).fetchone()
         if row is None:
             raise NotFoundError(f"issue {issue_id} not found in repository {repo_id}")
+        attempt_rows = app.state.db.execute(
+            "SELECT ev.execution_id, ev.state, ev.proxy_micro_usd, ev.cost_valid, "
+            "ev.input_tokens, ev.output_tokens, ev.tokens_valid FROM execution_views ev "
+            "JOIN checkpoints c ON c.repository_id = ev.repository_id "
+            "AND c.identity_generation_id = ev.identity_generation_id "
+            "WHERE ev.repository_id = ? AND ev.issue_id = ? ORDER BY ev.execution_id",
+            (repo_id, issue_id),
+        ).fetchall()
+        attempts = [
+            {"executionId": ar[0], "state": ar[1],
+             "proxyCost": proxy_cost_agg.execution_proxy_cost(ar[2], ar[3], ar[4], ar[5], ar[6])}
+            for ar in attempt_rows
+        ]
         return {"issueId": row[0], "state": row[1], "title": row[2], "inconsistent": bool(row[3]),
-               "lastEventId": row[4]}
+               "lastEventId": row[4],
+               "proxyCost": proxy_cost_agg.issue_proxy_cost(app.state.db, repo_id, issue_id),
+               "executionAttempts": attempts}
 
     @app.get("/api/repositories/{repo_id}/runs/{run_id}")
     async def api_run_detail(repo_id: int, run_id: str) -> dict:
@@ -401,6 +420,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             "outcome": row[7], "displayOutcome": row[7] or "no controlled finish observed",
             "inconsistent": bool(row[8]), "lastEventId": row[9],
             "observedStartedAt": row[10], "observedFinishedAt": row[11],
+            "proxyCost": proxy_cost_agg.run_proxy_cost(app.state.db, repo_id, run_id),
         }
 
     @app.get("/api/repositories/{repo_id}/executions/{execution_id}")
@@ -409,7 +429,8 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
         api_queries.check_read_model_readiness(app.state.db, repo_id)
         row = app.state.db.execute(
             "SELECT ev.execution_id, ev.issue_id, ev.state, ev.inconsistent, ev.last_event_id, "
-            "ev.run_id FROM execution_views ev JOIN checkpoints c "
+            "ev.run_id, ev.proxy_micro_usd, ev.cost_valid, ev.input_tokens, ev.output_tokens, "
+            "ev.tokens_valid FROM execution_views ev JOIN checkpoints c "
             "ON c.repository_id = ev.repository_id AND c.identity_generation_id = ev.identity_generation_id "
             "WHERE ev.repository_id = ? AND ev.execution_id = ?", (repo_id, execution_id),
         ).fetchone()
@@ -426,6 +447,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             "executionId": row[0], "issueId": row[1], "state": row[2], "inconsistent": bool(row[3]),
             "lastEventId": row[4], "runId": row[5],
             "runMetadata": _run_metadata_field(app.state.db, repo_id, row[5]),
+            "proxyCost": proxy_cost_agg.execution_proxy_cost(row[6], row[7], row[8], row[9], row[10]),
             "containments": [
                 {"containmentGeneration": gen, "workspaceKey": wk, "state": st,
                  "inconsistent": bool(inc)}

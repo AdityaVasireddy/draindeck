@@ -52,13 +52,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done (with evidence).
       (11 pure + 13 SQL). Dashboard suite 459→483. (Exclusions asserted in
       Unit 4; large-scale measurement in Unit 6.)
 
-## Unit 4 — API wiring
-- [ ] Attach proxyCost/average to every §3.3 endpoint (additive only):
-      overview, repo overview, issues list + issue detail, runs list + run detail,
-      executions list + execution detail, repo issue/exec lists, Home top-cost
-- [ ] Evidence/Search/Attention left untouched (cost-free)
-- [ ] Tests: shape/invariants per endpoint incl. Runs list AND Run Detail;
-      existing contracts unchanged; readiness/stale intact; exclusions asserted
+## Unit 4 — API wiring ✅
+- [x] Attach proxyCost/average to every §3.3 endpoint (additive only):
+      overview (global+avg+topCostIssues), repo overview (repo+avg), cross-repo
+      issues + issue detail (with executionAttempts breakdown), cross-repo runs +
+      run detail, cross-repo executions + execution detail, repo issue/exec/run
+      lists (via build_projection in-memory aggregate)
+- [x] Cost sort added: issues list (LEFT JOIN aggregate) + executions list
+      (row column), UNAVAILABLE last both directions
+- [x] Evidence/Search/Attention left untouched (cost-free) — asserted
+- [x] Tests: shape/invariants per endpoint incl. Runs list AND Run Detail;
+      backward-compat (existing fields unchanged; updated 1 exact-dict assertion);
+      exclusions asserted — 11 new. Dashboard suite 483→494.
 
 ## Unit 5 — Frontend (all placement screens)
 - [ ] `format.js` currency/coverage/completeness helpers

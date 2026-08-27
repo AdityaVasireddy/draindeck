@@ -18,6 +18,7 @@ from .projections import (
     build_projection,
     has_run_metadata,
 )
+from .proxy_cost import aggregate_execution_costs
 
 
 def _current_generation_id(conn: sqlite3.Connection, repo_id: int) -> Optional[int]:
@@ -39,10 +40,14 @@ def list_issues(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: i
     if generation_id is None:
         return _paginate([], limit=limit, offset=offset)
     result = build_projection(conn, repo_id, generation_id)
+    execs_by_issue: dict = {}
+    for ev in result.executions.values():
+        execs_by_issue.setdefault(ev.issue_id, []).append(ev)
     ordered = sorted(result.issues.values(), key=lambda v: v.issue_id)
     return _paginate([
         {"issueId": v.issue_id, "state": v.state, "title": v.title,
-         "inconsistent": v.inconsistent, "lastEventId": v.last_event_id}
+         "inconsistent": v.inconsistent, "lastEventId": v.last_event_id,
+         "proxyCost": aggregate_execution_costs(execs_by_issue.get(v.issue_id, []))}
         for v in ordered
     ], limit=limit, offset=offset)
 
@@ -77,7 +82,8 @@ def list_executions(conn: sqlite3.Connection, repo_id: int, *, limit: int, offse
     return _paginate([
         {"executionId": v.execution_id, "issueId": v.issue_id, "state": v.state,
          "inconsistent": v.inconsistent, "lastEventId": v.last_event_id,
-         "runId": v.run_id, "runMetadata": _run_metadata_field(result, v.run_id)}
+         "runId": v.run_id, "runMetadata": _run_metadata_field(result, v.run_id),
+         "proxyCost": aggregate_execution_costs([v])}
         for v in ordered
     ], limit=limit, offset=offset)
 
@@ -93,6 +99,9 @@ def list_runs(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: int
     if generation_id is None:
         return _paginate([], limit=limit, offset=offset)
     result = build_projection(conn, repo_id, generation_id)
+    execs_by_run: dict = {}
+    for ev in result.executions.values():
+        execs_by_run.setdefault(ev.run_id, []).append(ev)
     ordered = sorted(result.runs.values(), key=lambda v: v.run_id)
     return _paginate([
         {
@@ -108,6 +117,7 @@ def list_runs(conn: sqlite3.Connection, repo_id: int, *, limit: int, offset: int
             "displayOutcome": v.outcome or RUN_NO_CONTROLLED_FINISH_OBSERVED,
             "inconsistent": v.inconsistent,
             "lastEventId": v.last_event_id,
+            "proxyCost": aggregate_execution_costs(execs_by_run.get(v.run_id, [])),
         }
         for v in ordered
     ], limit=limit, offset=offset)
