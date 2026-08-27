@@ -8,9 +8,11 @@ authorized. Branch `dashboard-engine-proxy-cost`, baseline `0bb1629`.
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done (with evidence).
 
 ## Unit 0 — Baseline & contract map
-- [ ] `pytest tests\unit tests\dashboard -q` baseline green; counts recorded here
-- [ ] Confirm ExecutionFinished OK evidence carries `payload_json.usage`;
-      projection reaches it; dependency-carveout test present
+- [x] `pytest tests\unit tests\dashboard -q` baseline green — **970 passed**
+      (560 unit + 410 dashboard) via `.venv\Scripts\python.exe`, 2026-08-26
+- [x] Confirmed: OK evidence stores `payload_json` (incl. ExecutionFinished
+      `usage`); `apply_ok_evidence_rows` reaches it; `_finish` transition reads
+      `outcome`, `usage` is a sibling key; dependency-carveout test present
 
 ## Unit 1 — Validation + projection capture (pure)
 - [ ] `validate_dollars` / `validate_tokens` helpers (test-first)
