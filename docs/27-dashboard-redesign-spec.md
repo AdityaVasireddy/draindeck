@@ -5,6 +5,11 @@
 **Baseline:** `dashboard-redesign` at `4052fef97dbb90b52ae91fc01832557bc348cab8`<br>
 **Scope owner:** `src/draindeck_dashboard` only; `src/runtime` contracts remain untouched
 
+> Cross-reference: the coding-engine **proxy cost** feature (SQLite v2→v3,
+> `proxyCost` API, cost UI) is specified separately in
+> `spec/coding-engine-proxy-cost.md` and recorded in `docs/28-proxy-cost.md`.
+> This document (docs/27) is otherwise unchanged by that feature.
+
 ## 1. Objective
 
 Replace the single plain Dashboard page with a production-quality desktop/tablet-focused operator application that showcases and makes navigable every Dashboard-supported Draindeck feature: repository registration and health, attention triage, runs, issues, executions, containment generations, transcripts, diffs, evidence, connection state, and local-safety facts. Non-tabular content still reflows to 320 CSS pixels for WCAG 2.2 AA; this accessibility behavior does not expand v1 into a mobile-specific product.

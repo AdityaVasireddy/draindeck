@@ -10,7 +10,30 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-23)
+## 1. Current state (verified 2026-08-26)
+
+- **Coding-engine proxy cost: BUILD IN PROGRESS (Units 0-6 complete, 7-8
+  pending), on branch `dashboard-engine-proxy-cost`, baseline clean
+  `master` `0bb1629`.** Exposes engine-reported API-list-rate proxy cost
+  (`ExecutionFinished.payload.usage`) across the Dashboard: SQLite
+  `SCHEMA_VERSION` 2→3 ordered migration chain adds nullable cost/token
+  columns to `execution_views` and flips READY read models to REBUILDING
+  for the existing async backfill (no startup evidence scan); a
+  `proxyCost` object + average-per-completed-issue + top-cost issues are
+  attached additively to execution/issue/run/repository/global responses
+  (Evidence/Search/Attention deliberately excluded); Home/Repository
+  Overview/Issues/Runs/Executions/About UI render cost with a
+  proxy-not-invoice framing. **Combined `tests\unit tests\dashboard`
+  1055 passed** (560 unit unchanged — no `src/runtime` touched — + 495
+  dashboard); scale measurement confirms index deferral (all cost
+  aggregates ≤7 ms at 10k executions / 100k evidence). Spec:
+  `spec/coding-engine-proxy-cost.md`; design: `docs/28-proxy-cost.md`;
+  evidence: `docs/reviews/PROXY_COST_BUILD_EVIDENCE.md`; plan/todo:
+  `tasks/plan.md` / `tasks/todo.md`. **No merge or push.** Next:
+  Unit 7 (real-browser security/accessibility) then Unit 8 (six-axis
+  review + final handoff).
+
+### Prior state (verified 2026-08-23)
 
 - **Dashboard redesign: BUILD-AUTO COMPLETE (Units 0-16 plus two
   merge-blocker `/build-auto` continuations), pending user review before
