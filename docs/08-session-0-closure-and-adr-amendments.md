@@ -1156,6 +1156,60 @@ before implementation. Acceptance does not itself authorize `src/runtime`
 changes, remote serving, a new dependency, commit, merge, or push; local
 checkpoint-commit authority must be stated separately.
 
+## 5j. ADR-28 — Optional one-way issue intake compiler
+
+**Status:** ACCEPTED · **Proposed:** 2026-08-29 · **Accepted:** 2026-08-29
+(explicit user approval of `spec/draindeck-intake.md`, `tasks/plan.md`, and a
+bounded series of nine local checkpoint commits on
+`codex/draindeck-intake`). This is an Intake-only additive boundary. It does
+not amend `src/runtime`, Doc 03, event schemas, state transitions, Git/recovery
+behavior, Dashboard ownership, or the runtime's existing `Issues.md` parser.
+The complete public model, provider, CLI, security, and acceptance contract is
+`spec/draindeck-intake.md`, which is normative for this decision.
+
+**Context.** Draindeck consumes a repository-local `Issues.md`, while operator
+backlogs may originate in another `Issues.md`, GitHub Issues, Jira Cloud, or
+Linear. Putting provider clients or synchronization logic inside the frozen
+runtime would couple nondeterministic external APIs and credentials to the
+durable state machine. Treating provider state as authoritative after
+ingestion would also conflict with Doc 03: once issue IDs participate in the
+event log, their workflow state belongs to the log rather than a mutable remote
+tracker.
+
+**Decision.** Add an optional `draindeck_intake` package that runs only as an
+explicit preflight command. Each source maps untrusted input into one immutable,
+bounded canonical issue model. A deterministic compiler then writes a managed,
+parser-compatible `Issues.md` through atomic replacement. Publication is the
+only integration seam: Intake never imports runtime events, opens an event log,
+invokes Git, starts an engine, or changes an already-ingested issue.
+
+Remote adapters are read-only and use an injected standard-library HTTPS JSON
+transport with exact host allowlists, redirect refusal, response/time/page/
+total bounds, strict boundary validation, and sanitized failures. Credentials
+come only from environment values and are never accepted as command-line
+secrets. Remote body text cannot emit structural dependency or acceptance
+records: reserved parser-control lines are rendered as quoted body content,
+while only validated canonical fields may generate control sections. Managed
+output is deterministic, refuses to overwrite an unmanaged file without an
+explicit force flag, and rejects canonical ID collisions.
+
+**Alternatives rejected.** Runtime-integrated fetching would expand the frozen
+durability and recovery surface; bidirectional synchronization would create
+two competing state authorities; provider-native models would leak response
+drift throughout the codebase; a third-party HTTP dependency is unnecessary
+for this bounded CLI; and silent overwrite of arbitrary `Issues.md` files would
+risk destroying operator-authored backlog content.
+
+**Consequences and gate.** Intake can evolve provider mappings independently
+behind its canonical contract, and runtime operation remains unchanged. The
+cost is intentional one-way behavior: operators regenerate and inspect the
+file before starting Draindeck, and remote changes do not update an issue after
+event ingestion. Provider correctness is proven with deterministic fixtures;
+live credentialed calls remain outside the committed suite and are not implied
+by acceptance. Approval authorizes only the named local checkpoint series. It
+does not authorize push, merge, dependency installation, live credentialed
+calls, or any `src/runtime`/Doc 03 change.
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml

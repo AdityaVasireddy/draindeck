@@ -1,6 +1,8 @@
 # Implementation plan: Draindeck Intake v1
 
-**Status:** PROPOSED — `/build auto` approval required before source mutation.
+**Status:** ACCEPTED 2026-08-29 — the user approved this plan, ADR-28, and
+the bounded nine-local-commit build-auto series. Push and merge remain
+prohibited.
 **Branch:** `codex/draindeck-intake`, clean baseline `4357b4a`.
 **Governing spec:** `spec/draindeck-intake.md`.
 **Mutation boundary:** new `src/draindeck_intake`, `tests/intake`, Intake docs,
@@ -36,14 +38,16 @@ ADR/spec acceptance
 
 ### Unit 0 — Record architecture acceptance and baseline
 
-**Description:** Record ADR-28 as an Intake-only additive boundary and prove the
-clean branch baseline before behavioral code.
+**Description:** Record ADR-28 as an Intake-only additive boundary and
+characterize the branch baseline before behavioral code.
 
 **Acceptance criteria:**
-- [ ] ADR-28 states the one-way compiler boundary, security limits, rejected
+- [x] ADR-28 states the one-way compiler boundary, security limits, rejected
       alternatives, and explicit non-impact on `src/runtime`/Doc 03.
-- [ ] Current unit + Dashboard suites pass before source mutation.
-- [ ] Current tasks are archived and the approved spec/plan/todo are committed
+- [x] Current unit + Dashboard suites are characterized before source mutation.
+      Dashboard must pass; any inherited core failure must be proven unrelated,
+      recorded, and must not be repaired through this Intake-only change.
+- [x] Current tasks are archived and the approved spec/plan/todo are committed
       as one preparatory checkpoint.
 
 **Verification:**
@@ -57,6 +61,18 @@ clean branch baseline before behavioral code.
 `spec/draindeck-intake.md`, `tasks/plan.md`, `tasks/todo.md`, `docs/plans/*`
 
 **Estimated scope:** Medium
+
+**Baseline evidence (2026-08-29):** The repository virtual environment ran
+`tests/dashboard` successfully: 496 passed. `tests/unit` stopped during
+collection with 14 imports of `runtime.state` failing. The entire
+`src/runtime/state` path is absent from `git ls-tree -r 4357b4a` while existing
+tracked runtime modules import it; therefore this is an inherited clean-clone
+baseline defect, not an Intake regression. The original checkout contains
+local ignored copies, which this branch deliberately did not copy, edit, or
+commit. `git diff --name-only HEAD -- src/runtime
+docs/03-state-machine-and-event-schema.md` was empty. Intake focused tests and
+the independently collectible Dashboard suite remain the enforceable gates;
+the inherited unit-collection defect will be reported, not masked.
 
 ### Unit 1 — Canonical model and deterministic compiler
 
@@ -238,7 +254,7 @@ the build with full evidence.
 
 ## Checkpoints
 
-- After Unit 0: architecture accepted, baseline green, planning committed.
+- After Unit 0: architecture accepted, baseline characterized, planning committed.
 - After Units 1-2: local end-to-end canonical/compiler path green.
 - After Units 3-5: all provider contracts green under adversarial fixtures.
 - After Unit 6: installable CLI path green.

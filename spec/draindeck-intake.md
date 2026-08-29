@@ -1,5 +1,10 @@
 # Spec: Draindeck Intake v1
 
+**Status:** ACCEPTED 2026-08-29 — explicit user approval of this specification,
+ADR-28, the build-auto plan, and nine bounded local checkpoint commits. Push,
+merge, live credentialed calls, dependency installation, and core runtime/event
+changes remain unauthorized.
+
 ## Objective
 
 Build an optional `draindeck_intake` package that imports issues from a local

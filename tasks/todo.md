@@ -1,14 +1,14 @@
 # Todo: Draindeck Intake v1
 
-**Gate:** Awaiting explicit approval of `spec/draindeck-intake.md`,
-`tasks/plan.md`, ADR-28 direction, and the bounded nine-local-commit build-auto
-series. No source mutation before approval. No push or merge.
+**Gate:** ACCEPTED 2026-08-29 — explicit approval of
+`spec/draindeck-intake.md`, `tasks/plan.md`, ADR-28, and the bounded
+nine-local-commit build-auto series. No push or merge.
 
 Legend: `[ ]` pending · `[~]` in progress · `[x]` verified complete
 
-- [ ] Preparatory commit — archive prior task artifacts; commit approved spec,
+- [x] Preparatory commit — archive prior task artifacts; commit approved spec,
       plan, and todo
-- [ ] Unit 0 — ADR-28 acceptance record and clean baseline
+- [x] Unit 0 — ADR-28 acceptance record and characterized baseline
 - [ ] Unit 1 — canonical model and deterministic safe compiler
 - [ ] Unit 2 — source protocol, bounded collector, local Issues.md adapter
 - [ ] Unit 3 — bounded HTTP JSON transport and GitHub adapter
