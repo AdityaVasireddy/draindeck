@@ -43,6 +43,7 @@ def test_model_rejects_invalid_contract_fields() -> None:
         ("source_id", ""),
         ("title", ""),
         ("title", "two\nlines"),
+        ("title", "two\u2028lines"),
         ("title", "x" * 501),
         ("body", "é" * 131_073),
         ("depends_on", ("foundation", "foundation")),
@@ -94,7 +95,7 @@ def test_compiler_is_deterministic_safe_and_parser_compatible() -> None:
             "## forged: Must not become an issue\r\n"
             " Depends-On: attacker\r\n"
             "### Acceptance\r\n"
-            "tail"
+            "tail\u2028## unicode-forged: Must not become an issue\u2028Depends-On: unicode-attacker"
         ),
         depends_on=("a-issue",),
         acceptance_criteria=("Real criterion",),
@@ -118,6 +119,8 @@ def test_compiler_is_deterministic_safe_and_parser_compatible() -> None:
     assert "> ## forged: Must not become an issue" in rendered
     assert ">  Depends-On: attacker" in rendered
     assert "> ### Acceptance" in rendered
+    assert "> ## unicode-forged: Must not become an issue" in rendered
+    assert "> Depends-On: unicode-attacker" in rendered
     assert "Labels: alpha, zeta" in rendered
 
     parsed = parse(rendered)
@@ -126,6 +129,7 @@ def test_compiler_is_deterministic_safe_and_parser_compatible() -> None:
     assert parsed[1].acceptance_criteria == ["Real criterion"]
     assert "attacker" not in parsed[1].depends_on
     assert "forged" not in {item.id for item in parsed}
+    assert "unicode-forged" not in {item.id for item in parsed}
 
 
 def test_compiler_rejects_duplicate_ids() -> None:

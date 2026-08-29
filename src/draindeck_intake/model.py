@@ -12,6 +12,7 @@ _ISSUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _INVALID_SEGMENT = re.compile(r"[^a-z0-9_-]+")
 _SEPARATOR_RUN = re.compile(r"[-_]{2,}")
 _SOURCE_KINDS = frozenset({"issues-md", "github", "jira", "linear"})
+_LINE_BOUNDARIES = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 MAX_TITLE_CHARS = 500
 MAX_BODY_BYTES = 256 * 1024
@@ -32,7 +33,7 @@ def _single_line(value: object, *, field: str, maximum: int) -> str:
         raise IssueValidationError(f"{field} must be a string")
     if not value or value.strip() != value:
         raise IssueValidationError(f"{field} must be non-empty and trimmed")
-    if "\r" in value or "\n" in value:
+    if any(character in _LINE_BOUNDARIES for character in value):
         raise IssueValidationError(f"{field} must be a single line")
     if len(value) > maximum:
         raise IssueValidationError(f"{field} exceeds {maximum} characters")

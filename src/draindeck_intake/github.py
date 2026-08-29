@@ -9,6 +9,7 @@ from .model import CanonicalIssueV1, IssueValidationError, make_scoped_issue_id
 from .sources import IssuePage, SourceError
 
 _SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
+MAX_SKIPPED_PULL_REQUEST_PAGES = 100
 
 
 def _scope(value: object, *, field: str) -> str:
@@ -103,31 +104,35 @@ class GitHubSource:
             raise SourceError("GitHub cursor is invalid")
         headers = {
             "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
+            "X-GitHub-Api-Version": "2026-03-10",
             "User-Agent": "draindeck-intake/1",
         }
         if self._token is not None:
             headers["Authorization"] = f"Bearer {self._token}"
-        raw = self._transport.request_json(
-            "GET",
-            (
-                "https://api.github.com/repos/"
-                f"{quote(self._owner, safe='')}/{quote(self._repo, safe='')}/issues"
-            ),
-            headers=headers,
-            query={
-                "state": "open",
-                "sort": "created",
-                "direction": "asc",
-                "per_page": limit,
-                "page": page_number,
-            },
-            expect="list",
-        )
-        if not isinstance(raw, list):
-            raise SourceError("malformed GitHub response")
-        mapped = tuple(
-            issue for item in raw if (issue := self._map_issue(item)) is not None
-        )
-        next_cursor = str(page_number + 1) if len(raw) == limit else None
-        return IssuePage(mapped, next_cursor)
+        for _ in range(MAX_SKIPPED_PULL_REQUEST_PAGES):
+            raw = self._transport.request_json(
+                "GET",
+                (
+                    "https://api.github.com/repos/"
+                    f"{quote(self._owner, safe='')}/{quote(self._repo, safe='')}/issues"
+                ),
+                headers=headers,
+                query={
+                    "state": "open",
+                    "sort": "created",
+                    "direction": "asc",
+                    "per_page": limit,
+                    "page": page_number,
+                },
+                expect="list",
+            )
+            if not isinstance(raw, list):
+                raise SourceError("malformed GitHub response")
+            mapped = tuple(
+                issue for item in raw if (issue := self._map_issue(item)) is not None
+            )
+            next_cursor = str(page_number + 1) if len(raw) == limit else None
+            if mapped or next_cursor is None:
+                return IssuePage(mapped, next_cursor)
+            page_number += 1
+        raise SourceError("GitHub pull-request-only pagination exceeds the safety bound")

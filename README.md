@@ -119,6 +119,30 @@ for a recovery-only pass without launching fresh work. Both subcommands
 require the human authorization described below before they touch a real
 target repository, spend, or commit anything.
 
+## Draindeck Intake (optional, one-way preflight)
+
+`draindeck-intake` converts a local `Issues.md`, open GitHub repository issues,
+Jira Cloud JQL results, or Linear team issues into one deterministic managed
+`Issues.md`. It runs before Draindeck and is not part of the runtime: it never
+opens an event log, invokes Git, starts an engine, or updates remote issues.
+
+```powershell
+draindeck-intake sync issues-md --input C:\source\Issues.md --output C:\target\Issues.md
+draindeck-intake sync github --owner OWNER --repo REPO --output C:\target\Issues.md
+draindeck-intake sync jira --base-url https://SITE.atlassian.net --jql "project = KEY" --output C:\target\Issues.md
+draindeck-intake sync linear --team-key ENG --output C:\target\Issues.md
+```
+
+GitHub optionally reads `GITHUB_TOKEN`; Jira requires `JIRA_EMAIL` and
+`JIRA_API_TOKEN`; Linear requires `LINEAR_API_KEY`. Flags such as
+`--token-env` change the environment-variable *name*, never accept a secret
+value. Existing unmanaged output is refused unless `--force` is explicit;
+managed output is atomically replaced and byte-identical output is a no-op.
+Inspect the generated file before starting Draindeck. Once an issue ID has
+entered the event log, the event log remains workflow truth—regeneration does
+not update or synchronize that issue. See `docs/29-draindeck-intake.md` for
+the complete source, limit, security, and error contract.
+
 ## Version compatibility (no-downgrade policy)
 
 Logs containing `RunStarted` or `RunFinished` events (the run-lifecycle
@@ -225,6 +249,8 @@ ingestion step is needed.
   conversational/evidence record for that session's changes.
 - `tests/unit/` and `tests/crash/` — the unit suite and the durability
   (crash-recovery) harness referenced under Safe checks above.
+- `docs/29-draindeck-intake.md` and `tests/intake/` — the optional one-way
+  intake CLI contract and its deterministic provider/CLI fixtures.
 
 ## Authorization and safety
 

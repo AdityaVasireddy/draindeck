@@ -45,7 +45,10 @@ def test_linear_uses_fixed_graphql_contract_and_maps_issue() -> None:
                 "updatedAt": "2026-08-29T12:00:00.000Z",
                 "priority": 2,
                 "state": {"name": "In Progress"},
-                "labels": {"nodes": [{"name": "backend"}]},
+                "labels": {
+                    "nodes": [{"name": "backend"}],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                },
             },
             page_info={"hasNextPage": True, "endCursor": "opaque-next"},
         )
@@ -100,6 +103,32 @@ def test_linear_rejects_graphql_errors_without_echoing_provider_messages() -> No
     with pytest.raises(SourceError, match="GraphQL errors") as caught:
         source.fetch_page(cursor=None, limit=10)
     assert "linear-secret-value" not in str(caught.value)
+
+
+def test_linear_rejects_truncated_labels_connection() -> None:
+    source = LinearSource(
+        FakeTransport(
+            response_with(
+                {
+                    "identifier": "ENG-1",
+                    "title": "Issue",
+                    "description": None,
+                    "url": "https://linear.app/acme/issue/ENG-1/issue",
+                    "updatedAt": "2026-08-29T12:00:00.000Z",
+                    "priority": 0,
+                    "state": {"name": "Todo"},
+                    "labels": {
+                        "nodes": [{"name": "backend"}],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "more"},
+                    },
+                }
+            )
+        ),
+        team_key="ENG",
+        api_key="key",
+    )
+    with pytest.raises(SourceError, match="labels"):
+        source.fetch_page(cursor=None, limit=10)
 
 
 @pytest.mark.parametrize(

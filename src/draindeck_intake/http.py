@@ -5,6 +5,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
+from http.client import HTTPException
 from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
@@ -21,6 +22,10 @@ MAX_REQUEST_BYTES = 1024 * 1024
 
 class TransportError(SourceError):
     """A remote response could not be safely accepted."""
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
 
 
 class JsonTransport(Protocol):
@@ -125,7 +130,10 @@ class BoundedJsonTransport:
         if body is not None:
             try:
                 data = json.dumps(
-                    body, ensure_ascii=False, separators=(",", ":")
+                    body,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
                 ).encode("utf-8")
             except (TypeError, ValueError) as exc:
                 raise TransportError("request body is not JSON serializable") from exc
@@ -143,15 +151,17 @@ class BoundedJsonTransport:
                 raw = response.read(self._max_response_bytes + 1)
         except HTTPError as exc:
             raise TransportError(f"remote service returned HTTP status {exc.code}") from exc
-        except (URLError, OSError, TimeoutError) as exc:
+        except (HTTPException, URLError, OSError, TimeoutError) as exc:
             raise TransportError(
                 f"remote request failed: {exc.__class__.__name__}"
             ) from exc
         if len(raw) > self._max_response_bytes:
             raise TransportError("remote response exceeds the configured maximum size")
         try:
-            value = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            value = json.loads(
+                raw.decode("utf-8"), parse_constant=_reject_json_constant
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
             raise TransportError("remote response is not valid JSON") from exc
         if expect == "object" and not isinstance(value, dict):
             raise TransportError("remote JSON response must be an object")

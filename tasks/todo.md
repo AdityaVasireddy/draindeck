@@ -15,17 +15,17 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` verified complete
 - [x] Unit 4 — Jira Cloud adapter and ADF extraction
 - [x] Unit 5 — Linear GraphQL adapter
 - [x] Unit 6 — atomic managed output and CLI composition
-- [~] Unit 7 — docs, fresh-context review, full verification, final handoff
+- [x] Unit 7 — docs, fresh-context review, full verification, final handoff
 
 ## Final gates
 
-- [ ] All task acceptance criteria met
-- [ ] Focused and combined test suites green
-- [ ] Dashboard suite green
-- [ ] Durability seeds 42 and 1337 green
-- [ ] `compileall` and `git diff --check` green
-- [ ] No dependency added
-- [ ] `src/runtime` and Doc 03 unchanged
-- [ ] No secrets or raw provider payloads in code, tests, docs, or staged diffs
-- [ ] Every real review finding fixed test-first
-- [ ] Working tree clean and branch ready for user review
+- [x] All task acceptance criteria met
+- [x] Intake suite green; combined core collection recorded as inherited baseline-blocked
+- [x] Dashboard suite green
+- [x] Durability seeds 42 and 1337 green
+- [x] `compileall` and `git diff --check` green
+- [x] No dependency added
+- [x] `src/runtime` and Doc 03 unchanged
+- [x] No secrets or raw provider payloads in code, tests, docs, or staged diffs
+- [x] Every real review finding fixed test-first
+- [x] Branch checkpointed and ready for user review

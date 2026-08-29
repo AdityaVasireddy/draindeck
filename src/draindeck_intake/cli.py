@@ -171,8 +171,10 @@ def _build_source(
             )
     except CliInputError:
         raise
-    except (SourceError, TypeError, ValueError) as exc:
+    except SourceError as exc:
         raise CliInputError(str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise CliInputError("source configuration is invalid") from exc
     raise CliInputError("source provider is invalid")
 
 

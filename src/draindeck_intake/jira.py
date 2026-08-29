@@ -200,9 +200,14 @@ class JiraSource:
         )
         if not isinstance(raw, dict) or not isinstance(raw.get("issues"), list):
             raise SourceError("malformed Jira response: issues")
+        is_last = raw.get("isLast")
         next_cursor = raw.get("nextPageToken")
-        if next_cursor is not None and (
-            not isinstance(next_cursor, str) or not next_cursor
-        ):
+        if not isinstance(is_last, bool):
+            raise SourceError("malformed Jira response: isLast")
+        if next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor):
             raise SourceError("malformed Jira response: nextPageToken")
+        if is_last and next_cursor is not None:
+            raise SourceError("malformed Jira response: isLast conflicts with nextPageToken")
+        if not is_last and next_cursor is None:
+            raise SourceError("malformed Jira response: isLast requires nextPageToken")
         return IssuePage(tuple(self._map_issue(item) for item in raw["issues"]), next_cursor)

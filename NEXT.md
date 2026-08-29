@@ -12,6 +12,20 @@
 
 ## 1. Current state (verified 2026-08-28)
 
+- **Draindeck Intake v1: BUILD COMPLETE, on branch
+  `codex/draindeck-intake`, baseline `4357b4a`; awaiting user merge
+  decision.** Optional one-way intake compiles local `Issues.md`, GitHub,
+  Jira Cloud, or Linear into a deterministic managed `Issues.md` without
+  touching `src/runtime` or Doc 03. Final Intake suite: 77 passed, 1
+  Windows symlink test skipped; standalone Dashboard: 496 passed; compile and
+  CLI checks passed; durability harness passed all 60 scenarios for seeds 42
+  and 1337. Fresh-context review fixes include Unicode structural-injection
+  defense, bounded PR-only GitHub pagination, Jira completion validation,
+  Linear label-truncation detection, and coordinated managed-output
+  publication. Evidence and known inherited clean-worktree core-test limit:
+  `docs/reviews/DRAINDECK_INTAKE_BUILD_EVIDENCE.md`; handoff:
+  `docs/handoffs/HANDOFF_2026-08-29_draindeck-intake-complete.md`.
+
 - **Coding-engine proxy cost: BUILD COMPLETE (Units 0-8), on branch
   `dashboard-engine-proxy-cost`, baseline clean `master` `0bb1629`.
   Awaiting user merge decision.** Exposes engine-reported API-list-rate

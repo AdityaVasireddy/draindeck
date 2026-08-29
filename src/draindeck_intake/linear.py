@@ -26,7 +26,7 @@ LINEAR_ISSUES_QUERY = """query DraindeckIntakeIssues(
       updatedAt
       priority
       state { name }
-      labels { nodes { name } }
+      labels(first: 101) { nodes { name } pageInfo { hasNextPage endCursor } }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -96,10 +96,15 @@ class LinearSource:
         if not isinstance(state_raw, dict) or not isinstance(state_raw.get("name"), str):
             raise SourceError("malformed Linear issue: state")
         labels_raw = raw.get("labels")
-        if not isinstance(labels_raw, dict) or not isinstance(
-            labels_raw.get("nodes"), list
-        ):
+        if not isinstance(labels_raw, dict) or not isinstance(labels_raw.get("nodes"), list):
             raise SourceError("malformed Linear issue: labels")
+        labels_page_info = labels_raw.get("pageInfo")
+        if (
+            not isinstance(labels_page_info, dict)
+            or not isinstance(labels_page_info.get("hasNextPage"), bool)
+            or labels_page_info["hasNextPage"]
+        ):
+            raise SourceError("malformed Linear issue: labels pagination")
         labels: list[str] = []
         for label in labels_raw["nodes"]:
             if not isinstance(label, dict) or not isinstance(label.get("name"), str):

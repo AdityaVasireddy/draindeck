@@ -97,6 +97,7 @@ def test_jira_uses_enhanced_search_and_maps_canonical_issue() -> None:
                 }
             ],
             "nextPageToken": "opaque-next",
+            "isLast": False,
         }
     )
     source = JiraSource(
@@ -137,7 +138,7 @@ def test_jira_uses_enhanced_search_and_maps_canonical_issue() -> None:
 
 
 def test_jira_sends_opaque_next_page_token() -> None:
-    transport = FakeTransport({"issues": []})
+    transport = FakeTransport({"issues": [], "isLast": True})
     source = JiraSource(
         transport,
         base_url="https://acme.atlassian.net",
@@ -178,8 +179,9 @@ def test_jira_rejects_non_cloud_or_unsafe_base_urls(base_url: str) -> None:
         {"issues": "not-a-list"},
         {"issues": [{}]},
         {"issues": [{"key": "ENG-1", "fields": {"summary": None}}]},
-        {"issues": [], "nextPageToken": 3},
-        {"issues": [], "nextPageToken": ""},
+        {"issues": [], "isLast": "true"},
+        {"issues": [], "isLast": True, "nextPageToken": 3},
+        {"issues": [], "isLast": True, "nextPageToken": ""},
     ],
 )
 def test_jira_rejects_malformed_provider_responses(response: object) -> None:
@@ -191,6 +193,25 @@ def test_jira_rejects_malformed_provider_responses(response: object) -> None:
         api_token="token",
     )
     with pytest.raises(SourceError, match="malformed Jira"):
+        source.fetch_page(cursor=None, limit=10)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"issues": [], "isLast": False},
+        {"issues": [], "isLast": True, "nextPageToken": "unexpected"},
+    ],
+)
+def test_jira_requires_consistent_completion_token(response: object) -> None:
+    source = JiraSource(
+        FakeTransport(response),
+        base_url="https://acme.atlassian.net",
+        jql="project = ENG",
+        email="operator@example.com",
+        api_token="token",
+    )
+    with pytest.raises(SourceError, match="isLast"):
         source.fetch_page(cursor=None, limit=10)
 
 

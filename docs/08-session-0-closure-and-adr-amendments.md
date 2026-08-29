@@ -1184,14 +1184,16 @@ only integration seam: Intake never imports runtime events, opens an event log,
 invokes Git, starts an engine, or changes an already-ingested issue.
 
 Remote adapters are read-only and use an injected standard-library HTTPS JSON
-transport with exact host allowlists, redirect refusal, response/time/page/
-total bounds, strict boundary validation, and sanitized failures. Credentials
+transport with exact host allowlists, redirect refusal, response/page/total
+bounds, per-operation socket timeouts, strict boundary validation, and
+sanitized failures. Credentials
 come only from environment values and are never accepted as command-line
 secrets. Remote body text cannot emit structural dependency or acceptance
 records: reserved parser-control lines are rendered as quoted body content,
 while only validated canonical fields may generate control sections. Managed
 output is deterministic, refuses to overwrite an unmanaged file without an
-explicit force flag, and rejects canonical ID collisions.
+explicit force flag, serializes cooperating Intake publishers with a local
+output lock plus pre-replace revalidation, and rejects canonical ID collisions.
 
 **Alternatives rejected.** Runtime-integrated fetching would expand the frozen
 durability and recovery surface; bidirectional synchronization would create

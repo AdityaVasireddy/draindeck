@@ -36,12 +36,13 @@ does not claim to update them.
   - Jira Cloud enhanced JQL search (`POST /rest/api/3/search/jql`) with
     `nextPageToken` and deterministic Atlassian Document Format text extraction.
   - Linear GraphQL issues with Relay `first`/`after` pagination.
-- A standard-library HTTPS client with bounded response bodies, fixed timeouts,
+- A standard-library HTTPS client with bounded response bodies, per-operation
+  socket timeouts,
   redirect refusal, validated response JSON, and safe error mapping.
 - Credentials loaded only from named environment variables.
-- Atomic managed-file writes: refuse to replace an unmanaged existing file
-  unless `--force`; replace an Intake-managed file; avoid rewriting identical
-  bytes.
+- Coordinated managed-file writes: refuse to replace an unmanaged existing
+  file unless `--force`; use an adjacent exclusive Intake lock and destination
+  revalidation before atomic replacement; avoid rewriting identical bytes.
 - `draindeck-intake sync {issues-md,github,jira,linear}` CLI with JSON success
   and error envelopes.
 
@@ -66,15 +67,20 @@ does not claim to update them.
 - `issue_id`: matches Draindeck's stable ID grammar
   `[A-Za-z0-9][A-Za-z0-9_-]*`.
 - `source_kind`: one of `issues-md`, `github`, `jira`, `linear`.
-- `source_id`: non-empty provider-native stable identifier.
+- `source_id`: non-empty provider-native stable identifier, at most 2,048
+  characters.
 - `title`: one non-empty line, at most 500 Unicode code points.
 - `body`: at most 256 KiB encoded as UTF-8.
 - `depends_on`: unique valid Draindeck IDs, excluding `issue_id`.
-- `acceptance_criteria`: at most 100 non-empty single-line entries.
-- `labels`: at most 100 unique non-empty single-line labels.
-- `source_url`: optional HTTPS URL.
-- `source_state` and `updated_at`: optional, bounded source observations; neither
-  is workflow truth.
+- `acceptance_criteria`: at most 100 unique non-empty single-line entries, each
+  at most 2,000 characters.
+- `labels`: at most 100 unique non-empty single-line labels, each at most 2,000
+  characters.
+- `source_url`: optional HTTPS URL of at most 2,048 characters without embedded
+  credentials.
+- `source_state`: optional single-line source observation of at most 256
+  characters; `updated_at`: optional single-line source observation of at most
+  128 characters. Neither is workflow truth.
 
 Adapters generate globally collision-resistant Draindeck IDs within their
 configured source scope using a caller-visible prefix:
@@ -123,7 +129,7 @@ Depends-On: <ids>                   # when present
 - <criterion>
 ```
 
-Remote body lines that would match `## ...`, `Depends-On: ...`, or
+Body lines from any source that would match `## ...`, `Depends-On: ...`, or
 `### Acceptance` are block-quoted before rendering. Canonical dependencies and
 acceptance criteria are emitted only from validated structured fields.
 
@@ -148,18 +154,21 @@ source/transport/output failure.
 
 ## External API decisions
 
-- GitHub uses `Accept: application/vnd.github+json`, the current explicit API
-  version header, `state=open`, `sort=created`, `direction=asc`, and
-  `per_page<=100`. A response object containing `pull_request` is excluded.
+- GitHub uses `Accept: application/vnd.github+json`, API version `2026-03-10`,
+  `state=open`, `sort=created`, `direction=asc`, and `per_page<=100`. A
+  response object containing `pull_request` is excluded; bounded consecutive
+  PR-only raw pages are consumed internally rather than treated as exhaustion.
 - Jira Cloud permits only an HTTPS `*.atlassian.net` base URL in v1. It uses
-  enhanced JQL POST with an explicit field allowlist and Basic authorization
+  enhanced JQL POST with an explicit field allowlist, requires consistent
+  `isLast`/`nextPageToken` completion signals, and uses Basic authorization
   from `<email>:<API token>` environment values. Password authentication is not
   supported.
 - Linear uses only `https://api.linear.app/graphql`, personal API-key
   authorization from an environment variable, explicit `first`/`after`
-  pagination, and rejects any non-empty GraphQL `errors` array even with HTTP
-  200.
-- No adapter follows redirects while holding credentials.
+  pagination for issues and labels, and rejects any non-empty GraphQL `errors`
+  array even with HTTP 200.
+- No adapter follows redirects while holding credentials. JSON requests and
+  responses reject non-standard `NaN`/infinity constants.
 
 Official references:
 
@@ -260,8 +269,8 @@ and a correlation store are out of scope.
 ## Boundaries
 
 - Always: validate untrusted data at adapter boundaries; bound pages, totals,
-  response bytes, strings, and timeouts; run focused and regression tests before
-  every local checkpoint commit; stage only owned files.
+  response bytes, strings, and per-operation network timeouts; run focused and
+  regression tests before every local checkpoint commit; stage only owned files.
 - Ask first: new dependencies, additional hosts, OAuth flows, persistence,
   runtime imports beyond the pure Issues.md parser, event/schema changes,
   Dashboard integration, or changes to an existing unmanaged output file
@@ -269,6 +278,10 @@ and a correlation store are out of scope.
 - Never: touch `src/runtime`; write/read event logs; invoke Git; mutate provider
   issues; accept secrets on argv; log tokens/headers/raw provider bodies; follow
   credentialed redirects; push or merge.
+- Publication refuses symbolic-link destinations, serializes cooperating Intake
+  processes with an adjacent exclusive lock, revalidates the destination before
+  replacement, and fsyncs a same-directory temporary file before atomic
+  replacement.
 
 ## Success criteria
 
@@ -277,8 +290,9 @@ and a correlation store are out of scope.
    runtime parser without unintended synthetic issues/dependencies/acceptance.
 3. Pagination and all external/local inputs are bounded and fail closed on
    malformed data.
-4. Managed output publication is atomic, refuses unmanaged overwrite by
-   default, and skips identical rewrites.
+4. Managed output publication refuses unmanaged overwrite by default,
+   coordinates concurrent Intake publishers, revalidates before atomic
+   replacement, and skips identical rewrites.
 5. CLI success/errors follow the documented envelopes and never disclose
    credentials or raw provider payloads.
 6. `src/runtime` and Doc 03 remain byte-unchanged; no new dependency is added.

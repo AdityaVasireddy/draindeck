@@ -29,10 +29,7 @@ def _quote_structural_body_line(line: str) -> str:
 
 def _render_issue(issue: CanonicalIssueV1) -> str:
     lines = [f"## {issue.issue_id}: {issue.title}"]
-    body_lines = [
-        _quote_structural_body_line(line)
-        for line in issue.body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    ]
+    body_lines = [_quote_structural_body_line(line) for line in issue.body.splitlines()]
     if issue.body:
         lines.extend(("", *body_lines))
 

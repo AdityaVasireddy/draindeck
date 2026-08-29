@@ -4,6 +4,7 @@ import io
 import json
 import sys
 from pathlib import Path
+from http.client import IncompleteRead
 from urllib.error import HTTPError
 
 import pytest
@@ -98,6 +99,8 @@ def test_transport_rejects_redirects_oversize_invalid_json_and_wrong_shape() -> 
         (redirect, 100, "HTTP status 302"),
         (b"x" * 11, 10, "maximum"),
         (b"not-json", 100, "valid JSON"),
+        (b'{"value":NaN}', 100, "valid JSON"),
+        (IncompleteRead(b"{", 10), 100, "request failed"),
         (b"[]", 100, "object"),
     ]
     for response, maximum, message in cases:
@@ -125,6 +128,15 @@ class FakeTransport:
     def request_json(self, method: str, url: str, **kwargs: object) -> object:
         self.calls.append({"method": method, "url": url, **kwargs})
         return self.response
+
+
+class SequencedTransport(FakeTransport):
+    def __init__(self, responses: list[object]) -> None:
+        super().__init__(responses)
+
+    def request_json(self, method: str, url: str, **kwargs: object) -> object:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return self.response.pop(0)
 
 
 def test_github_maps_issues_excludes_pull_requests_and_paginates() -> None:
@@ -170,7 +182,7 @@ def test_github_maps_issues_excludes_pull_requests_and_paginates() -> None:
     }
     assert call["headers"] == {
         "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
+        "X-GitHub-Api-Version": "2026-03-10",
         "User-Agent": "draindeck-intake/1",
         "Authorization": "Bearer token-value",
     }
@@ -201,3 +213,19 @@ def test_github_rejects_bad_cursor_scope_and_header_injection() -> None:
     source = GitHubSource(transport, owner="acme", repo="widget")
     with pytest.raises(SourceError, match="cursor"):
         source.fetch_page(cursor="zero", limit=10)
+
+
+def test_github_skips_full_pull_request_only_pages_within_one_source_page() -> None:
+    transport = SequencedTransport(
+        [
+            [{"number": 1, "title": "PR", "pull_request": {}}],
+            [{"number": 2, "title": "Issue"}],
+        ]
+    )
+    source = GitHubSource(transport, owner="acme", repo="widget")
+
+    page = source.fetch_page(cursor=None, limit=1)
+
+    assert [issue.issue_id for issue in page.issues] == ["gh-acme-widget-2"]
+    assert page.next_cursor == "3"
+    assert [call["query"]["page"] for call in transport.calls] == [1, 2]

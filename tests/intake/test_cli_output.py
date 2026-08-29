@@ -64,6 +64,14 @@ def test_publish_force_atomic_replace_and_identical_noop(
     monkeypatch.setattr(os, "replace", real_replace)
 
 
+def test_publish_refuses_a_concurrent_intake_lock(tmp_path: Path) -> None:
+    output = tmp_path / "Issues.md"
+    lock = tmp_path / ".Issues.md.draindeck-intake.lock"
+    lock.write_text("other intake process", encoding="utf-8")
+    with pytest.raises(OutputError, match="publication holds"):
+        publish_managed(output, f"{MANAGED_MARKER}\n")
+
+
 def test_local_cli_syncs_end_to_end_with_json_result(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -211,7 +219,7 @@ def test_github_cli_resolves_optional_env_token_and_transport_bounds(
             ],
             {"JIRA_EMAIL": "operator@example.com", "JIRA_API_TOKEN": "fixture"},
             "acme.atlassian.net",
-            {"issues": []},
+            {"issues": [], "isLast": True},
         ),
         (
             ["linear", "--team-key", "ENG"],
@@ -270,3 +278,25 @@ def test_cli_converts_source_and_output_failures_to_sanitized_json(
     error = json.loads(captured.err)["error"]
     assert error["code"] == "source_error"
     assert "Traceback" not in captured.err
+
+
+def test_cli_does_not_echo_malformed_url_fragments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sensitive_fragment = "never-echo-url-fragment"
+    exit_code = run(
+        [
+            "sync",
+            "jira",
+            "--base-url",
+            f"https://acme.atlassian.net:{sensitive_fragment}",
+            "--jql",
+            "project = ENG",
+            "--output",
+            str(tmp_path / "out.md"),
+        ],
+        environ={"JIRA_EMAIL": "operator@example.com", "JIRA_API_TOKEN": "fixture"},
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert sensitive_fragment not in captured.err
