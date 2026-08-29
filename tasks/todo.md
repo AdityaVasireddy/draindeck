@@ -9,8 +9,8 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` verified complete
 - [x] Preparatory commit — archive prior task artifacts; commit approved spec,
       plan, and todo
 - [x] Unit 0 — ADR-28 acceptance record and characterized baseline
-- [ ] Unit 1 — canonical model and deterministic safe compiler
-- [ ] Unit 2 — source protocol, bounded collector, local Issues.md adapter
+- [x] Unit 1 — canonical model and deterministic safe compiler
+- [~] Unit 2 — source protocol, bounded collector, local Issues.md adapter
 - [ ] Unit 3 — bounded HTTP JSON transport and GitHub adapter
 - [ ] Unit 4 — Jira Cloud adapter and ADF extraction
 - [ ] Unit 5 — Linear GraphQL adapter
