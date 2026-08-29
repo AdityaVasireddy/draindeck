@@ -14,8 +14,8 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` verified complete
 - [x] Unit 3 — bounded HTTP JSON transport and GitHub adapter
 - [x] Unit 4 — Jira Cloud adapter and ADF extraction
 - [x] Unit 5 — Linear GraphQL adapter
-- [~] Unit 6 — atomic managed output and CLI composition
-- [ ] Unit 7 — docs, fresh-context review, full verification, final handoff
+- [x] Unit 6 — atomic managed output and CLI composition
+- [~] Unit 7 — docs, fresh-context review, full verification, final handoff
 
 ## Final gates
 
