@@ -1,200 +1,265 @@
-# Implementation plan: Coding-Engine Proxy Cost
+# Implementation plan: Draindeck Intake v1
 
-**Status:** DRAFT — pending user approval in this planning session. No `src/`
-mutation until the user approves this plan + `spec/coding-engine-proxy-cost.md`
-and (for an uninterrupted `/build auto` run) resolves local checkpoint-commit
-authority.
-**Branch:** `dashboard-engine-proxy-cost`, baseline clean `master`
-`0bb16292cc4c920f2cbdf075d9b51e58015eb1c4`.
-**Mutation boundary:** `src/draindeck_dashboard`, `tests/dashboard`, Dashboard
-docs/task artifacts. **Never edit `src/runtime`; the event schema (doc 03) is
-frozen.** No dependency installs. No transcript parsing.
+**Status:** PROPOSED — `/build auto` approval required before source mutation.
+**Branch:** `codex/draindeck-intake`, clean baseline `4357b4a`.
+**Governing spec:** `spec/draindeck-intake.md`.
+**Mutation boundary:** new `src/draindeck_intake`, `tests/intake`, Intake docs,
+packaging/test discovery, and bookkeeping. Never edit `src/runtime` or Doc 03.
 
-## 1. Authority and gates
+## Architecture decisions
 
-Order of authority:
-1. Frozen runtime/observer contracts + doc 03 (event/state semantics win over
-   everything).
-2. Accepted ADR-25/26/27 and existing Dashboard read-model contracts (docs/19,
-   docs/27).
-3. `spec/coding-engine-proxy-cost.md` (this feature's contract).
-4. `PRODUCT.md` / `DESIGN.md` for visual/product direction.
-5. This plan and `tasks/todo.md`.
+- Intake is an optional one-way preflight package. It compiles to the existing
+  `Issues.md` contract and owns no workflow state.
+- Provider JSON is mapped at the boundary into one immutable canonical model.
+- All remote I/O uses an injected, bounded, no-redirect standard-library
+  transport; there is no dependency installation.
+- The generated file is managed, deterministic, parser-compatible, and
+  atomically replaced only under explicit ownership rules.
+- Runtime integration stops at the generated file. Existing event-log IDs are
+  never updated or reinterpreted.
 
-**Blast radius:** this touches Dashboard `src/` read-model behavior, a SQLite
-schema-version bump, and a startup migration — **high-blast-radius**. Full
-five-gate discipline, test-first, per-unit runnable checkpoints. Reversible
-docs/task edits are low-blast-radius.
+## Dependency graph
 
-**Baseline gate (Unit 0):** confirm the baseline suite is green before any
-mutation — `python -m pytest tests\unit tests\dashboard -q`. Record the exact
-counts; every later checkpoint must not regress them.
+```text
+ADR/spec acceptance
+    -> canonical model + compiler
+        -> source protocol + local adapter
+            -> bounded HTTP transport
+                -> GitHub adapter
+                -> Jira adapter
+                -> Linear adapter
+                    -> CLI + atomic publication
+                        -> docs, review, full verification
+```
 
-## 2. Execution model
+## Units
 
-One `/build auto` pass of ordered units, each a runnable, test-first checkpoint.
-Local per-unit checkpoint commits **only if** the user authorizes the bounded
-series in the build authorization (CLAUDE.md hard rule). **Merge and push remain
-prohibited** until separately, explicitly authorized. If checkpoint-commit
-authority is withheld, stop at the first approval gate rather than accumulating
-an unreviewable diff.
+### Unit 0 — Record architecture acceptance and baseline
 
-## 3. Design decisions (surfaced for approval)
+**Description:** Record ADR-28 as an Intake-only additive boundary and prove the
+clean branch baseline before behavioral code.
 
-- **D1 — capture point:** cost/tokens are read from `usage` only at the single
-  *accepted* `EXECUTION_FINISHED` transition inside `projections.py`
-  (`_apply_execution_transition`). Duplicate/out-of-order terminal events fail
-  the transition and never contribute — double-count-proof by construction. A
-  non-`ExecutionFinished` terminal (crash) yields no cost.
-- **D2 — inconsistent-after-valid:** an execution flagged `inconsistent` by a
-  later duplicate *retains* the first captured cost (spec §2.1 D1). Reviewed as a
-  named edge in Unit 1 tests.
-- **D3 — storage grain:** cost stored per execution in `execution_views`;
-  issue/run/repo/global figures are computed by SQL aggregation, never stored
-  redundantly (single source of truth, no denormalized drift).
-- **D4 — backfill:** startup migration adds columns and flips `READY`→
-  `REBUILDING`; the existing lease-owned async rebuild backfills. No evidence
-  scan at startup.
-- **D5 — additive API only:** `proxyCost`/average objects are new keys; no
-  existing field changes. Backward compat is proven by the existing suite
-  remaining green.
+**Acceptance criteria:**
+- [ ] ADR-28 states the one-way compiler boundary, security limits, rejected
+      alternatives, and explicit non-impact on `src/runtime`/Doc 03.
+- [ ] Current unit + Dashboard suites pass before source mutation.
+- [ ] Current tasks are archived and the approved spec/plan/todo are committed
+      as one preparatory checkpoint.
 
-## 4. Units
+**Verification:**
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\dashboard -q`
+- [ ] `git diff --check`
+- [ ] `git diff --name-only master -- src/runtime docs/03-state-machine-and-event-schema.md` is empty
 
-### Unit 0 — Baseline & contract map (no `src/` mutation)
-- Run `pytest tests\unit tests\dashboard -q`; record baseline counts.
-- Confirm `ExecutionFinished` OK evidence stores `payload_json.usage` and the
-  projection reaches it. Confirm dependency-carveout test present.
-- **Checkpoint:** baseline green, counts recorded in `tasks/todo.md`.
+**Dependencies:** None
 
-### Unit 1 — Cost/token validation + projection capture (pure, most testable)
-- New pure helpers (new module `proxy_cost.py` or within `projections.py`):
-  `validate_dollars(value) -> Optional[int]` (micro-USD; bool/neg/non-finite →
-  None; `Decimal(str(value))*1_000_000` `ROUND_HALF_UP`); `validate_tokens(value)
-  -> Optional[int]` (non-negative int, not bool).
-- Extend `ExecutionView` with `proxy_micro_usd`, `cost_valid`, `input_tokens`,
-  `output_tokens`, `tokens_valid`.
-- In `_apply_execution_transition`, when `etype is EXECUTION_FINISHED` and the
-  transition is **accepted**, read `usage` from the payload and populate the
-  fields. Nowhere else.
-- **Tests (test-first):** validation truth table incl. adversarial decimals and
-  a metered valid `0`; capture only on accepted finish; duplicate finish doesn't
-  overwrite (D1/D2); crash terminal → no cost; independent cost/token coverage.
-- **Checkpoint:** projection unit tests green; no schema/API change yet.
+**Files likely touched:** `docs/08-session-0-closure-and-adr-amendments.md`,
+`spec/draindeck-intake.md`, `tasks/plan.md`, `tasks/todo.md`, `docs/plans/*`
 
-### Unit 2 — SQLite v2→v3 ordered migration chain + backfill trigger
-- `migrations.py`: `SCHEMA_VERSION = 3`; refactor to an ordered step list
-  (`v1→v2` unchanged, new `_apply_v2_to_v3_ddl` = `ALTER TABLE execution_views
-  ADD COLUMN` ×5); runner applies all steps `from < current` in order (fresh,
-  v1, v2, v3 branches). Retain `FAILED`→`ERROR` correction. `v2→v3` flips
-  `READY`→`REBUILDING` (no evidence scan).
-- `read_models.py`: `_write_execution_view` writes the new columns;
-  `fetch`/publish/incremental paths carry them.
-- **Tests:** fresh→v3 shape; v2 DB→v3 preserves all pre-existing rows;
-  concurrent-start (two connections) safe; failed step rolls back whole chain;
-  `version>3` refused; `READY`→`REBUILDING` flip on v2→v3; `FAILED`→`ERROR`
-  retained; new columns nullable/defaulted correctly.
-- **Checkpoint:** migration + read-model persistence tests green; existing
-  migration/read-model tests still green.
+**Estimated scope:** Medium
 
-### Unit 3 — Aggregation query layer (`api_queries.py`)
-- Add cost aggregation helpers computing the `proxyCost` object for a scope
-  (execution/issue/run/repo/global) and the average-per-DONE-issue object.
-  Current-generation joins reused; batched fixed-query-count per page for lists
-  (mirror the groupBy=issue two-query pattern).
-- Cost sort columns added to the allowlists; UNAVAILABLE-last + ID tie-break
-  encoded in `ORDER BY` (e.g. `proxy_micro_usd IS NULL, proxy_micro_usd DIR,
-  id`).
-- **No cost on excluded endpoints:** Evidence/Search/Attention query paths are
-  not touched; a test asserts their responses carry no `proxyCost`.
-- **No cost on excluded endpoints:** Evidence/Search/Attention query paths are
-  not touched; a test asserts their responses carry no `proxyCost`.
-- **Tests:** per-scope sums (all attempts incl. retries/rejections/failures);
-  completeness incl. empty scope; average incl. `null`-when-no-DONE, dual
-  coverage, Observed flag; sort ordering incl. null placement + tie-break;
-  bounded query count on a multi-row page (assert fixed number of queries). The
-  large-scale measurement itself is Unit 6.
-- **Checkpoint:** query-layer tests green.
+### Unit 1 — Canonical model and deterministic compiler
 
-### Unit 4 — API wiring (`app.py`, `views.py`)
-- Attach `proxyCost` (and average where applicable) to every §3.3 endpoint —
-  overview (global), repository overview, issues list + issue detail, runs list +
-  run detail, executions list + execution detail, repo issue/exec lists, Home
-  top-cost issues. Additive keys only; readiness gates unchanged.
-- Evidence/Search/Attention endpoints deliberately untouched.
-- **Tests:** each endpoint returns the object with correct shape/invariants;
-  Runs list AND Run Detail covered; existing endpoint contract tests unchanged
-  (backward compat); readiness/stale labelling still applies; excluded endpoints
-  asserted cost-free.
-- **Checkpoint:** API tests green; full `tests\unit tests\dashboard` green.
+**Description:** Establish the immutable public model, ID normalization, and
+safe deterministic Issues.md compiler as a parser-compatible vertical slice.
 
-### Unit 5 — Frontend (all placement screens)
-- `format.js`: currency/coverage/completeness helpers (micro-USD → "$X.XX",
-  "$X observed", "—" for unavailable, metered "$0.00").
-- Screens (spec §5), each accessible + theme-aware:
-  - **Home** (`pages/home.js`): total, observed average, coverage, top-cost
-    issues chart (`components/chart.js`) + accessible table + stable issue links.
-  - **Repository Overview** (`pages/repository-detail.js`): total, completed-issue
-    average, coverage.
-  - **Issues list AND Issue Detail** (`pages/issues.js`): sortable cost,
-    completeness, per-execution-attempt breakdown on detail, visible Partial
-    label.
-  - **Runs list AND Run Detail** (`pages/runs.js`): aggregate cost, completeness,
-    coverage on both.
-  - **Executions list AND Execution Detail** (`pages/executions.js` + detail):
-    per-execution cost and validity on both.
-  - **About & Safety** (`pages/about.js`): "proxy, not invoice" definition + full
-    exclusion list (reviewer / validation / **orchestration** / subscription /
-    crashed-execution usage + Evidence/Search/Attention screens).
-- **Tests:** JS contract tests (`tests/dashboard/js`, `test_static_js_contracts`)
-  for formatting, null/partial rendering, chart-has-table, copy strings, and the
-  Runs/About content.
-- **Checkpoint:** JS + full suite green.
+**Acceptance criteria:**
+- [ ] Model rejects invalid IDs, strings, URLs, self/duplicate dependencies,
+      duplicate labels, and all documented bounds.
+- [ ] Compiler orders stably, quotes reserved remote lines, rejects duplicate
+      IDs, and emits exact LF/trailing-newline bytes.
+- [ ] Runtime parser round-trip proves no unintended control records.
 
-### Unit 6 — Automated suites, docs, scale measurement
-- Full `tests\unit tests\dashboard -q` green; dependency-carveout green (no
-  `src/runtime` touched); crash/durability posture confirmed unregressed.
-- **Scale/index-deferral gate (measured):** use the existing 100k-row scale
-  fixture (`tests/dashboard/scale`) to measure the cost-aggregate query on a large
-  generation. Index deferral stands **only if** the measured query count/latency
-  stays within the existing per-tick/response budget; otherwise add the index in
-  Unit 2's migration and re-measure. Record the measurement.
-- Write `docs/28-proxy-cost.md` (contract, D1–D5, migration/backfill rationale,
-  compatibility, exclusions). **Keep `docs/27` frozen** — ≤1 minimal cross-ref
-  line only if necessary. Update `PRODUCT.md`/`DESIGN.md` notes if needed and a
-  build-evidence file separating VERIFIED vs ASSUMED.
-- **Checkpoint:** all automated suites green, scale measurement + docs recorded.
+**Verification:**
+- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_model_compiler.py -q`
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+- [ ] `.venv\Scripts\python.exe -m compileall -q src\draindeck_intake`
 
-### Unit 7 — Real-browser security & accessibility verification
-- Live browser verification (real runtime, not code-review-only): Home / Repo
-  Overview / Issues / Runs / Executions / About showing COMPLETE, PARTIAL
-  ("$X observed" + visible Partial), UNAVAILABLE, and a metered `$0.00`.
-- Security: no new injection/interpolation surface (cost sort uses the allowlist);
-  additive JSON only; no secret/PII exposure. Accessibility: chart has a table
-  equivalent + stable links, keyboard/focus, contrast, 200% text, responsive
-  breakpoints for the new cost affordances.
-- **Checkpoint:** browser security/accessibility evidence recorded.
+**Dependencies:** Unit 0
 
-### Unit 8 — Six-axis fresh-context review, fixes, final handoff
-- Independent fresh-context review across six axes (correctness, readability,
-  architecture, security, performance, test-coverage) focused on validation,
-  double-count safety (D1/D2), migration concurrency/rollback, exclusion
-  preservation, and null/partial UI honesty.
-- **Every real blocking/P0/P1/P2/Important finding fixed test-first**; record the
-  disposition of each finding.
-- Produce the **final handoff document** (`docs/handoffs/`): objective, status,
-  decisions+rationale, key files, verification evidence, next action.
-- **Do not merge or push.**
-- **Checkpoint:** feature complete, evidence + handoff recorded, awaiting user
-  merge decision.
+**Files likely touched:** `src/draindeck_intake/__init__.py`,
+`src/draindeck_intake/model.py`, `src/draindeck_intake/compiler.py`,
+`tests/intake/test_model_compiler.py`
 
-## 5. Risks / watch-items
-- Decimal conversion edge cases (half-up rounding, tiny/large values) — covered
-  by adversarial unit tests.
-- Aggregate query cost on large generations — keep fixed-query-count per page;
-  reuse existing indexes (`ix_execution_views_issue/_run`); add an index only if
-  the Unit 6 measured need appears (surface as a decision, not silently).
-- Migration flipping `READY`→`REBUILDING` briefly serves `stale`-labelled data
-  during backfill — intended and honest; verify labelling.
-- Backward compatibility: assert no existing response field changes; excluded
-  endpoints stay cost-free.
+**Estimated scope:** Medium
+
+### Unit 2 — Source protocol, bounded collector, and local adapter
+
+**Description:** Add the page protocol and a complete local Issues.md import
+path without network I/O.
+
+**Acceptance criteria:**
+- [ ] Collector rejects cursor cycles, empty continuation pages, oversized
+      pages, duplicates, and totals above `max_issues`.
+- [ ] Local adapter performs a bounded UTF-8 read and maps current Issues.md
+      fields without changing IDs.
+- [ ] Local input -> canonical collection -> compiled output works end-to-end.
+
+**Verification:**
+- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_sources.py -q`
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+
+**Dependencies:** Unit 1
+
+**Files likely touched:** `src/draindeck_intake/sources.py`,
+`src/draindeck_intake/issues_md.py`, `src/draindeck_intake/__init__.py`,
+`tests/intake/test_sources.py`
+
+**Estimated scope:** Medium
+
+### Unit 3 — Bounded HTTP transport and GitHub adapter
+
+**Description:** Prove the external boundary with a reusable HTTPS JSON
+transport and the first live provider mapping.
+
+**Acceptance criteria:**
+- [ ] Transport enforces HTTPS/host allowlists, timeouts, response-size bounds,
+      redirect refusal, JSON object/list expectations, and sanitized errors.
+- [ ] GitHub request uses documented headers/query bounds and optional env-token
+      authorization.
+- [ ] Pull requests are excluded and malformed issue records fail closed.
+
+**Verification:**
+- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_http_github.py -q`
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+
+**Dependencies:** Unit 2
+
+**Files likely touched:** `src/draindeck_intake/http.py`,
+`src/draindeck_intake/github.py`, `tests/intake/test_http_github.py`
+
+**Estimated scope:** Medium
+
+### Unit 4 — Jira Cloud adapter and ADF extraction
+
+**Description:** Add current enhanced-JQL pagination, API-token authentication,
+and safe plain-text extraction from Jira Cloud ADF descriptions.
+
+**Acceptance criteria:**
+- [ ] Only HTTPS `*.atlassian.net` sites are accepted and credentials come from
+      environment values supplied to the adapter.
+- [ ] Requests use POST `/rest/api/3/search/jql`, field allowlisting,
+      `maxResults`, and opaque `nextPageToken`.
+- [ ] ADF and malformed response tests cover nested text, hard breaks, null
+      descriptions, invalid fields, and secret-free errors.
+
+**Verification:**
+- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_jira.py -q`
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+
+**Dependencies:** Unit 3
+
+**Files likely touched:** `src/draindeck_intake/jira.py`,
+`tests/intake/test_jira.py`
+
+**Estimated scope:** Small
+
+### Unit 5 — Linear adapter
+
+**Description:** Add Relay-pagination and team-filtered issue mapping over
+Linear's GraphQL endpoint.
+
+**Acceptance criteria:**
+- [ ] Request uses the fixed Linear endpoint, env API key, explicit variables,
+      team-key filter, and `first`/`after` pagination.
+- [ ] A non-empty GraphQL errors array fails even on HTTP 200.
+- [ ] Missing/null required fields, bad pageInfo, labels, state, priority, and
+      URL mapping are covered.
+
+**Verification:**
+- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_linear.py -q`
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+
+**Dependencies:** Unit 3
+
+**Files likely touched:** `src/draindeck_intake/linear.py`,
+`tests/intake/test_linear.py`
+
+**Estimated scope:** Small
+
+### Unit 6 — Atomic output and CLI composition
+
+**Description:** Deliver the operator-facing command for all four sources with
+safe managed-file publication and machine-readable results.
+
+**Acceptance criteria:**
+- [ ] Unmanaged existing files are refused without `--force`; managed files are
+      replaced atomically; byte-identical output is a no-op.
+- [ ] CLI validates bounds/env names/provider arguments before I/O and returns
+      documented JSON envelopes/exit codes without secrets or stack traces.
+- [ ] Local Issues.md CLI path passes end-to-end and provider construction is
+      covered without live network access.
+
+**Verification:**
+- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_cli_output.py -q`
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+- [ ] `.venv\Scripts\python.exe -m draindeck_intake.cli --help`
+
+**Dependencies:** Units 4 and 5
+
+**Files likely touched:** `src/draindeck_intake/output.py`,
+`src/draindeck_intake/cli.py`, `tests/intake/test_cli_output.py`,
+`pyproject.toml`
+
+**Estimated scope:** Medium
+
+### Unit 7 — Documentation, adversarial review, and final evidence
+
+**Description:** Document the public contract and operational limits, perform a
+fresh-context multi-axis review, fix every real finding test-first, and close
+the build with full evidence.
+
+**Acceptance criteria:**
+- [ ] README/docs cover commands, auth environment variables, generated-file
+      ownership, source limitations, immutable-after-ingestion behavior, and
+      official API references.
+- [ ] Security/review/simplification passes find no unresolved Critical or
+      Required issue; each real finding has a regression test.
+- [ ] Full test, Dashboard, durability, compile, diff, secret, and core-carveout
+      gates pass; final handoff separates VERIFIED from ASSUMED live-provider
+      behavior.
+
+**Verification:**
+- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake tests\dashboard -q`
+- [ ] `.venv\Scripts\python.exe tests\crash\harness.py <temp> 42`
+- [ ] `.venv\Scripts\python.exe tests\crash\harness.py <temp> 1337`
+- [ ] `.venv\Scripts\python.exe -m compileall -q src\draindeck_intake`
+- [ ] `git diff --check`
+- [ ] `git diff --name-only master -- src/runtime docs/03-state-machine-and-event-schema.md` is empty
+- [ ] staged-diff secret scan before each commit
+
+**Dependencies:** Unit 6
+
+**Files likely touched:** `README.md`, `docs/29-draindeck-intake.md`,
+`docs/reviews/DRAINDECK_INTAKE_BUILD_EVIDENCE.md`, `NEXT.md`,
+`docs/handoffs/HANDOFF_2026-08-29_draindeck-intake-complete.md`
+
+**Estimated scope:** Medium
+
+## Checkpoints
+
+- After Unit 0: architecture accepted, baseline green, planning committed.
+- After Units 1-2: local end-to-end canonical/compiler path green.
+- After Units 3-5: all provider contracts green under adversarial fixtures.
+- After Unit 6: installable CLI path green.
+- After Unit 7: Definition of Done met; ready for user review, not merged/pushed.
+
+## Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Provider response drift | High | Strict boundary mapping, sanitized failure, official-doc citations, fixtures |
+| Credential disclosure | High | env-only secrets, no redirects, allowlisted errors, staged secret scan |
+| Prompt/control injection through issue text | High | quote reserved parser-control lines; parser round-trip tests |
+| Unbounded source backlog/response | High | page/total/body/response/time bounds and cursor-cycle rejection |
+| Overwriting human Issues.md | High | managed marker, atomic replacement, unmanaged refusal by default |
+| Canonical ID collision | Medium | deterministic visible prefixes and collision refusal |
+| False update expectations | Medium | one-way docs and immutable-after-event-ingestion warning |
+
+## Authorization requested
+
+Approval of this plan authorizes one uninterrupted `/build auto` pass and a
+bounded series of **nine local commits** on `codex/draindeck-intake`: one
+preparatory spec/plan/archive commit followed by Units 0-7. It does not authorize
+push, merge, live credentialed calls, dependency installation, runtime/event
+changes, or mutation of the main checkout's untracked Dashboard files.
