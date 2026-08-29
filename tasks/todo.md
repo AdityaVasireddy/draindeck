@@ -10,8 +10,8 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` verified complete
       plan, and todo
 - [x] Unit 0 — ADR-28 acceptance record and characterized baseline
 - [x] Unit 1 — canonical model and deterministic safe compiler
-- [~] Unit 2 — source protocol, bounded collector, local Issues.md adapter
-- [ ] Unit 3 — bounded HTTP JSON transport and GitHub adapter
+- [x] Unit 2 — source protocol, bounded collector, local Issues.md adapter
+- [~] Unit 3 — bounded HTTP JSON transport and GitHub adapter
 - [ ] Unit 4 — Jira Cloud adapter and ADF extraction
 - [ ] Unit 5 — Linear GraphQL adapter
 - [ ] Unit 6 — atomic managed output and CLI composition

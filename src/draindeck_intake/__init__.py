@@ -8,14 +8,26 @@ from .model import (
     make_scoped_issue_id,
     normalize_id_segment,
 )
+from .sources import (
+    CollectionError,
+    IssuePage,
+    IssueSource,
+    SourceError,
+    collect_issues,
+)
 
 __all__ = [
     "CanonicalIssueV1",
     "CompileError",
+    "CollectionError",
+    "IssuePage",
+    "IssueSource",
     "IssueSourceKind",
     "IssueValidationError",
     "MANAGED_MARKER",
     "compile_issues_md",
+    "collect_issues",
     "make_scoped_issue_id",
     "normalize_id_segment",
+    "SourceError",
 ]
