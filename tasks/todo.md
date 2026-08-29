@@ -90,21 +90,47 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done (with evidence).
 - [x] `docs/28-proxy-cost.md` written; docs/27 gets a single cross-ref line only;
       NEXT.md updated; `docs/reviews/PROXY_COST_BUILD_EVIDENCE.md` (VERIFIED vs
       ASSUMED)
-- [ ] Crash/durability harness (ASSUMED unregressed — no src/runtime touched; to
-      confirm at Unit 8 close-out if reviewer requires)
+- [x] Crash/durability harness confirmed unregressed at Unit 8 close-out
+      (VERIFIED both seeds — see Unit 8 evidence-log entry below)
 
-## Unit 7 — Real-browser security & accessibility
-- [ ] Live browser: COMPLETE / PARTIAL / UNAVAILABLE / metered $0.00 across
-      Home / Repo Overview / Issues / Runs / Executions / About
-- [ ] Security (no new injection surface; additive JSON; no PII) + accessibility
-      (chart-has-table, keyboard/focus, contrast, 200% text, responsive) evidence
+## Unit 7 — Real-browser security & accessibility ✅
+- [x] Live browser (real server on 8422 + seeded read-model DB): COMPLETE /
+      PARTIAL "$X observed"+Partial / UNAVAILABLE "Not observed" / metered $0.00
+      verified across Home / Repo Overview / Issues (list+detail) / Runs
+      (list+detail) / Executions (list+detail) / About. Exclusions
+      (Evidence/Search/Attention) confirmed cost-free live (200, no proxyCost).
+- [x] Security: header set intact on cost responses (CSP/XFO/nosniff/no-referrer);
+      additive JSON, no script/js-uri; cost sort strictly allowlisted (column +
+      direction → injection probes 422). Accessibility: chart role=img+aria-label
+      with accessible table + stable links; chart bars + sort buttons
+      keyboard-focusable; real Enter activation works; `:focus-visible` ring;
+      reduced-motion rules present; reflow-safe (`.ledger-table-wrapper`
+      overflow-x:auto; no body overflow at 200% zoom / 360px); both themes legible
+      (Partial chip 5.00:1 light / 8.67:1 dark; total 14.12:1 dark).
 
-## Unit 8 — Six-axis review, fixes, final handoff
-- [ ] Fresh-context six-axis review (correctness, readability, architecture,
-      security, performance, test-coverage)
-- [ ] Every blocking/P0/P1/P2/Important finding fixed test-first (record each)
-- [ ] Final handoff document in docs/handoffs/
-- [ ] Do NOT merge/push — hand off for user merge decision
+## Unit 8 — Six-axis review, fixes, final handoff ✅
+- [x] Fresh-context six-axis review over the full source diff (correctness,
+      readability, architecture, security, performance, test quality). Confirmed
+      the `cost_valid=1 ⟹ proxy_micro_usd NOT NULL` invariant at capture; D1
+      double-count safety on BOTH full-rebuild and incremental
+      (`apply_changed_entities_locked` re-replays each execution's complete OK
+      evidence → no cost wipe); migration lock-first/rollback/one-time-flip/
+      version-refusal; allowlisted sort; fixed-query-count aggregates.
+- [x] Two real findings fixed test-first (RED→GREEN via new
+      `tests/dashboard/js/test_proxy_cost_render.mjs`, 8 assertions), re-verified
+      live: **A** Home top-cost chart labels showed raw micro-USD → now formatted
+      USD (`chart.js:chartValueText` + `home.js:buildTopCostChartEntries`);
+      **B** Run Detail lacked the visible Partial chip → now present
+      (`runs.js:runProxyCostDd`). No other blocking finding survived.
+- [x] Final handoff document: `docs/handoffs/HANDOFF_2026-08-28_proxy-cost-complete.md`.
+- [x] Do NOT merge/push — handed off for user merge decision.
 
 ## Evidence log
-- (append dated VERIFIED/ASSUMED entries here as units complete)
+- **2026-08-28 (Unit 7, VERIFIED):** real-browser security/accessibility of all
+  proxy-cost placements — see `docs/reviews/PROXY_COST_BUILD_EVIDENCE.md`
+  "VERIFIED — Unit 7" for the full per-screen/state/contrast/injection detail.
+- **2026-08-28 (Unit 8, VERIFIED):** six-axis review; findings A/B fixed
+  test-first and re-verified live; `tests\unit tests\dashboard -q` →
+  **1056 passed** (560 unit unchanged + 496 dashboard) after the fixes; proxy-cost
+  scale re-run all ≤6.8 ms vs 500 ms budget; durability harness
+  `ALL 60 SCENARIOS PASSED` on seed 42 and seed 1337 (exit 0).

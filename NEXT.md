@@ -10,28 +10,35 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-26)
+## 1. Current state (verified 2026-08-28)
 
-- **Coding-engine proxy cost: BUILD IN PROGRESS (Units 0-6 complete, 7-8
-  pending), on branch `dashboard-engine-proxy-cost`, baseline clean
-  `master` `0bb1629`.** Exposes engine-reported API-list-rate proxy cost
-  (`ExecutionFinished.payload.usage`) across the Dashboard: SQLite
-  `SCHEMA_VERSION` 2→3 ordered migration chain adds nullable cost/token
-  columns to `execution_views` and flips READY read models to REBUILDING
-  for the existing async backfill (no startup evidence scan); a
+- **Coding-engine proxy cost: BUILD COMPLETE (Units 0-8), on branch
+  `dashboard-engine-proxy-cost`, baseline clean `master` `0bb1629`.
+  Awaiting user merge decision.** Exposes engine-reported API-list-rate
+  proxy cost (`ExecutionFinished.payload.usage`) across the Dashboard:
+  SQLite `SCHEMA_VERSION` 2→3 ordered migration chain adds nullable
+  cost/token columns to `execution_views` and flips READY read models to
+  REBUILDING for the existing async backfill (no startup evidence scan); a
   `proxyCost` object + average-per-completed-issue + top-cost issues are
   attached additively to execution/issue/run/repository/global responses
   (Evidence/Search/Attention deliberately excluded); Home/Repository
   Overview/Issues/Runs/Executions/About UI render cost with a
-  proxy-not-invoice framing. **Combined `tests\unit tests\dashboard`
-  1055 passed** (560 unit unchanged — no `src/runtime` touched — + 495
-  dashboard); scale measurement confirms index deferral (all cost
-  aggregates ≤7 ms at 10k executions / 100k evidence). Spec:
-  `spec/coding-engine-proxy-cost.md`; design: `docs/28-proxy-cost.md`;
-  evidence: `docs/reviews/PROXY_COST_BUILD_EVIDENCE.md`; plan/todo:
-  `tasks/plan.md` / `tasks/todo.md`. **No merge or push.** Next:
-  Unit 7 (real-browser security/accessibility) then Unit 8 (six-axis
-  review + final handoff).
+  proxy-not-invoice framing. **Units 7-8 completed 2026-08-28:** real-browser
+  security/accessibility verification of every placement × all four states
+  (COMPLETE/PARTIAL/UNAVAILABLE/metered-$0.00), exclusions, both themes,
+  keyboard/focus, reduced motion, reflow, and cost-sort injection probes
+  (→422); a fresh-context six-axis review that found and fixed **two real UI
+  findings test-first** — Home top-cost chart labels showed raw micro-USD
+  (now formatted USD), and Run Detail lacked the visible Partial chip (now
+  present) — each re-verified live. **Combined `tests\unit tests\dashboard`
+  1056 passed** (560 unit unchanged — no `src/runtime` touched — + 496
+  dashboard); scale re-run all cost aggregates ≤6.8 ms at 10k executions /
+  100k evidence; durability harness re-confirmed on seed 42 and seed 1337.
+  Spec: `spec/coding-engine-proxy-cost.md`; design: `docs/28-proxy-cost.md`;
+  evidence: `docs/reviews/PROXY_COST_BUILD_EVIDENCE.md`; handoff:
+  `docs/handoffs/HANDOFF_2026-08-28_proxy-cost-complete.md`; plan/todo:
+  `tasks/plan.md` / `tasks/todo.md`. **No merge or push.** Next action is a
+  **user decision**: review evidence, then approve merge (or request changes).
 
 ### Prior state (verified 2026-08-23)
 

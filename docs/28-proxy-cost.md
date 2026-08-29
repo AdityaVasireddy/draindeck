@@ -119,7 +119,20 @@ $0.00); PARTIAL → "$X observed" + Partial label; metered $0.00 → "$0.00".
   20 repos / 1k issues / 10k executions / 100k evidence): every cost aggregate
   ≤ ~7 ms against a 500 ms budget on the existing indexes — **index deferral
   stands**, no new index added.
-- Live browser verification and six-axis review: Units 7–8.
+- Live-browser verification (Unit 7, 2026-08-28): every approved placement
+  (Home / Repo Overview / Issues list+detail / Runs list+detail / Executions
+  list+detail / About) rendered COMPLETE / PARTIAL "$X observed"+Partial /
+  UNAVAILABLE "Not observed" / metered $0.00 correctly against a real server;
+  exclusions (Evidence/Search/Attention) cost-free; chart has an accessible table
+  + stable links; keyboard focus, reduced motion, reflow, and both themes pass;
+  cost sort strictly allowlisted (injection probes → 422).
+- Six-axis review (Unit 8, 2026-08-28): no blocking backend finding; two UI
+  findings — Home top-cost chart labels showing raw micro-USD, and Run Detail
+  missing the visible Partial chip — were fixed test-first and re-verified live.
+  Full suite after fixes **1056 passed**; scale re-run within budget; durability
+  harness re-confirmed on both seeds. Detail:
+  `docs/reviews/PROXY_COST_BUILD_EVIDENCE.md` and
+  `docs/handoffs/HANDOFF_2026-08-28_proxy-cost-complete.md`.
 
 Files: `proxy_cost.py`, `proxy_cost_agg.py`, `projections.py`, `migrations.py`,
 `read_models.py`, `api_queries.py`, `views.py`, `app.py`, and

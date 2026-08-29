@@ -59,6 +59,18 @@ function _costCell(proxyCost) {
   return cell;
 }
 
+/** Run Detail proxy-cost <dd>: amount + coverage, plus the visible "Partial"
+    label when completeness is PARTIAL (spec §5 copy rules -- the same rule the
+    Runs list, Issue Detail, and Home already honour). */
+export function runProxyCostDd(proxyCost) {
+  const dd = el("dd", null, [`${proxyCostText(proxyCost)} — ${coverageText(proxyCost)}`]);
+  if (isPartialCost(proxyCost)) {
+    dd.appendChild(el("span", { className: "chip chip--warn", title: coverageText(proxyCost) },
+      ["Partial"]));
+  }
+  return dd;
+}
+
 function renderRows(tbody, items) {
   syncList(tbody, items, (run) => `${run.repository.id}:${run.runId}`, (row, run) => {
     clear(row);
@@ -148,7 +160,7 @@ export async function renderDetail(root, params) {
     el("dt", null, ["Inconsistency"]), el("dd", null, [inconsistencyLabel(run.inconsistent)]),
     el("dt", null, ["Last event"]), el("dd", null, [run.lastEventId != null ? String(run.lastEventId) : "none"]),
     el("dt", null, ["Proxy cost"]),
-    el("dd", null, [`${proxyCostText(run.proxyCost)} — ${coverageText(run.proxyCost)}`]),
+    runProxyCostDd(run.proxyCost),
   ]);
   root.appendChild(identityDl);
 

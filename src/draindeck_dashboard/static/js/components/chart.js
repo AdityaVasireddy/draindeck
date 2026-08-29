@@ -34,6 +34,15 @@ function _isFiniteNonNegative(n) {
   return typeof n === "number" && Number.isFinite(n) && n >= 0;
 }
 
+/** The visible value label for a bar. `entry.value` is always the numeric
+    magnitude used for bar geometry; when the caller supplies a pre-formatted
+    `entry.valueText` (e.g. micro-USD rendered as "$2.34"), that is displayed
+    instead of the raw number. Count charts omit `valueText` and show the
+    integer unchanged. */
+export function chartValueText(entry) {
+  return entry && entry.valueText != null ? entry.valueText : String(entry.value);
+}
+
 /** Renders a horizontal bar chart into `container`. `entries`:
     [{label, value, url?}]. Bars are keyboard-reachable links when `url`
     is given. Every numeric geometry value is validated finite before
@@ -79,7 +88,7 @@ export function renderBarChart(container, { title, entries, basis }) {
     rect.setAttribute("rx", "2");
 
     const titleEl = document.createElementNS("http://www.w3.org/2000/svg", "title");
-    titleEl.textContent = `${entry.label}: ${entry.value}`;
+    titleEl.textContent = `${entry.label}: ${chartValueText(entry)}`;
     rect.appendChild(titleEl);
 
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -93,7 +102,7 @@ export function renderBarChart(container, { title, entries, basis }) {
     valueLabel.setAttribute("x", String(110 + barWidth + 4));
     valueLabel.setAttribute("y", String(y + 13));
     valueLabel.setAttribute("class", "chart-value-label");
-    valueLabel.textContent = String(entry.value);
+    valueLabel.textContent = chartValueText(entry);
 
     group.append(rect, label, valueLabel);
     svg.appendChild(group);

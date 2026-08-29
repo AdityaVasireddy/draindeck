@@ -122,6 +122,18 @@ function renderAnalyticsBand(root, analytics) {
   }
 }
 
+/** Top-cost issues -> bar-chart entries. The numeric `value` (micro-USD) drives
+    bar geometry; `valueText` is the human-readable proxy-cost label
+    ("$2.34" / "$0.92 observed" / "$0.00") so the chart never shows raw
+    micro-USD integers. The accessible table below carries full coverage. */
+export function buildTopCostChartEntries(topCostIssues) {
+  return (topCostIssues || []).map((i) => ({
+    label: i.issueId,
+    value: (i.proxyCost && i.proxyCost.observedMicroUsd) || 0,
+    valueText: proxyCostText(i.proxyCost),
+  }));
+}
+
 function renderProxyCost(root, proxyCost) {
   clear(root);
   const total = proxyCost.total;
@@ -154,10 +166,7 @@ function renderProxyCost(root, proxyCost) {
   const chartContainer = el("div", { className: "analytics-chart" });
   renderBarChart(chartContainer, {
     title: "Top-cost issues",
-    entries: top.map((i) => ({
-      label: i.issueId,
-      value: (i.proxyCost && i.proxyCost.observedMicroUsd) || 0,
-    })),
+    entries: buildTopCostChartEntries(top),
     basis: "Engine-reported API-list-rate proxy",
   });
   card.appendChild(chartContainer);
