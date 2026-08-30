@@ -1,6 +1,7 @@
 # Implementation plan: Dashboard-controlled target configuration
-**Status:** Planning gate cleared 2026-08-30 (ADR-29 accepted, checkpoint-
-commit authority granted); implementation in progress. Governing ADR: ADR-29.
+**Status:** BUILD COMPLETE 2026-08-30 (Units 0-6), pending user review before
+merge. Full evidence: `docs/reviews/TARGET_CONFIGURATION_BUILD_EVIDENCE.md`.
+Governing ADR: ADR-29.
 **Normative contract:** `spec/dashboard-target-configuration.md`.
 **Outcome prediction gate:** `docs/30-controlled-target-configuration-outcome-matrix.md`.
 
@@ -53,11 +54,15 @@ rules, without changing CLI or Dashboard behavior yet.
 
 **Acceptance criteria:**
 
-- [ ] Tests describe every outcome-matrix row.
-- [ ] Tests prove the service owns dirty, lease, state, digest, and branch gates.
-- [ ] No adapter has direct policy/mutation imports.
+- [x] Tests describe every outcome-matrix row (except three pre-existing
+      recovery/provenance behaviors this feature relies on but does not
+      modify — see build evidence).
+- [x] Tests prove the service owns dirty, lease, state, digest, and branch gates.
+- [x] No adapter has direct policy/mutation imports (2 architecture-boundary
+      tests added; this caught a real pre-existing CLI violation — see build
+      evidence).
 
-**Verification:** focused RED tests, then focused GREEN tests after implementation.
+**Verification:** focused RED tests, then focused GREEN tests after implementation. DONE.
 
 ### Unit 2: Safe apply service
 
@@ -66,17 +71,22 @@ conflicts, and atomic publication behind the shared service.
 
 **Acceptance criteria:**
 
-- [ ] Each predicted failure leaves the expected target state.
-- [ ] Config publication is atomic and fsync-backed.
-- [ ] Provenance/recovery tests preserve config and remove genuine residue.
+- [x] Each predicted failure leaves the expected target state (3 real bugs
+      found and fixed to make this true — see build evidence).
+- [x] Config publication is atomic and fsync-backed (5 crash-window tests
+      added: temp create/fsync/replace/post-replace-fsync failure, parent-
+      directory fsync unavailable).
+- [x] Provenance/recovery tests preserve config and remove genuine residue.
+      (Relies on unmodified pre-existing recovery/reconciler behavior, proven
+      by the durability harness rather than a new dedicated test.)
 
-**Verification:** `python -m pytest tests\\unit -q`.
+**Verification:** `python -m pytest tests\\unit -q`. DONE — 585 passed.
 
 ### Checkpoint: runtime safety
 
-- [ ] Focused service tests green.
-- [ ] Full unit suite green.
-- [ ] Outcome-matrix evidence recorded before adapter work.
+- [x] Focused service tests green.
+- [x] Full unit suite green.
+- [x] Outcome-matrix evidence recorded before adapter work.
 
 ### Unit 3: CLI delegation
 
@@ -85,11 +95,15 @@ documented prompts and flags.
 
 **Acceptance criteria:**
 
-- [ ] CLI has no direct Git/lease/write policy path.
-- [ ] Sentinel tests prove exactly one shared-service apply call.
-- [ ] Existing CLI behavior remains compatible where within ADR-29 scope.
+- [x] CLI has no direct Git/lease/write policy path. (This was FALSE in the
+      pre-existing draft at session start — `run_preflight`/`setup_branch`
+      mutated Git directly, bypassing the service entirely. Fixed.)
+- [x] Sentinel tests prove exactly one shared-service apply call.
+- [x] Existing CLI behavior remains compatible where within ADR-29 scope (all
+      65 pre-existing cmd_init tests still pass, one updated to spy on the
+      new single mutation gate instead of the removed helpers).
 
-**Verification:** focused init tests plus `python -m pytest tests\\unit -q`.
+**Verification:** focused init tests plus `python -m pytest tests\\unit -q`. DONE.
 
 ### Unit 4: Dashboard API delegation and registration sequencing
 
@@ -98,11 +112,17 @@ update registration only after durable success.
 
 **Acceptance criteria:**
 
-- [ ] Strict inputs and typed errors preserve existing security policy.
-- [ ] Dashboard adapter cannot mutate target state directly.
-- [ ] Registration remains unchanged on service failure.
+- [x] Strict inputs and typed errors preserve existing security policy.
+- [x] Dashboard adapter cannot mutate target state directly.
+- [x] Registration remains unchanged on service failure (including the
+      registration-fails-after-durable-apply outcome-matrix row).
 
-**Verification:** focused Dashboard API tests plus `python -m pytest tests\\dashboard -q`.
+**Verification:** focused Dashboard API tests plus `python -m pytest tests\\dashboard -q`. DONE — 519 passed.
+Extended beyond the original scope with GET .../detect and POST .../render
+(server-side stack detection/YAML rendering, closing a gap between the
+spec's UX section and its original REST contract table — see build
+evidence) and preview branch-effect prediction (needed for the UI's
+required explicit branch warning).
 
 ### Unit 5: Guided dashboard flows
 
@@ -111,11 +131,22 @@ sections, exact preview, conflict remediation, and explicit branch warning.
 
 **Acceptance criteria:**
 
-- [ ] Essential settings are usable without exposing raw schema complexity.
-- [ ] Advanced fields are grouped and validated.
-- [ ] Keyboard, error, loading, unsafe, conflict, and responsive states work.
+- [x] Essential settings are usable without exposing raw schema complexity.
+- [x] Advanced fields are grouped and validated (via a direct, always-
+      editable YAML view — not per-field controls; render_config itself only
+      parameterizes branch/validation, so this is the honest, functional
+      scope — see build evidence).
+- [~] Keyboard, error, loading, unsafe, conflict, and responsive states work.
+      (Error/loading/conflict live-verified; keyboard-only and the four
+      responsive breakpoints were not — environment limitation, see build
+      evidence.)
 
-**Verification:** JavaScript tests and real-browser checks.
+**Verification:** JavaScript tests and real-browser checks. DONE for the
+golden path and conflict recovery, live in a real browser against a real Git
+repository; two real defects found and fixed this way (a misleading dead
+form field, and a genuine `[hidden]`-vs-CSS-cascade bug fixed at the base
+stylesheet level). No standalone JS test suite exists in this codebase for
+page modules (matches this dashboard's existing convention).
 
 ### Unit 6: Five-Gate closeout
 
@@ -124,14 +155,18 @@ test-first and retain raw evidence.
 
 **Acceptance criteria:**
 
-- [ ] Unit, Dashboard, and combined suites pass.
-- [ ] Durability harness passes all 60 scenarios on seeds 42 and 1337 with
+- [x] Unit, Dashboard, and combined suites pass (585 / 519 / 1104).
+- [x] Durability harness passes all 60 scenarios on seeds 42 and 1337 with
       raw per-scenario output.
-- [ ] Security, provenance, API, browser, and independent-review findings are
-      resolved or explicitly accepted by the user.
+- [~] Security, provenance, API, browser, and independent-review findings are
+      resolved or explicitly accepted by the user. (Continuous doubt-driven
+      review during the build, not a separate fresh-context reviewer pass —
+      8 real defects found and fixed test-first. User should decide whether a
+      dedicated fresh-context review is wanted before merge.)
 
 **Verification:** all commands in `tasks/todo.md`; `git diff --check`; final
-evidence distinguishes VERIFIED from ASSUMED.
+evidence distinguishes VERIFIED from ASSUMED. DONE:
+`docs/reviews/TARGET_CONFIGURATION_BUILD_EVIDENCE.md`.
 
 ## Risks and mitigations
 
