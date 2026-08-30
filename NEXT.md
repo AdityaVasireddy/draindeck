@@ -10,7 +10,29 @@
 > items come in. Evidence produced this session goes to a handoff or the relevant ADR,
 > never here. If this file exceeds ~120 lines, that is the signal to rotate.
 
-## 1. Current state (verified 2026-08-28)
+## 1. Current state (verified 2026-08-30)
+
+- **Dashboard-controlled target configuration (ADR-29): BUILD COMPLETE
+  (Units 0-6), committed directly to `master`, pending user review before
+  merge (no push/merge occurred — commits are already on `master` since the
+  work started there). `runtime.init.service` is the sole policy/mutation
+  gate for creating/editing a target's `config.local.yaml`; CLI `cmd_init`
+  and a new Dashboard REST + UI surface (`/repositories/new-target`,
+  `/repositories/{id}/configuration`) both delegate to it. Found and fixed
+  8 real defects during the build (3 pre-existing service bugs, a CLI
+  architecture violation where `cmd_init` mutated Git directly bypassing
+  the service, a rendering-ownership gap, a preview branch-prediction gap,
+  and 2 live-browser-found frontend bugs including a genuine `[hidden]`-
+  vs-CSS-cascade defect now fixed at the base stylesheet level). **1104
+  combined `tests/unit tests/dashboard` passed**, durability harness **ALL
+  60 SCENARIOS PASSED** on both seed 42 and seed 1337, `git diff --check`
+  clean at every commit, golden paths live-browser-verified against a real
+  Git repository. Responsive-breakpoint/keyboard-only verification and a
+  separate fresh-context review were NOT completed — see evidence for why.
+  Full evidence: `docs/reviews/TARGET_CONFIGURATION_BUILD_EVIDENCE.md`;
+  handoff: `docs/handoffs/HANDOFF_2026-08-30_target-configuration-complete.md`.
+  **Next action is a user decision:** review the evidence, then approve
+  merge or request more verification.
 
 - **Draindeck Intake v1: BUILD COMPLETE, on branch
   `codex/draindeck-intake`, baseline `4357b4a`; awaiting user merge
