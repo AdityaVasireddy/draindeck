@@ -246,6 +246,40 @@ def test_apply_failure_leaves_registration_untouched(tmp_path):
     assert not (repo / ".draindeck" / "config.local.yaml").exists()
 
 
+def test_duplicate_log_path_registration_failure_does_not_roll_back_published_config(tmp_path):
+    """Outcome matrix: 'Dashboard registration update fails after durable
+    config apply -> Config/branch result remains truthful; API returns
+    registration failure and does not roll back the published config.'"""
+    client = _client(tmp_path)
+    shared_log = tmp_path / "shared-events.jsonl"
+    repo_a = _git_repo(tmp_path, "repo-a")
+    repo_b = _git_repo(tmp_path, "repo-b")
+
+    def _yaml_with_shared_log(repo: Path) -> str:
+        return _yaml(repo) + f"event_log:\n  path: {shared_log.as_posix()}\n"
+
+    first = client.post("/api/target-configurations", json={
+        "projectPath": str(repo_a), "renderedYaml": _yaml_with_shared_log(repo_a),
+        "branchChangeConfirmed": True,
+    })
+    assert first.status_code == 201
+
+    second = client.post("/api/target-configurations", json={
+        "projectPath": str(repo_b), "renderedYaml": _yaml_with_shared_log(repo_b),
+        "branchChangeConfirmed": True,
+    })
+
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "LOG_PATH_ALREADY_REGISTERED"
+    # The config was durably published to repo_b despite the registration
+    # failure -- apply never rolls back a successful write.
+    dest_b = repo_b / ".draindeck" / "config.local.yaml"
+    assert dest_b.is_file()
+    assert _run(repo_b, "branch", "--show-current") == "agent-work"
+    listed = client.get("/api/repositories").json()["repositories"]
+    assert len(listed) == 1  # only repo_a ever registered
+
+
 def test_get_configuration_404_before_any_config_exists(tmp_path):
     client = _client(tmp_path)
     repo = _git_repo(tmp_path)
