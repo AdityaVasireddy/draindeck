@@ -4,6 +4,8 @@ Draindeck is a local Windows tool that works through an `Issues.md` backlog.
 For each issue, it asks a coding agent to make the change, runs your validation
 commands, gets an independent review, and commits only approved work.
 
+![Draindeck architecture](docs/assets/architecture-diagram.webp)
+
 ## Requirements
 
 - Windows, Python 3.12+, and Git
