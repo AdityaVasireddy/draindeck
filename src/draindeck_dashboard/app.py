@@ -6,6 +6,7 @@ imports from here or from FastAPI/Starlette/Uvicorn directly.
 from __future__ import annotations
 
 import json
+import hashlib
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
@@ -22,7 +23,7 @@ from .artifacts import artifact_root_for_log, resolve_contained_artifact
 from .config import DashboardConfig
 from .db import connect_and_init
 from .diffs import compute_diff
-from .errors import InvalidFilterError, NotFoundError, register_error_handlers
+from .errors import DashboardApiError, InvalidFilterError, NotFoundError, register_error_handlers
 from .health import build_health
 from .projections import RUN_METADATA_UNAVAILABLE
 from .repositories import (
@@ -46,6 +47,12 @@ from .views import (
     list_executions,
     list_issues,
     list_runs,
+)
+from runtime.init.service import (
+    TargetConfigurationError,
+    TargetConfigurationRequest,
+    apply_target_configuration,
+    prepare_target_configuration,
 )
 
 
@@ -92,6 +99,25 @@ class _RegisterRepositoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     projectPath: str
     logPath: Optional[str] = None
+
+
+class _TargetConfigurationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    projectPath: str
+    renderedYaml: str
+    expectedConfigDigest: Optional[str] = None
+    branchChangeConfirmed: bool = False
+
+
+def _configuration_error(exc: TargetConfigurationError) -> DashboardApiError:
+    statuses = {
+        "CONFIG_REVISION_CONFLICT": 409,
+        "WORKSPACE_LEASE_UNAVAILABLE": 423,
+        "RECOVERY_REQUIRED": 409,
+        "RUNTIME_STATE_UNSAFE": 409,
+        "DIRTY_WORKTREE": 409,
+    }
+    return DashboardApiError(exc.code, str(exc), status_code=statuses.get(exc.code, 400))
 
 
 def create_app(cfg: DashboardConfig) -> FastAPI:
@@ -166,6 +192,66 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.delete("/api/repositories/{repo_id}", status_code=204)
     async def remove_repository(repo_id: int) -> None:
         delete_repository(app.state.db, repo_id)
+
+    @app.post("/api/target-configurations/preview")
+    async def preview_target_configuration(payload: _TargetConfigurationRequest) -> dict:
+        try:
+            preview = prepare_target_configuration(TargetConfigurationRequest(
+                repository_path=Path(payload.projectPath), rendered_yaml=payload.renderedYaml,
+                expected_config_digest=payload.expectedConfigDigest,
+                branch_change_confirmed=payload.branchChangeConfirmed,
+            ))
+        except TargetConfigurationError as exc:
+            raise _configuration_error(exc) from exc
+        return {
+            "configPath": str(preview.config_path),
+            "currentConfigDigest": preview.current_config_digest,
+            "proposedConfigDigest": preview.proposed_config_digest,
+            "renderedYaml": preview.rendered_yaml,
+            "resolvedLogPath": str(preview.resolved_log_path),
+        }
+
+    @app.post("/api/target-configurations", status_code=201)
+    async def apply_new_target_configuration(payload: _TargetConfigurationRequest) -> dict:
+        try:
+            result = apply_target_configuration(TargetConfigurationRequest(
+                repository_path=Path(payload.projectPath), rendered_yaml=payload.renderedYaml,
+                expected_config_digest=payload.expectedConfigDigest,
+                branch_change_confirmed=payload.branchChangeConfirmed,
+            ))
+            registration = register_repository(
+                app.state.db, project_path=payload.projectPath, log_path=str(result.resolved_log_path))
+        except TargetConfigurationError as exc:
+            raise _configuration_error(exc) from exc
+        return {"result": {"configPath": str(result.config_path), "configDigest": result.config_digest,
+                           "branchOperation": result.branch_operation},
+                "registration": registration}
+
+    @app.get("/api/repositories/{repo_id}/configuration")
+    async def get_target_configuration(repo_id: int) -> dict:
+        registration = get_repository(app.state.db, repo_id)
+        config_path = Path(registration["projectPath"]) / ".draindeck" / "config.local.yaml"
+        if not config_path.is_file():
+            raise NotFoundError("canonical target configuration not found")
+        rendered = config_path.read_text(encoding="utf-8")
+        return {"configPath": str(config_path), "renderedYaml": rendered,
+                "currentConfigDigest": hashlib.sha256(rendered.encode("utf-8")).hexdigest()}
+
+    @app.patch("/api/repositories/{repo_id}/configuration")
+    async def update_target_configuration(repo_id: int, payload: _TargetConfigurationRequest) -> dict:
+        registration = get_repository(app.state.db, repo_id)
+        if Path(payload.projectPath).resolve() != Path(registration["projectPath"]).resolve():
+            raise DashboardApiError("CONFIG_INVALID", "projectPath must match the registered repository", status_code=400)
+        try:
+            result = apply_target_configuration(TargetConfigurationRequest(
+                repository_path=Path(payload.projectPath), rendered_yaml=payload.renderedYaml,
+                expected_config_digest=payload.expectedConfigDigest,
+                branch_change_confirmed=payload.branchChangeConfirmed,
+            ))
+        except TargetConfigurationError as exc:
+            raise _configuration_error(exc) from exc
+        return {"configPath": str(result.config_path), "configDigest": result.config_digest,
+                "branchOperation": result.branch_operation}
 
     @app.get("/api/repositories/{repo_id}/health")
     async def repository_health(repo_id: int) -> dict:
