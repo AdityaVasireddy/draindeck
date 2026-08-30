@@ -7,15 +7,20 @@ happens after each step.
 from __future__ import annotations
 
 import os
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from ..repo.adapter import RepoError
-from ..repo.git_adapter import GitCliAdapter
 from .detect import CommandProposal, DetectionRow, build_command, detect_stacks
-from .generate import render_config, write_config
+from .generate import render_config
+from .service import (
+    TargetConfigurationError,
+    TargetConfigurationRequest,
+    apply_target_configuration,
+    check_repository_ready,
+)
 
 
 class InitAbort(Exception):
@@ -45,21 +50,25 @@ def resolve_config_dest(repo_path: Path, config_out: Optional[str]) -> Path:
     return repo_path / ".draindeck" / "config.local.yaml"
 
 
-# ── preflight + branch safety (doc 16 §4 steps 1 and 5) ───────────────
+# ── preflight (doc 16 §4 step 1) ────────────────────────────────────────
 def run_preflight(
     repo_path: Path, config_dest: Path, force: bool,
     *, print_fn: Callable[[str], None] = print,
-) -> GitCliAdapter:
-    """Constructing `GitCliAdapter` alone performs the git-repository and
-    git-version(>=2.38) checks (`repo/git_adapter.py:40-43`). Untracked
-    files no longer block init (doc 16 correction) — they are never
+) -> None:
+    """Read-only, fail-fast UX gate before any interactive prompting or
+    side-effecting install step — `apply_target_configuration` (ADR-29) owns
+    every actual dirty-worktree/branch mutation decision and rechecks
+    authoritatively immediately before it writes; this never substitutes for
+    that check, it only avoids wasting the operator's time on prompts (or
+    running an install command) ahead of a refusal that was already certain.
+    Untracked files never block init (doc 16 correction) — they are never
     Draindeck's in-progress work, only the target repo's own; tracked/
     staged/conflicted changes still refuse exactly as before."""
     try:
-        adapter = GitCliAdapter(repo_path)
-    except RepoError as e:
+        readiness = check_repository_ready(repo_path, config_dest)
+    except TargetConfigurationError as e:
         raise InitAbort(f"not a usable git repository at {repo_path}: {e}") from e
-    status = adapter.worktree_status()
+    status = readiness.worktree_status
     if status.blocking:
         raise InitAbort(
             f"{repo_path} has uncommitted tracked/staged/conflicted changes "
@@ -70,23 +79,8 @@ def run_preflight(
             f"[init] NOTE: {status.untracked_count} untracked file(s) in "
             f"{repo_path} — left untouched."
         )
-    if config_dest.exists() and not force:
+    if readiness.config_exists and not force:
         raise InitAbort(f"{config_dest} already exists — pass --force to overwrite.")
-    return adapter
-
-
-def setup_branch(adapter: GitCliAdapter, branch: str) -> tuple[str, str]:
-    """Never pass `create_from` for a branch that already exists —
-    `checkout_branch(..., create_from=X)` compiles to `git checkout -B
-    branch X`, which force-resets an existing branch's tip
-    (`repo/git_adapter.py:178-187`, doc 16 §0b item 7)."""
-    existing_tip = adapter.head_of(branch)
-    if existing_tip is None:
-        head = adapter.current_commit()
-        adapter.checkout_branch(branch, create_from=head, allow_untracked=True)
-    else:
-        adapter.checkout_branch(branch, allow_untracked=True)
-    return branch, adapter.current_commit()
 
 
 # ── detected-proposal confirmation (doc 16 §4 step 3) ──────────────────
@@ -301,10 +295,14 @@ def cmd_init(
     yes = args.yes
 
     try:
-        adapter = run_preflight(repo_path, config_dest, args.force, print_fn=print_fn)
+        run_preflight(repo_path, config_dest, args.force, print_fn=print_fn)
     except InitAbort as e:
         print(f"INIT ABORTED: {e}", file=sys.stderr)
         return 1
+    expected_config_digest = (
+        hashlib.sha256(config_dest.read_bytes()).hexdigest()
+        if config_dest.is_file() else None
+    )
 
     matches = detect_stacks(repo_path)
     detection_summary = _format_detection_summary(matches)
@@ -370,20 +368,29 @@ def cmd_init(
         run_fn=run_fn,
     )
 
-    try:
-        branch_name, branch_tip = setup_branch(adapter, args.branch)
-    except RepoError as e:
-        print(f"INIT ABORTED: branch setup failed: {e}", file=sys.stderr)
-        return 1
-
+    # `branch_tip` is not embedded in the rendered YAML (render_config takes
+    # it only for a docstring-documented, currently-unused parameter) — the
+    # actual branch checkout/creation happens inside apply_target_configuration
+    # below, the sole mutation path (ADR-29).
     text = render_config(
         repo_path=repo_path,
-        branch=branch_name,
-        branch_tip=branch_tip,
+        branch=args.branch,
+        branch_tip="",
         all_matches=matches,
         chosen_stack=chosen_stack,
         chosen=chosen,
     )
-    write_config(config_dest, text)
-    _print_report(chosen_stack, branch_name, branch_tip, chosen, config_dest)
+    try:
+        result = apply_target_configuration(TargetConfigurationRequest(
+            repository_path=repo_path,
+            rendered_yaml=text,
+            expected_config_digest=expected_config_digest,
+            branch_change_confirmed=True,
+            config_path=config_dest,
+            manage_branch=True,
+        ))
+    except TargetConfigurationError as e:
+        print(f"INIT ABORTED: {e}", file=sys.stderr)
+        return 1
+    _print_report(chosen_stack, args.branch, result.branch_tip or "", chosen, config_dest)
     return 0

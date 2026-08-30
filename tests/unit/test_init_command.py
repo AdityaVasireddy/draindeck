@@ -22,7 +22,6 @@ from runtime.init.command import (  # noqa: E402
     resolve_config_dest,
     resolve_validation_command,
     run_preflight,
-    setup_branch,
 )
 from runtime.init.detect import CommandProposal  # noqa: E402
 from runtime.repo.git_adapter import GitCliAdapter  # noqa: E402
@@ -54,11 +53,6 @@ def repo(tmp_path: Path) -> Path:
     _run(repo_dir, "add", "-A")
     _run(repo_dir, "commit", "-m", "seed")
     return repo_dir
-
-
-@pytest.fixture()
-def adapter(repo: Path) -> GitCliAdapter:
-    return GitCliAdapter(repo)
 
 
 # ── Unit 5: preflight ────────────────────────────────────────────────
@@ -106,10 +100,9 @@ def test_preflight_rejects_conflicted_merge(repo: Path, tmp_path: Path):
 def test_preflight_allows_untracked_only_with_note(repo: Path, tmp_path: Path):
     (repo / "Issues.md").write_text("scratch notes\n")  # untracked
     notes = []
-    adapter = run_preflight(
+    run_preflight(
         repo, tmp_path / "config.local.yaml", force=False, print_fn=notes.append,
     )
-    assert adapter.current_commit()
     assert any("NOTE" in n and "untracked" in n for n in notes)
 
 
@@ -138,76 +131,20 @@ def test_preflight_rejects_existing_config_without_force(repo: Path, tmp_path: P
 def test_preflight_proceeds_with_force_over_existing_config(repo: Path, tmp_path: Path):
     dest = tmp_path / "config.local.yaml"
     dest.write_text("existing: true\n")
-    adapter = run_preflight(repo, dest, force=True)
-    assert adapter.current_commit()
+    run_preflight(repo, dest, force=True)  # must not raise
 
 
 def test_preflight_clean_new_config_dest_proceeds(repo: Path, tmp_path: Path):
-    adapter = run_preflight(repo, tmp_path / "config.local.yaml", force=False)
-    assert adapter.current_commit()
+    run_preflight(repo, tmp_path / "config.local.yaml", force=False)  # must not raise
 
 
-# ── Unit 5: branch safety — the direct regression test ──────────────
-def test_setup_branch_creates_new_branch_at_current_head(adapter: GitCliAdapter):
-    head = adapter.current_commit()
-    branch, tip = setup_branch(adapter, "agent-work")
-    assert branch == "agent-work"
-    assert tip == head
-    assert adapter.head_of("agent-work") == head
-
-
-def test_setup_branch_preserves_existing_branch_tip_no_force_reset(
-    adapter: GitCliAdapter, repo: Path,
-):
-    # Create the target branch and advance it past current 'main'.
-    adapter.checkout_branch("agent-work", create_from=adapter.current_commit())
-    (repo / "extra.txt").write_text("work in progress\n")
-    _run(repo, "add", "-A")
-    _run(repo, "commit", "-m", "prior work on agent-work")
-    preserved_tip = adapter.current_commit()
-
-    # Back to main (clean), simulating a fresh `init` invocation.
-    adapter.checkout_branch("main")
-
-    branch, tip = setup_branch(adapter, "agent-work")
-
-    assert branch == "agent-work"
-    assert tip == preserved_tip
-    assert adapter.head_of("agent-work") == preserved_tip
-    # the extra commit's file must still exist on disk after checkout
-    assert (repo / "extra.txt").exists()
-
-
-def test_setup_branch_allows_untracked_only(adapter: GitCliAdapter, repo: Path):
-    """The bug this session fixes: an untracked file must not block
-    branch setup, and must be left untouched by it."""
-    (repo / "Issues.md").write_text("scratch\n")
-    branch, tip = setup_branch(adapter, "agent-work")
-    assert branch == "agent-work"
-    assert (repo / "Issues.md").read_text() == "scratch\n"
-
-
-def test_setup_branch_conflict_from_untracked_file_not_forced_through(
-    adapter: GitCliAdapter, repo: Path,
-):
-    """Branch checkout safety: if switching to an EXISTING branch whose
-    tree contains a file the current worktree has untracked (with
-    different content), Git must refuse cleanly — no force, no
-    auto-stash, no deleting the user's file."""
-    trunk_tip = adapter.current_commit()
-    adapter.checkout_branch("agent-work", create_from=trunk_tip)
-    (repo / "conflicting.txt").write_text("tracked on agent-work\n")
-    _run(repo, "add", "-A")
-    _run(repo, "commit", "-m", "add conflicting.txt on agent-work")
-    adapter.checkout_branch("main")
-    (repo / "conflicting.txt").write_text("untracked local content\n")
-
-    from runtime.repo.adapter import RepoError
-    with pytest.raises(RepoError):
-        setup_branch(adapter, "agent-work")
-
-    assert (repo / "conflicting.txt").read_text() == "untracked local content\n"
-    assert adapter.current_commit() == trunk_tip
+# Branch-checkout mechanics (CREATE at head, CHECKOUT preserves tip with no
+# force-reset, untracked-only allowed, real-conflict refuses cleanly with no
+# mutation) moved to tests/unit/test_target_configuration_service.py: since
+# ADR-29's full migration, `cmd_init` no longer performs its own branch
+# mutation — apply_target_configuration (manage_branch=True) is the only
+# path, so the guarantee is proven there, end-to-end through the shared
+# service, not through a CLI-local setup_branch helper that no longer exists.
 
 
 # ── Unit 6: manual-validation UX ──────────────────────────────────────
@@ -915,27 +852,22 @@ def test_no_mutation_before_acknowledgement_succeeds(
     tmp_path: Path, monkeypatch, repo: Path,
 ):
     """Decline path: branch/config mutation must not occur before
-    acknowledgement succeeds -- setup_branch/write_config never called."""
+    acknowledgement succeeds -- apply_target_configuration (the sole
+    mutation gate, ADR-29) is never called."""
     workdir = tmp_path / "cwd-no-mutation"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
 
-    setup_branch_calls = []
-    write_config_calls = []
+    apply_calls = []
     monkeypatch.setattr(
-        command_module, "setup_branch",
-        lambda *a, **k: setup_branch_calls.append((a, k)) or ("agent-work", "deadbeef"),
-    )
-    monkeypatch.setattr(
-        command_module, "write_config",
-        lambda *a, **k: write_config_calls.append((a, k)),
+        command_module, "apply_target_configuration",
+        lambda *a, **k: apply_calls.append((a, k)),
     )
 
     rc = cmd_init(_Args(repo, yes=False, no_validation=True),
                    input_fn=lambda p: "n")
     assert rc == 1
-    assert setup_branch_calls == []
-    assert write_config_calls == []
+    assert apply_calls == []
 
 
 # ── resolve_config_dest: unit-level (doc 16 §0c) ────────────────────────
