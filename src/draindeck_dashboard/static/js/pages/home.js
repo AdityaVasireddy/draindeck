@@ -254,7 +254,7 @@ export async function render(root, params, ctx) {
   if (!vm.hasRepositories) {
     root.appendChild(el("div", { className: "state-panel" }, [
       el("p", { className: "state-panel-title" }, ["No repositories registered"]),
-      el("a", { href: "/repositories/new", className: "btn btn-primary" }, ["Add repository"]),
+      el("a", { href: "/repositories/new-target", className: "btn btn-primary" }, ["New target"]),
     ]));
     return;
   }

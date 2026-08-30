@@ -676,7 +676,8 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
 
         _ui_route_patterns = [
             "/",
-            "/repositories", "/repositories/new", "/repositories/{repo_id}",
+            "/repositories", "/repositories/new", "/repositories/new-target",
+            "/repositories/{repo_id}/configuration", "/repositories/{repo_id}",
             "/repositories/{repo_id}/runs", "/repositories/{repo_id}/runs/{run_id}",
             "/repositories/{repo_id}/issues", "/repositories/{repo_id}/issues/{issue_id}",
             "/repositories/{repo_id}/executions", "/repositories/{repo_id}/executions/{execution_id}",

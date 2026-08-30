@@ -9,6 +9,8 @@ export const ROUTES = [
   { pattern: "/", name: "home" },
   { pattern: "/repositories", name: "repositories" },
   { pattern: "/repositories/new", name: "repository-add" },
+  { pattern: "/repositories/new-target", name: "repository-new-target" },
+  { pattern: "/repositories/:repoId/configuration", name: "repository-configuration" },
   { pattern: "/repositories/:repoId", name: "repository-overview" },
   { pattern: "/repositories/:repoId/runs", name: "repository-runs" },
   { pattern: "/repositories/:repoId/runs/:runId", name: "run-detail" },

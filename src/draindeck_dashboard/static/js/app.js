@@ -14,6 +14,7 @@ import { connectChangeStream, connectionStatusLabel } from "./stream.js";
 import * as homePage from "./pages/home.js";
 import * as repositoriesPage from "./pages/repositories.js";
 import * as repositoryDetailPage from "./pages/repository-detail.js";
+import * as targetConfigurationPage from "./pages/target-configuration.js";
 import * as attentionPage from "./pages/attention.js";
 import * as runsPage from "./pages/runs.js";
 import * as issuesPage from "./pages/issues.js";
@@ -34,6 +35,8 @@ const _PAGE_MODULES = {
   repositories: { render: (root, params, ctx) => repositoriesPage.render(root, params, ctx),
                  refresh: (root, params, ctx) => repositoriesPage.refresh(root, params, ctx) },
   "repository-add": { render: (root) => repositoriesPage.renderAdd(root) },
+  "repository-new-target": { render: (root, params, ctx) => targetConfigurationPage.renderNew(root, params, ctx) },
+  "repository-configuration": { render: (root, params, ctx) => targetConfigurationPage.renderEdit(root, params, ctx) },
   "repository-overview": { render: (root, params, ctx) => repositoryDetailPage.render(root, params, ctx) },
   attention: { render: (root, params, ctx) => attentionPage.render(root, params, ctx),
               refresh: (root, params, ctx) => attentionPage.refresh(root, params, ctx) },

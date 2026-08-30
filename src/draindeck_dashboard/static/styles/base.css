@@ -137,6 +137,16 @@ img, svg {
   border: 0;
 }
 
+/* Any author class selector (e.g. `.field { display: flex }`) has the same
+   specificity as the UA stylesheet's `[hidden] { display: none }` and,
+   being later in the cascade, silently wins -- an element can end up both
+   `hidden` and visibly `display: flex` at once. Found live: a `.field`-
+   classed branch-confirmation checkbox stayed visible and checked despite
+   `hidden = true`. This keeps `hidden` authoritative everywhere. */
+[hidden] {
+  display: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;

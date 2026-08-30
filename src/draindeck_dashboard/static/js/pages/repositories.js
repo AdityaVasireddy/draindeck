@@ -94,7 +94,8 @@ export async function render(root, params, ctx) {
     el("label", { className: "visually-hidden", for: "registry-search" }, ["Search repositories"]),
     el("input", { id: "registry-search", type: "search", name: "q", value: query.q,
                  placeholder: "Search repositories…" }),
-    el("a", { href: "/repositories/new", className: "btn btn-primary" }, ["Add repository"]),
+    el("a", { href: "/repositories/new-target", className: "btn btn-primary" }, ["New target"]),
+    el("a", { href: "/repositories/new", className: "btn btn-secondary" }, ["Register existing target"]),
   ]);
   root.appendChild(searchForm);
 

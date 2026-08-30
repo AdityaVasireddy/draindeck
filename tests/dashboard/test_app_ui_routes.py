@@ -32,6 +32,8 @@ _APPROVED_UI_ROUTES = [
     "/",
     "/repositories",
     "/repositories/new",
+    "/repositories/new-target",
+    "/repositories/5/configuration",
     "/repositories/5",
     "/attention",
     "/runs",

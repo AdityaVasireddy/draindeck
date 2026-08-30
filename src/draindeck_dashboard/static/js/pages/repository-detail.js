@@ -181,6 +181,7 @@ export async function render(root, params, ctx) {
     el("a", { href: `/repositories/${repoId}/issues`, className: "btn-ghost" }, ["Issues"]),
     el("a", { href: `/repositories/${repoId}/executions`, className: "btn-ghost" }, ["Executions"]),
     el("a", { href: `/repositories/${repoId}/evidence`, className: "btn-ghost" }, ["Evidence"]),
+    el("a", { href: `/repositories/${repoId}/configuration`, className: "btn-ghost" }, ["Edit configuration"]),
   ]);
   root.appendChild(navSection);
 

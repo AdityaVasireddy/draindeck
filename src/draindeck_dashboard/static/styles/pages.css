@@ -177,3 +177,67 @@
   background: var(--color-attention-bg);
   color: var(--color-attention-fg);
 }
+
+/* --- target configuration: New Target / Edit Configuration (ADR-29) --- */
+
+.target-config-form {
+  max-width: 42rem;
+}
+
+.field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.field-checkbox label {
+  text-transform: none;
+  font-weight: normal;
+  color: var(--color-text-primary);
+}
+
+.field-checkbox input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+}
+
+.advanced-settings {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-surface-md);
+  padding: var(--space-sm);
+  margin: var(--space-md) 0;
+}
+
+.advanced-settings summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.advanced-settings .field {
+  margin-top: var(--space-sm);
+}
+
+.yaml-editor {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-label-size);
+  white-space: pre;
+  resize: vertical;
+}
+
+.banner {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-surface-md);
+  margin-bottom: var(--space-sm);
+}
+
+.banner--warning {
+  background: var(--color-attention-bg);
+  color: var(--color-attention-fg);
+}
+
+.target-config-preview {
+  border-top: 1px solid var(--color-divider);
+  padding-top: var(--space-sm);
+  margin-top: var(--space-sm);
+}
