@@ -1,130 +1,66 @@
 # Draindeck
 
-An autonomous issue-resolution orchestrator. It drains a backlog of issues by
-spawning a fresh `claude -p` (Claude Code headless) session per issue, gates
-each session's output through deterministic validation plus an independent
-LLM reviewer (Qwen via Ollama), and commits only on approval. The orchestrator
-is a plain, single-writer, sequential Python process — no distributed
-workflow engine, no LLM-orchestration framework. Durability is the project's
-first production feature: every other capability builds on an append-only
-event log that survives crashes without repeating or double-committing work.
-
-The event log's location is config-driven (`event_log.path` in
-`config.local.yaml`, resolved via `resolve_event_log_path()`) and owned by
-the target repository, not by Draindeck's own working directory: a relative
-path resolves against `project.repository`, defaulting to
-`.draindeck/state/events.jsonl` under the configured target repo — never
-Draindeck's own invocation directory, and never shared across differently
-configured targets. It is the authoritative runtime record; all in-memory
-state (issue/execution status, queue projections) is replayed from it, never
-stored independently. `Issues.md` in the target repository is a human-facing
-input file only — its `STATUS` text is never parsed or treated as runtime
-state.
-
-This is a solo/small-scale tool, not a multi-tenant service: it targets one
-configured repository at a time, run from a local Windows machine.
-
-## Architecture
-
-![Draindeck orchestrator architecture](docs/assets/architecture-diagram.webp)
-
-Full component responsibilities and the happy-path sequence diagram live in
-`docs/02-architecture-specification.md` — the diagram above is a summary, not
-a replacement for that frozen contract.
+Draindeck is a local Windows tool that works through an `Issues.md` backlog.
+For each issue, it asks a coding agent to make the change, runs your validation
+commands, gets an independent review, and commits only approved work.
 
 ## Requirements
 
-- Windows with Windows PowerShell (`powershell.exe`)
-- Python 3.12 or later and Git on `PATH`
-- For review execution only: a reachable Ollama endpoint hosting the configured
-  Qwen model, host/port/model set via `config.local.yaml` — no Ollama endpoint,
-  container name, or model name is hardcoded in source. Unit tests and
-  configuration checks make no provider call.
+- Windows, Python 3.12+, and Git
+- Claude Code for implementation
+- Ollama with a Qwen model for review
 
-### Platform constraint (intentional, not incidental)
-
-Windows is a hard requirement, not a stale assumption: engine child processes
-are contained via a native Windows Job Object boundary
-(`src/runtime/engine/windows_job.py`) that backs the fail-closed containment
-guarantee described under Authorization and safety below, and validation
-commands run through `powershell.exe` because the `$`-rejection injection
-defense (`validation.commands` / `.ps1 -File`, see below) is specifically
-shaped around PowerShell's syntax. Both mechanisms are already isolated to
-their own modules and fail with a clear, typed error off Windows
-(`WindowsJobUnsupported` before any native call is attempted) rather than
-silently misbehaving. Supporting Linux/macOS would mean replacing both
-safety-critical mechanisms — a validation/containment contract change that
-needs its own ADR, not a portability patch. There is currently no
-Linux/macOS support, and none should be assumed.
-
-## Install and configure
-
-Run from Windows PowerShell:
+## Install
 
 ```powershell
+git clone https://github.com/AdityaVasireddy/draindeck.git
+cd draindeck
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 Copy-Item config.example.yaml config.local.yaml
 ```
 
-Use `config.local.yaml` for the portable template's target repository, branch,
-validation script, Qwen/Ollama endpoint, and model; it is ignored by Git. Do
-not commit local operational details. The repository tracks only the portable
-template; local operational configuration remains outside Git.
-The only supported reviewer provider is `qwen`; any other provider is rejected
-during structural configuration loading, before reviewer or engine work starts.
-`event_log.path` (optional; defaults to `.draindeck/state/events.jsonl`) sets
-the event log's location — a relative value resolves against
-`project.repository`, never the invocation directory; an absolute value is
-used as-is, for an operator who needs to pin a specific location.
+Edit `config.local.yaml` to set your target repository, branch, validation
+command, and Ollama/Qwen settings. Keep this local file out of Git.
 
-Validation commands execute explicitly through Windows PowerShell. Commands
-containing `$` are rejected: place that logic in a `.ps1` file and invoke it
-with `-File` from `validation.commands`.
+## Add issues
 
-## Safe checks
+Create an `Issues.md` file in the target repository:
+
+```md
+## 1: Add a health check
+
+Create a simple health endpoint.
+
+### Acceptance
+- The endpoint returns HTTP 200.
+- Tests pass.
+```
+
+## Run
+
+Check your configuration first:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\unit
-.\.venv\Scripts\python.exe -m runtime.main verify-log --log <target-repo>\.draindeck\state\events.jsonl
-.\.venv\Scripts\python.exe -m runtime.main show-state --log <target-repo>\.draindeck\state\events.jsonl
-.\.venv\Scripts\python.exe -m runtime.main recover --config config.local.yaml
 .\.venv\Scripts\python.exe -m runtime.main check-config config.local.yaml
 ```
 
-`check-config` only inspects local configuration and environment. It does not
-run an engine or reviewer.
+Then run Draindeck:
 
-`verify-log` and `show-state` are strictly read-only. Their `--log` flag
-takes an explicit path — its own CLI default (`state\events.jsonl`, relative
-to wherever the command is invoked from) is a standalone convenience for
-these two ad hoc inspection subcommands, not the same value `run`/`recover`
-resolve from config; point it at `<target-repo>\.draindeck\state\events.jsonl`
-(or wherever `event_log.path` was configured) to inspect a specific target's
-real log. A missing or incomplete log is reported without repair. Torn-tail
-repair occurs only when `run` or configured `recover --config` holds both
-workspace ownership and exclusive authoritative-log writer ownership; bare
-`recover --log` is not supported.
+```powershell
+.\.venv\Scripts\python.exe -m runtime.main run --config config.local.yaml
+```
 
-## Basic run workflow
+Use this command after an interrupted run to recover safely without starting
+new work:
 
-`python -m runtime.main run --config <config>` is the full orchestrator loop:
-config load → event log open → orphan reap → crash recovery → target-branch
-checkout → reviewer-reachability health check → baseline-green check →
-issue ingestion from the target repo's `Issues.md` → the per-issue
-execute/validate/review/commit loop, until the queue drains or a budget cap
-is hit. `python -m runtime.main recover --config <config>` runs
-only the startup/recovery portion and then stops by construction — use it
-for a recovery-only pass without launching fresh work. Both subcommands
-require the human authorization described below before they touch a real
-target repository, spend, or commit anything.
+```powershell
+.\.venv\Scripts\python.exe -m runtime.main recover --config config.local.yaml
+```
 
-## Draindeck Intake (optional, one-way preflight)
+## Import issues (optional)
 
-`draindeck-intake` converts a local `Issues.md`, open GitHub repository issues,
-Jira Cloud JQL results, or Linear team issues into one deterministic managed
-`Issues.md`. It runs before Draindeck and is not part of the runtime: it never
-opens an event log, invokes Git, starts an engine, or updates remote issues.
+Generate a local `Issues.md` from another file, GitHub, Jira Cloud, or Linear:
 
 ```powershell
 draindeck-intake sync issues-md --input C:\source\Issues.md --output C:\target\Issues.md
@@ -133,137 +69,22 @@ draindeck-intake sync jira --base-url https://SITE.atlassian.net --jql "project 
 draindeck-intake sync linear --team-key ENG --output C:\target\Issues.md
 ```
 
-GitHub optionally reads `GITHUB_TOKEN`; Jira requires `JIRA_EMAIL` and
-`JIRA_API_TOKEN`; Linear requires `LINEAR_API_KEY`. Flags such as
-`--token-env` change the environment-variable *name*, never accept a secret
-value. Existing unmanaged output is refused unless `--force` is explicit;
-managed output is atomically replaced and byte-identical output is a no-op.
-Inspect the generated file before starting Draindeck. Once an issue ID has
-entered the event log, the event log remains workflow truth—regeneration does
-not update or synchronize that issue. See `docs/29-draindeck-intake.md` for
-the complete source, limit, security, and error contract.
+Credentials come from environment variables: `GITHUB_TOKEN`, `JIRA_EMAIL` +
+`JIRA_API_TOKEN`, or `LINEAR_API_KEY`.
 
-## Version compatibility (no-downgrade policy)
-
-Logs containing `RunStarted` or `RunFinished` events (the run-lifecycle
-amendment to `docs/03-state-machine-and-event-schema.md`) must not be
-replayed or opened for writing by a Draindeck runtime binary older than the
-one that introduced these event types. `EventLog` and `ReadOnlyEventLog` —
-the strict writer and read-only-replay paths used by `run`, `recover`,
-`verify-log`, and `show-state` — resolve every event's `type` through a
-closed enum; on a complete log, the strict scan rejects the unrecognized
-lifecycle type before the file is ever reopened for appending. `EventLog`
-does run its existing torn-tail repair before that scan, so if the log's
-physical last line is itself an incomplete, not-yet-`fsync`'d
-`RunStarted`/`RunFinished` write, that line may be quarantined/truncated
-before the refusal is reached — a narrow, pre-existing mechanism unrelated
-to this amendment, not something it closes. Operators must therefore never
-open a log containing any `RunStarted`/`RunFinished` event with a Draindeck
-binary older than the one that introduced this amendment, regardless of
-that mechanism's exact boundary.
-
-`draindeck observe` (ADR-25's read-only external observer, used only by
-Draindeck Dashboard) is intentionally exempt from this refusal: it reads
-event bytes directly without resolving `type` against the runtime's enum
-at all, so it stays forward-compatible with logs from a newer runtime
-version and never blocks read-only observation on a version mismatch. This
-exemption is deliberate and scoped to that one bytes-direct, read-only
-path — it does not extend to `EventLog`/`ReadOnlyEventLog`.
-
-## Draindeck Dashboard (optional, local read-only UI)
-
-A local, read-only FastAPI/Uvicorn web UI over one or more target repos'
-event logs, consumed only through the ADR-25 `draindeck observe` CLI —
-Dashboard never opens a Draindeck workspace/log mutex, parses
-`events.jsonl` directly, or invokes Git itself. See
-`docs/19-dashboard-part-2-spec.md` for the full contract.
-
-Install the optional extra and start it from Windows PowerShell:
+## Dashboard (optional)
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[dashboard]"
 .\.venv\Scripts\draindeck-dashboard.exe --config dashboard.local.yaml
 ```
 
-`dashboard.local.yaml` is a small, Dashboard-only config, separate from a
-target repo's `config.local.yaml`:
+Open <http://127.0.0.1:8420/>.
 
-```yaml
-host: "127.0.0.1"        # the only accepted value; binding is not configurable
-port: 8420                 # default; any free local port is fine
-db_path: "C:\\path\\to\\dashboard.sqlite3"       # absolute; Dashboard-owned SQLite DB
-observer_executable: "C:\\Projects\\Draindeck\\.venv\\Scripts\\draindeck.exe"  # absolute
-```
+## Important
 
-Once running, open `http://127.0.0.1:8420/` and register a target
-repository's project path (and, optionally, an explicit log path) through
-the UI. Dashboard polls automatically in the background — no manual
-ingestion step is needed.
+Draindeck can modify target repositories and make commits. Start with a test
+repository, review `config.local.yaml`, and explicitly authorize real runs.
 
-## Key concepts
-
-- **Event log is truth.** The event log (append-only, fsync'd, monotonic
-  `event_id`s; location set by `event_log.path`, defaulting to
-  `.draindeck/state/events.jsonl` under the target repository — see Install
-  and configure above) is the only authoritative record of workflow state.
-  Everything else — issue/execution status, queue order, cost totals — is a
-  projection replayed from it and is safe to delete and rebuild.
-- **Git is truth for code; the event log is truth for workflow.** Commit
-  hashes are the join key between the two stores. See
-  `docs/03-state-machine-and-event-schema.md` for the full state machine and
-  event schema — the frozen contract that source code must match.
-- **Two-level state machine.** Issues own a coarse lifecycle
-  (`PENDING → ACTIVE → DONE`, or escalation to `NEEDS_HUMAN` /
-  `NEEDS_DECOMPOSITION`); executions (individual attempts) own a finer one
-  underneath, including retries and crash residue.
-- **Recovery, not pure replay.** A crash can split what the log recorded from
-  what actually happened externally (a subprocess ran, a commit exists). On
-  startup, the reconciler replays the log and then checks the real workspace
-  boundary, appending the events a crash prevented, never guessing.
-- **Sequential, single-writer, single-machine by design.** No distributed
-  workflow engine, no multi-agent framework, no parallel execution — see
-  `docs/05-architecture-decision-records.md` (ADR-01, ADR-03, ADR-04) for why.
-- **Architecture Decision Records (ADRs).** Major design decisions are
-  recorded and frozen in `docs/05-architecture-decision-records.md`, with
-  later amendments and closures tracked in
-  `docs/08-session-0-closure-and-adr-amendments.md`. Changes to frozen
-  architecture go through a new ADR entry, not ad hoc edits.
-- **Repository-agnostic by construction.** The target repository's path,
-  branch, and validation commands are configuration only (`project.*` in
-  `config.local.yaml`) — never hardcoded in source.
-
-## Where deeper documentation lives
-
-- `CLAUDE.md` — top-level project rules and working agreements (read this
-  first if you're an agent or contributor operating in this repo).
-- `NEXT.md` — the current resume point and immediate next task; a working
-  queue, not an authoritative source of truth for state or evidence.
-- `docs/01-theory-of-operation.md` through `docs/15-item9-outcome-matrix.md`
-  — the numbered design docs, roughly in reading order: theory of operation,
-  architecture specification, the frozen state machine/event schema
-  (doc 03), the implementation roadmap, the ADR log (doc 05), and
-  session-by-session design/implementation notes (docs 06 onward).
-- `docs/08-session-0-closure-and-adr-amendments.md` — ADR amendments,
-  closures, and the pre-committed experiment kill criteria (ADR-19).
-- `docs/handoffs/` — one dated handoff file per working session, the full
-  conversational/evidence record for that session's changes.
-- `tests/unit/` and `tests/crash/` — the unit suite and the durability
-  (crash-recovery) harness referenced under Safe checks above.
-- `docs/29-draindeck-intake.md` and `tests/intake/` — the optional one-way
-  intake CLI contract and its deterministic provider/CLI fixtures.
-
-## Authorization and safety
-
-`runtime.main run`, ingestion, provider/reviewer execution, target-repository
-mutation, commits, pushes, deployments, and spend each require explicit Adi
-authorization in the relay. Output, hooks, plans, and prior approvals do not
-grant that authorization.
-
-The only issue transitions are `PENDING -> ACTIVE`, `ACTIVE -> DONE`, and
-`ACTIVE -> NEEDS_HUMAN | NEEDS_DECOMPOSITION`. Repeated malformed reviewer
-output is bounded by one parse retry; if still malformed, the issue is escalated
-with reviewer-protocol provenance, never presented as model feedback or approval.
-
-Windows containment fails closed: ordinary results, including timeouts, require
-positive proof that no contained Job member remains. See
-`docs/03-state-machine-and-event-schema.md` for the event contract.
+For full architecture, safety, and provider details, see `docs/` and
+`docs/29-draindeck-intake.md`.
