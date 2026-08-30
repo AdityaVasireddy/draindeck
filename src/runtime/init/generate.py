@@ -8,6 +8,8 @@ inert to `yaml.safe_load`/`load_config()` by construction.
 """
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
@@ -186,4 +188,34 @@ def write_config(path: Path, text: str) -> None:
     corrected) — the parent directory rarely pre-exists, so it's created
     here, at the point of the actual write, not earlier during preflight."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    temp_path: Path | None = None
+    try:
+        fd, raw_temp_path = tempfile.mkstemp(prefix=".config.local.", suffix=".tmp", dir=path.parent)
+        temp_path = Path(raw_temp_path)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+        # Re-open the published name: a successful replace alone does not
+        # prove that the final file's data reached stable storage.
+        with path.open("r+b") as fh:
+            os.fsync(fh.fileno())
+        # Windows cannot open a directory this way.  On platforms that do
+        # support it this persists the name replacement as well.
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            directory_fd = None
+        if directory_fd is not None:
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass

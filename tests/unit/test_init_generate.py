@@ -5,14 +5,18 @@ schema to what the engine already parses" made concrete.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from runtime.config import load_config  # noqa: E402
+from runtime.init import generate as generate_module  # noqa: E402
 from runtime.init.detect import CommandProposal, DetectionRow  # noqa: E402
 from runtime.init.generate import (  # noqa: E402
     _REVIEWER_MODEL,
@@ -278,3 +282,122 @@ def test_normal_init_config_has_real_reviewer_model_and_billing_metadata(tmp_pat
     assert cfg.reviewer.qwen.model == "qwen2.5-coder:14b"
     assert cfg.billing.verified_on == "2026-03-01"
     assert cfg.billing.verified_on != "TODO: confirm"
+
+
+# ── ADR-29 outcome matrix: atomic publication crash-window predictions ──
+# write_config is the sole config writer (runtime.init.service.publisher
+# default). These prove each predicted failure window leaves the exact
+# destination state the outcome matrix commits to -- never a truncated or
+# falsely-published file.
+
+def test_write_config_temp_creation_failure_leaves_destination_absent(tmp_path: Path, monkeypatch):
+    dest = tmp_path / "sub" / "config.local.yaml"
+
+    def _boom(*a, **kw):
+        raise OSError("simulated: cannot create temp file")
+
+    monkeypatch.setattr(generate_module.tempfile, "mkstemp", _boom)
+
+    with pytest.raises(OSError):
+        write_config(dest, "project: {}\n")
+
+    assert not dest.exists()
+    assert list(dest.parent.glob("*")) == []  # no orphaned temp artifact
+
+
+def test_write_config_temp_fsync_failure_leaves_old_destination_and_cleans_temp(
+    tmp_path: Path, monkeypatch,
+):
+    dest = tmp_path / "config.local.yaml"
+    dest.write_text("old bytes\n", encoding="utf-8")
+
+    def _boom(fd):
+        raise OSError("simulated: fsync failed")
+
+    monkeypatch.setattr(generate_module.os, "fsync", _boom)
+
+    with pytest.raises(OSError):
+        write_config(dest, "new bytes\n")
+
+    assert dest.read_text(encoding="utf-8") == "old bytes\n"
+    leftovers = [p for p in dest.parent.glob("*") if p != dest]
+    assert leftovers == []  # temp artifact cleaned up
+
+
+def test_write_config_replace_failure_leaves_old_destination_and_cleans_temp(
+    tmp_path: Path, monkeypatch,
+):
+    dest = tmp_path / "config.local.yaml"
+    dest.write_text("old bytes\n", encoding="utf-8")
+
+    def _boom(src, dst):
+        raise OSError("simulated: replace failed")
+
+    monkeypatch.setattr(generate_module.os, "replace", _boom)
+
+    with pytest.raises(OSError):
+        write_config(dest, "new bytes\n")
+
+    assert dest.read_text(encoding="utf-8") == "old bytes\n"
+    leftovers = [p for p in dest.parent.glob("*") if p != dest]
+    assert leftovers == []  # temp artifact cleaned up, not left as residue
+
+
+def test_write_config_post_replace_fsync_failure_still_leaves_new_bytes_published(
+    tmp_path: Path, monkeypatch,
+):
+    """Outcome matrix: 'Post-replace final-file fsync fails -> Return
+    CONFIG_PUBLICATION_FAILED [caller's typed wrapping]; ... next preview
+    reports actual bytes/digest.' The replace already happened -- the new
+    bytes are genuinely on disk even though durability confirmation failed."""
+    dest = tmp_path / "config.local.yaml"
+    dest.write_text("old bytes\n", encoding="utf-8")
+    real_fsync = os.fsync
+    calls = {"n": 0}
+
+    def _fail_second_call(fd):
+        calls["n"] += 1
+        if calls["n"] >= 2:  # first call is the temp-file fsync; let it pass
+            raise OSError("simulated: post-replace fsync failed")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(generate_module.os, "fsync", _fail_second_call)
+
+    with pytest.raises(OSError):
+        write_config(dest, "new bytes\n")
+
+    assert dest.read_text(encoding="utf-8") == "new bytes\n"
+
+
+def test_write_config_parent_directory_fsync_unavailable_still_publishes_and_fsyncs_file(
+    tmp_path: Path, monkeypatch,
+):
+    """Outcome matrix: 'Parent directory fsync unsupported -> Final-file
+    fsync remains required; platform limitation is recorded, not silently
+    replaced with weaker in-place writing.' Simulates the always-true-on-
+    Windows case explicitly, so the guarantee is proven regardless of the
+    platform running this test."""
+    dest = tmp_path / "config.local.yaml"
+    real_fsync = os.fsync
+    real_open = os.open
+    fsync_calls = []
+
+    def _tracking_fsync(fd):
+        fsync_calls.append(fd)
+        return real_fsync(fd)
+
+    def _boom_only_for_directory(path, flags, *a, **kw):
+        # tempfile.mkstemp shares this same os.open under the hood -- only
+        # refuse the specific directory-fsync call write_config makes, or
+        # every other call (temp-file creation) would break too.
+        if os.path.abspath(path) == os.path.abspath(dest.parent) and flags == os.O_RDONLY:
+            raise OSError("simulated: platform cannot open a directory this way")
+        return real_open(path, flags, *a, **kw)
+
+    monkeypatch.setattr(generate_module.os, "fsync", _tracking_fsync)
+    monkeypatch.setattr(generate_module.os, "open", _boom_only_for_directory)
+
+    write_config(dest, "new bytes\n")  # must not raise
+
+    assert dest.read_text(encoding="utf-8") == "new bytes\n"
+    assert len(fsync_calls) == 2  # temp-file fsync + final-file fsync, both real
