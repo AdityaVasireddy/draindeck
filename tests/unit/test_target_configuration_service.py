@@ -174,6 +174,63 @@ def test_apply_is_the_only_publisher_path_and_rechecks_before_write(tmp_path, mo
     assert adapter.calls == 2
 
 
+def test_prepare_predicts_create_for_a_missing_branch(git_repo):
+    request = service.TargetConfigurationRequest(
+        git_repo, _real_yaml(git_repo, "agent-work"), None, manage_branch=True,
+    )
+
+    preview = service.prepare_target_configuration(request)
+
+    assert preview.branch_operation == "CREATE"
+    assert preview.branch_confirmation_required is True
+    assert _run(git_repo, "status", "--porcelain") == ""  # still read-only
+
+
+def test_prepare_predicts_checkout_for_an_existing_branch(git_repo):
+    adapter = GitCliAdapter(git_repo)
+    adapter.checkout_branch("agent-work", create_from=adapter.current_commit())
+    adapter.checkout_branch("main")
+    request = service.TargetConfigurationRequest(
+        git_repo, _real_yaml(git_repo, "agent-work"), None, manage_branch=True,
+    )
+
+    preview = service.prepare_target_configuration(request)
+
+    assert preview.branch_operation == "CHECKOUT"
+    assert preview.branch_confirmation_required is True
+    assert adapter.current_commit() == adapter.head_of("main")  # untouched
+
+
+def test_prepare_predicts_no_branch_change_when_config_already_matches(git_repo, monkeypatch):
+    monkeypatch.setattr(service, "validate_environment", lambda cfg: [])
+    request = service.TargetConfigurationRequest(
+        git_repo, _real_yaml(git_repo, "agent-work"), None,
+        branch_change_confirmed=True, manage_branch=True,
+    )
+    service.apply_target_configuration(request)  # publish once, branch now "agent-work"
+    dest = git_repo / ".draindeck" / "config.local.yaml"
+    same_branch_request = service.TargetConfigurationRequest(
+        git_repo, _real_yaml(git_repo, "agent-work"),
+        service._digest_bytes(dest.read_bytes()), manage_branch=True,
+    )
+
+    preview = service.prepare_target_configuration(same_branch_request)
+
+    assert preview.branch_operation == "NONE"
+    assert preview.branch_confirmation_required is False
+
+
+def test_prepare_ignores_branch_prediction_when_manage_branch_false(git_repo):
+    request = service.TargetConfigurationRequest(
+        git_repo, _real_yaml(git_repo, "agent-work"), None, manage_branch=False,
+    )
+
+    preview = service.prepare_target_configuration(request)
+
+    assert preview.branch_operation == "NONE"
+    assert preview.branch_confirmation_required is False
+
+
 def test_prepare_is_read_only_and_witnesses_existing_digest(tmp_path):
     repo = tmp_path / "repo"
     config = repo / ".draindeck" / "config.local.yaml"

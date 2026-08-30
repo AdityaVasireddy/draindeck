@@ -263,6 +263,8 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             "proposedConfigDigest": preview.proposed_config_digest,
             "renderedYaml": preview.rendered_yaml,
             "resolvedLogPath": str(preview.resolved_log_path),
+            "branchOperation": preview.branch_operation,
+            "branchConfirmationRequired": preview.branch_confirmation_required,
         }
 
     @app.post("/api/target-configurations", status_code=201)

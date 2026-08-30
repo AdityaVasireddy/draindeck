@@ -170,6 +170,19 @@ def test_preview_is_side_effect_free(tmp_path):
     assert _run(repo, "branch", "--show-current") == "main"
 
 
+def test_preview_reports_predicted_branch_creation(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_repo(tmp_path)
+
+    resp = client.post("/api/target-configurations/preview", json={
+        "projectPath": str(repo), "renderedYaml": _yaml(repo, "agent-work"),
+    })
+
+    body = resp.json()
+    assert body["branchOperation"] == "CREATE"
+    assert body["branchConfirmationRequired"] is True
+
+
 def test_preview_invalid_config_returns_typed_error(tmp_path):
     client = _client(tmp_path)
     repo = _git_repo(tmp_path)

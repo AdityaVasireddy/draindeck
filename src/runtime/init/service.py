@@ -39,6 +39,8 @@ class TargetConfigurationPreview:
     proposed_config_digest: str
     rendered_yaml: str
     resolved_log_path: Path
+    branch_operation: str = "NONE"
+    branch_confirmation_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,8 +101,17 @@ def _parse_rendered_config(text: str) -> Config:
         raise TargetConfigurationError("CONFIG_INVALID", str(exc)) from exc
 
 
-def prepare_target_configuration(request: TargetConfigurationRequest) -> TargetConfigurationPreview:
-    """Read-only validation and exact revision witness for an apply request."""
+def prepare_target_configuration(
+    request: TargetConfigurationRequest,
+    *,
+    adapter_factory: Callable[[Path], GitCliAdapter] = GitCliAdapter,
+) -> TargetConfigurationPreview:
+    """Read-only validation and exact revision witness for an apply request.
+    `branch_operation`/`branch_confirmation_required` are a PREDICTION (a
+    read-only `head_of` lookup, same as apply's own decision logic) so the
+    UI can show an explicit branch warning before the user commits to
+    apply -- apply_target_configuration remains the sole authority and
+    rechecks this immediately before mutating."""
     repo = request.repository_path.resolve()
     if not repo.is_absolute() or not repo.is_dir() or not (repo / ".git").exists():
         raise TargetConfigurationError("CONFIG_INVALID", "repository_path must be an existing Git worktree")
@@ -109,12 +120,29 @@ def prepare_target_configuration(request: TargetConfigurationRequest) -> TargetC
         raise TargetConfigurationError("CONFIG_INVALID", "project.repository must equal repository_path")
     config_path = (request.config_path or canonical_config_path(repo)).resolve()
     current = config_path.read_bytes() if config_path.is_file() else None
+    branch_operation = "NONE"
+    branch_confirmation_required = False
+    if request.manage_branch:
+        prior_branch = _existing_branch(config_path)
+        if prior_branch != config.project.branch:
+            branch_confirmation_required = True
+            try:
+                adapter = adapter_factory(repo)
+                branch_operation = "CREATE" if adapter.head_of(config.project.branch) is None else "CHECKOUT"
+            except Exception:
+                # Advisory only: apply_target_configuration is the sole
+                # authority and rechecks this itself before mutating, so a
+                # prediction failure here degrades to "UNKNOWN" rather than
+                # blocking a preview.
+                branch_operation = "UNKNOWN"
     return TargetConfigurationPreview(
         config_path=config_path,
         current_config_digest=_digest_bytes(current) if current is not None else None,
         proposed_config_digest=_digest_bytes(request.rendered_yaml.encode("utf-8")),
         rendered_yaml=request.rendered_yaml,
         resolved_log_path=resolve_event_log_path(config),
+        branch_operation=branch_operation,
+        branch_confirmation_required=branch_confirmation_required,
     )
 
 
@@ -159,7 +187,7 @@ def apply_target_configuration(
     publisher: Callable[[Path, str], None] = write_config,
 ) -> TargetConfigurationResult:
     """The only policy-owned config writer.  All refusals precede publishing."""
-    preview = prepare_target_configuration(request)
+    preview = prepare_target_configuration(request, adapter_factory=adapter_factory)
     lease = lease_factory(request.repository_path)
     if lease.state is LeaseState.ABANDONED_ACQUIRED:
         try:
