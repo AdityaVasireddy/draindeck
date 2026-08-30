@@ -68,6 +68,91 @@ billing: {{posture: x, headless_split_status: x, verified_on: "2026-08-29", reve
 '''
 
 
+def test_detect_reports_stack_and_proposed_commands(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_repo(tmp_path)
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    resp = client.get("/api/target-configurations/detect", params={"projectPath": str(repo)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chosenStack"] == "Rust"
+    assert body["proposedCommands"] == ["cargo test"]
+    assert not (repo / ".draindeck").exists()  # read-only
+
+
+def test_detect_no_match_returns_empty_proposal(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_repo(tmp_path)
+
+    resp = client.get("/api/target-configurations/detect", params={"projectPath": str(repo)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chosenStack"] is None
+    assert body["proposedCommands"] == []
+
+
+def test_detect_rejects_non_git_path(tmp_path):
+    client = _client(tmp_path)
+
+    resp = client.get("/api/target-configurations/detect",
+                      params={"projectPath": str(tmp_path / "not-a-repo")})
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "CONFIG_INVALID"
+
+
+def test_render_produces_exact_config_yaml_that_loads(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_repo(tmp_path)
+    (repo / "Cargo.toml").write_text("[package]\nname='x'\n")
+    _run(repo, "add", "-A")
+    _run(repo, "commit", "-m", "add cargo")
+
+    resp = client.post("/api/target-configurations/render", json={
+        "projectPath": str(repo), "branch": "agent-work", "commands": ["cargo test"],
+    })
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chosenStack"] == "Rust"
+    assert "cargo test" in body["renderedYaml"]
+    assert not (repo / ".draindeck").exists()  # read-only, no file written
+
+
+def test_render_empty_commands_produces_acknowledged_no_gate_config(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_repo(tmp_path)
+
+    resp = client.post("/api/target-configurations/render", json={
+        "projectPath": str(repo), "branch": "agent-work", "commands": [],
+    })
+
+    assert resp.status_code == 200
+    assert "acknowledged_no_gate: true" in resp.json()["renderedYaml"]
+
+
+def test_render_output_is_directly_usable_by_preview(tmp_path):
+    """The render->preview->apply chain never round-trips through browser-
+    assembled YAML -- render's output is exactly what preview/apply accept."""
+    client = _client(tmp_path)
+    repo = _git_repo(tmp_path)
+
+    rendered = client.post("/api/target-configurations/render", json={
+        "projectPath": str(repo), "branch": "agent-work", "commands": ["echo ok"],
+    }).json()["renderedYaml"]
+
+    preview = client.post("/api/target-configurations/preview", json={
+        "projectPath": str(repo), "renderedYaml": rendered,
+    })
+
+    assert preview.status_code == 200
+
+
 def test_preview_is_side_effect_free(tmp_path):
     client = _client(tmp_path)
     repo = _git_repo(tmp_path)

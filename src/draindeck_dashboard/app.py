@@ -48,6 +48,8 @@ from .views import (
     list_issues,
     list_runs,
 )
+from runtime.init.detect import CommandProposal, build_command, detect_stacks
+from runtime.init.generate import render_config
 from runtime.init.service import (
     TargetConfigurationError,
     TargetConfigurationRequest,
@@ -107,6 +109,22 @@ class _TargetConfigurationRequest(BaseModel):
     renderedYaml: str
     expectedConfigDigest: Optional[str] = None
     branchChangeConfirmed: bool = False
+
+
+class _RenderTargetConfigurationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    projectPath: str
+    branch: str
+    commands: list[str]
+
+
+def _require_git_worktree(project_path: str) -> Path:
+    repo_path = Path(project_path)
+    if not repo_path.is_absolute() or not repo_path.is_dir() or not (repo_path / ".git").exists():
+        raise DashboardApiError(
+            "CONFIG_INVALID", "projectPath must be an existing Git worktree", status_code=400,
+        )
+    return repo_path
 
 
 def _configuration_error(exc: TargetConfigurationError) -> DashboardApiError:
@@ -192,6 +210,42 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.delete("/api/repositories/{repo_id}", status_code=204)
     async def remove_repository(repo_id: int) -> None:
         delete_repository(app.state.db, repo_id)
+
+    @app.get("/api/target-configurations/detect")
+    async def detect_target_stack(projectPath: str) -> dict:
+        """Read-only stack detection for the New Target form's "detected
+        defaults" step -- reuses the exact same `runtime.init.detect`
+        modules `draindeck init` uses, so the Dashboard never reimplements
+        detection or YAML templating in JavaScript. Never proposes or runs
+        an install command (spec non-goal: the Dashboard never executes
+        anything while configuring a target)."""
+        repo_path = _require_git_worktree(projectPath)
+        matches = detect_stacks(repo_path)
+        chosen_row = matches[0] if matches else None
+        chosen = build_command(chosen_row, repo_path) if chosen_row is not None else None
+        return {
+            "detectedStacks": [m.stack for m in matches],
+            "chosenStack": chosen_row.stack if chosen_row is not None else None,
+            "proposedCommands": chosen.commands if chosen is not None else [],
+        }
+
+    @app.post("/api/target-configurations/render")
+    async def render_target_configuration(payload: _RenderTargetConfigurationRequest) -> dict:
+        """Renders the exact proposed config.local.yaml text server-side
+        (same runtime.init.generate.render_config the CLI uses) so the
+        browser only ever reviews/edits structured fields, never assembles
+        or quotes YAML itself. `commands=[]` renders the acknowledged-no-
+        validation-gate block (ADR-24) -- the form is responsible for
+        getting an explicit user acknowledgement before sending that."""
+        repo_path = _require_git_worktree(payload.projectPath)
+        matches = detect_stacks(repo_path)
+        chosen_stack = matches[0].stack if matches else "manual"
+        text = render_config(
+            repo_path=repo_path, branch=payload.branch, branch_tip="",
+            all_matches=matches, chosen_stack=chosen_stack,
+            chosen=CommandProposal(commands=list(payload.commands)),
+        )
+        return {"renderedYaml": text, "chosenStack": chosen_stack}
 
     @app.post("/api/target-configurations/preview")
     async def preview_target_configuration(payload: _TargetConfigurationRequest) -> dict:
