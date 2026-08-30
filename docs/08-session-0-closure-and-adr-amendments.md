@@ -1212,6 +1212,92 @@ by acceptance. Approval authorizes only the named local checkpoint series. It
 does not authorize push, merge, dependency installation, live credentialed
 calls, or any `src/runtime`/Doc 03 change.
 
+## 5k. ADR-29 — Controlled target configuration writes
+
+**Status:** ACCEPTED · **Proposed:** 2026-08-29 · **Accepted:** 2026-08-30.
+Accepted together with `spec/dashboard-target-configuration.md`,
+`docs/30-controlled-target-configuration-outcome-matrix.md`, and the active
+`tasks/plan.md` / `tasks/todo.md`, with explicit local checkpoint-commit
+authority granted for this build's bounded per-task commit series. Push and
+merge remain separate, later decisions.
+
+**Context.** ADR-26 and ADR-27 deliberately made the Dashboard a read-only
+operator surface: it may register and observe a target, but never load or
+modify target configuration, Git state, logs, artifacts, or source files.
+That boundary prevents the Dashboard from bypassing runtime safety rules, but
+it leaves first-time setup and ordinary configuration edits in a CLI/YAML
+workflow. The existing `draindeck init` path already creates or checks out a
+work branch and publishes `<target>/.draindeck/config.local.yaml`; its
+preflight and publication logic are therefore a high-blast-radius seam.
+
+The new capability touches `src/runtime`, the public `config.local.yaml`
+contract, target Git state, and a target-owned untracked file. In particular,
+an untracked config created after `ExecutionSpawned` cannot be inserted into
+that event's already-fsynced `pre_execution_untracked` baseline. Recovery
+could otherwise mistake it for engine crash residue.
+
+**Decision.** Add one framework-free shared policy module,
+`runtime.init.service`, as the sole authority for controlled target
+configuration mutation. Its two public operations are a side-effect-free
+`prepare_target_configuration` and a guarded
+`apply_target_configuration`. The CLI `cmd_init` and Dashboard API adapters
+must both invoke those operations; neither adapter may import a Git adapter,
+workspace lease, or config write helper directly.
+
+The service acquires the existing `WorkspaceLease`, rejects unavailable,
+error, and abandoned ownership, validates the canonical target config and
+authoritative log read-only, rejects tracked/staged/deleted/renamed/conflicted
+worktrees, rechecks that condition immediately before mutation, validates the
+expected config digest, and rejects unresolved execution, containment, or torn
+or corrupt-log state. It does not perform recovery implicitly. Untracked-only
+trees remain allowed and are preserved. The existing target config schema is
+the contract: unknown fields remain forbidden and this ADR adds no YAML keys.
+
+The only Dashboard filesystem destination is
+`<target>/.draindeck/config.local.yaml`; arbitrary Dashboard write paths are
+out of scope. Publication uses a same-directory temporary file, file flush and
+`fsync`, `os.replace`, final-file `fsync`, best-effort parent-directory fsync,
+and temporary-file cleanup. The service returns a typed conflict if the
+previewed digest no longer matches. Dashboard registration is created or
+updated only after successful durable publication.
+
+Branch creation or checkout is permitted only for a new target with no
+runtime history and only when the caller supplies explicit confirmation. The
+confirmation UI must name the source branch, destination branch, whether the
+destination will be created, and the canonical config path. Existing branch
+tips are checked out without force-reset. Once a target has runtime history,
+branch changes are refused by this feature; a future migration requires a
+separate ADR. Experiment fields remain immutable after the first `RunStarted`.
+The Dashboard never runs validation commands, dependency-install commands, or
+a Draindeck run while configuring a target.
+
+**Provenance rule.** Configuration writes are admitted only while no
+execution has an already-recorded baseline that could classify the new file as
+residue. A later execution records an unignored config file in
+`pre_execution_untracked`; ignored files are already excluded from
+`git clean -fd` because recovery never uses `-x`. The service therefore
+refuses instead of writing if a live or unresolved execution could make that
+proof unavailable.
+
+**Alternatives rejected.** A Dashboard-specific Git/config implementation
+would permit CLI/Dashboard drift. A write without workspace ownership races
+runtime baseline capture. Updating a historic baseline would rewrite durable
+evidence. Silent branch switching violates the controlled-write boundary.
+Arbitrary config destinations broaden filesystem authority without a product
+need. Executing detected install or validation commands during setup crosses a
+separate trust boundary and is not configuration.
+
+**Consequences and gate.** The Dashboard changes from absolutely read-only to
+a narrowly controlled writer for exactly one target-owned config file and an
+explicitly confirmed initial branch setup. It remains non-mutating for target
+source, logs, artifacts, evidence, and attempt refs. Before any `src/` edit,
+the full Five Gates apply: accepted ADR/spec/API contract, pre-committed
+outcome matrix, test-first implementation, all verification including raw
+60/60 durability output for seeds 42 and 1337, and independent adversarial
+review with evidence accounting. `runtime.init.service` owns the policy gate;
+`workspace_lease.py` owns exclusion, `repo/git_adapter.py` owns Git mechanism,
+and `recovery/bindings.py` remains the sole interpreter of provenance.
+
 ## 6. Final v1 `config.yaml` (reference example)
 
 ```yaml

@@ -1,281 +1,145 @@
-# Implementation plan: Draindeck Intake v1
-
-**Status:** ACCEPTED 2026-08-29 — the user approved this plan, ADR-28, and
-the bounded nine-local-commit build-auto series. Push and merge remain
-prohibited.
-**Branch:** `codex/draindeck-intake`, clean baseline `4357b4a`.
-**Governing spec:** `spec/draindeck-intake.md`.
-**Mutation boundary:** new `src/draindeck_intake`, `tests/intake`, Intake docs,
-packaging/test discovery, and bookkeeping. Never edit `src/runtime` or Doc 03.
+# Implementation plan: Dashboard-controlled target configuration
+**Status:** Planning gate cleared 2026-08-30 (ADR-29 accepted, checkpoint-
+commit authority granted); implementation in progress. Governing ADR: ADR-29.
+**Normative contract:** `spec/dashboard-target-configuration.md`.
+**Outcome prediction gate:** `docs/30-controlled-target-configuration-outcome-matrix.md`.
 
 ## Architecture decisions
 
-- Intake is an optional one-way preflight package. It compiles to the existing
-  `Issues.md` contract and owns no workflow state.
-- Provider JSON is mapped at the boundary into one immutable canonical model.
-- All remote I/O uses an injected, bounded, no-redirect standard-library
-  transport; there is no dependency installation.
-- The generated file is managed, deterministic, parser-compatible, and
-  atomically replaced only under explicit ownership rules.
-- Runtime integration stops at the generated file. Existing event-log IDs are
-  never updated or reinterpreted.
+- `runtime.init.service` is the sole policy and mutation gate; CLI and
+  Dashboard are thin adapters.
+- The canonical target config path is server-derived and target-owned.
+- Workspace ownership, authoritative-state safety, tracked-dirty rejection,
+  digest matching, branch confirmation, and atomic publication are enforced
+  in the service, not duplicated in the Dashboard.
+- The Dashboard remains unable to write source, logs, artifacts, evidence, or
+  arbitrary paths, and does not execute shell commands during setup.
 
 ## Dependency graph
 
 ```text
-ADR/spec acceptance
-    -> canonical model + compiler
-        -> source protocol + local adapter
-            -> bounded HTTP transport
-                -> GitHub adapter
-                -> Jira adapter
-                -> Linear adapter
-                    -> CLI + atomic publication
-                        -> docs, review, full verification
+ADR/spec/outcome matrix accepted
+  -> shared service contracts and RED policy tests
+    -> lease/state/digest/atomic writer implementation
+      -> CLI delegates to service
+      -> Dashboard API delegates to service
+        -> repository UI preview/apply flows
+          -> browser, security, full-suite, durability, review evidence
 ```
 
 ## Units
 
-### Unit 0 — Record architecture acceptance and baseline
+### Unit 0: Planning and baseline gate
 
-**Description:** Record ADR-28 as an Intake-only additive boundary and
-characterize the branch baseline before behavioral code.
+Record ADR-29, this spec, the pre-committed outcome matrix, and test plan;
+confirm no source mutation has occurred.
 
 **Acceptance criteria:**
-- [x] ADR-28 states the one-way compiler boundary, security limits, rejected
-      alternatives, and explicit non-impact on `src/runtime`/Doc 03.
-- [x] Current unit + Dashboard suites are characterized before source mutation.
-      Dashboard must pass; any inherited core failure must be proven unrelated,
-      recorded, and must not be repaired through this Intake-only change.
-- [x] Current tasks are archived and the approved spec/plan/todo are committed
-      as one preparatory checkpoint.
+
+- [x] ADR-29 is accepted before implementation (2026-08-30, docs/08 §5k).
+- [x] This plan, todo, and outcome matrix are committed before any `src/` edit
+      (the Unit 0 commit itself stages only these planning artifacts).
+- [x] Baseline status and source scope are recorded.
 
 **Verification:**
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\dashboard -q`
+
 - [ ] `git diff --check`
-- [ ] `git diff --name-only master -- src/runtime docs/03-state-machine-and-event-schema.md` is empty
+- [ ] `git diff --cached --name-only` contains no `src/` or test implementation.
 
-**Dependencies:** None
+### Unit 1: Shared contract and policy tests
 
-**Files likely touched:** `docs/08-session-0-closure-and-adr-amendments.md`,
-`spec/draindeck-intake.md`, `tasks/plan.md`, `tasks/todo.md`, `docs/plans/*`
-
-**Estimated scope:** Medium
-
-**Baseline evidence (2026-08-29):** The repository virtual environment ran
-`tests/dashboard` successfully: 496 passed. `tests/unit` stopped during
-collection with 14 imports of `runtime.state` failing. The entire
-`src/runtime/state` path is absent from `git ls-tree -r 4357b4a` while existing
-tracked runtime modules import it; therefore this is an inherited clean-clone
-baseline defect, not an Intake regression. The original checkout contains
-local ignored copies, which this branch deliberately did not copy, edit, or
-commit. `git diff --name-only HEAD -- src/runtime
-docs/03-state-machine-and-event-schema.md` was empty. Intake focused tests and
-the independently collectible Dashboard suite remain the enforceable gates;
-the inherited unit-collection defect will be reported, not masked.
-
-### Unit 1 — Canonical model and deterministic compiler
-
-**Description:** Establish the immutable public model, ID normalization, and
-safe deterministic Issues.md compiler as a parser-compatible vertical slice.
+Define typed request/result/error contracts and write RED tests for admission
+rules, without changing CLI or Dashboard behavior yet.
 
 **Acceptance criteria:**
-- [ ] Model rejects invalid IDs, strings, URLs, self/duplicate dependencies,
-      duplicate labels, and all documented bounds.
-- [ ] Compiler orders stably, quotes reserved remote lines, rejects duplicate
-      IDs, and emits exact LF/trailing-newline bytes.
-- [ ] Runtime parser round-trip proves no unintended control records.
 
-**Verification:**
-- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_model_compiler.py -q`
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
-- [ ] `.venv\Scripts\python.exe -m compileall -q src\draindeck_intake`
+- [ ] Tests describe every outcome-matrix row.
+- [ ] Tests prove the service owns dirty, lease, state, digest, and branch gates.
+- [ ] No adapter has direct policy/mutation imports.
 
-**Dependencies:** Unit 0
+**Verification:** focused RED tests, then focused GREEN tests after implementation.
 
-**Files likely touched:** `src/draindeck_intake/__init__.py`,
-`src/draindeck_intake/model.py`, `src/draindeck_intake/compiler.py`,
-`tests/intake/test_model_compiler.py`
+### Unit 2: Safe apply service
 
-**Estimated scope:** Medium
-
-### Unit 2 — Source protocol, bounded collector, and local adapter
-
-**Description:** Add the page protocol and a complete local Issues.md import
-path without network I/O.
+Implement lease/state admission, tracked-dirty checks, branch safety, digest
+conflicts, and atomic publication behind the shared service.
 
 **Acceptance criteria:**
-- [ ] Collector rejects cursor cycles, empty continuation pages, oversized
-      pages, duplicates, and totals above `max_issues`.
-- [ ] Local adapter performs a bounded UTF-8 read and maps current Issues.md
-      fields without changing IDs.
-- [ ] Local input -> canonical collection -> compiled output works end-to-end.
 
-**Verification:**
-- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_sources.py -q`
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+- [ ] Each predicted failure leaves the expected target state.
+- [ ] Config publication is atomic and fsync-backed.
+- [ ] Provenance/recovery tests preserve config and remove genuine residue.
 
-**Dependencies:** Unit 1
+**Verification:** `python -m pytest tests\\unit -q`.
 
-**Files likely touched:** `src/draindeck_intake/sources.py`,
-`src/draindeck_intake/issues_md.py`, `src/draindeck_intake/__init__.py`,
-`tests/intake/test_sources.py`
+### Checkpoint: runtime safety
 
-**Estimated scope:** Medium
+- [ ] Focused service tests green.
+- [ ] Full unit suite green.
+- [ ] Outcome-matrix evidence recorded before adapter work.
 
-### Unit 3 — Bounded HTTP transport and GitHub adapter
+### Unit 3: CLI delegation
 
-**Description:** Prove the external boundary with a reusable HTTPS JSON
-transport and the first live provider mapping.
+Route `cmd_init` through the shared preview/apply service while preserving its
+documented prompts and flags.
 
 **Acceptance criteria:**
-- [ ] Transport enforces HTTPS/host allowlists, timeouts, response-size bounds,
-      redirect refusal, JSON object/list expectations, and sanitized errors.
-- [ ] GitHub request uses documented headers/query bounds and optional env-token
-      authorization.
-- [ ] Pull requests are excluded and malformed issue records fail closed.
 
-**Verification:**
-- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_http_github.py -q`
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+- [ ] CLI has no direct Git/lease/write policy path.
+- [ ] Sentinel tests prove exactly one shared-service apply call.
+- [ ] Existing CLI behavior remains compatible where within ADR-29 scope.
 
-**Dependencies:** Unit 2
+**Verification:** focused init tests plus `python -m pytest tests\\unit -q`.
 
-**Files likely touched:** `src/draindeck_intake/http.py`,
-`src/draindeck_intake/github.py`, `tests/intake/test_http_github.py`
+### Unit 4: Dashboard API delegation and registration sequencing
 
-**Estimated scope:** Medium
-
-### Unit 4 — Jira Cloud adapter and ADF extraction
-
-**Description:** Add current enhanced-JQL pagination, API-token authentication,
-and safe plain-text extraction from Jira Cloud ADF descriptions.
+Add typed preview/apply/read endpoints that invoke the service and create or
+update registration only after durable success.
 
 **Acceptance criteria:**
-- [ ] Only HTTPS `*.atlassian.net` sites are accepted and credentials come from
-      environment values supplied to the adapter.
-- [ ] Requests use POST `/rest/api/3/search/jql`, field allowlisting,
-      `maxResults`, and opaque `nextPageToken`.
-- [ ] ADF and malformed response tests cover nested text, hard breaks, null
-      descriptions, invalid fields, and secret-free errors.
 
-**Verification:**
-- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_jira.py -q`
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+- [ ] Strict inputs and typed errors preserve existing security policy.
+- [ ] Dashboard adapter cannot mutate target state directly.
+- [ ] Registration remains unchanged on service failure.
 
-**Dependencies:** Unit 3
+**Verification:** focused Dashboard API tests plus `python -m pytest tests\\dashboard -q`.
 
-**Files likely touched:** `src/draindeck_intake/jira.py`,
-`tests/intake/test_jira.py`
+### Unit 5: Guided dashboard flows
 
-**Estimated scope:** Small
-
-### Unit 5 — Linear adapter
-
-**Description:** Add Relay-pagination and team-filtered issue mapping over
-Linear's GraphQL endpoint.
+Build New Target and Edit Configuration views with a shared form, advanced
+sections, exact preview, conflict remediation, and explicit branch warning.
 
 **Acceptance criteria:**
-- [ ] Request uses the fixed Linear endpoint, env API key, explicit variables,
-      team-key filter, and `first`/`after` pagination.
-- [ ] A non-empty GraphQL errors array fails even on HTTP 200.
-- [ ] Missing/null required fields, bad pageInfo, labels, state, priority, and
-      URL mapping are covered.
 
-**Verification:**
-- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_linear.py -q`
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
+- [ ] Essential settings are usable without exposing raw schema complexity.
+- [ ] Advanced fields are grouped and validated.
+- [ ] Keyboard, error, loading, unsafe, conflict, and responsive states work.
 
-**Dependencies:** Unit 3
+**Verification:** JavaScript tests and real-browser checks.
 
-**Files likely touched:** `src/draindeck_intake/linear.py`,
-`tests/intake/test_linear.py`
+### Unit 6: Five-Gate closeout
 
-**Estimated scope:** Small
-
-### Unit 6 — Atomic output and CLI composition
-
-**Description:** Deliver the operator-facing command for all four sources with
-safe managed-file publication and machine-readable results.
+Perform full verification and adversarial review; repair every real finding
+test-first and retain raw evidence.
 
 **Acceptance criteria:**
-- [ ] Unmanaged existing files are refused without `--force`; managed files are
-      replaced atomically; byte-identical output is a no-op.
-- [ ] CLI validates bounds/env names/provider arguments before I/O and returns
-      documented JSON envelopes/exit codes without secrets or stack traces.
-- [ ] Local Issues.md CLI path passes end-to-end and provider construction is
-      covered without live network access.
 
-**Verification:**
-- [ ] RED then GREEN: `.venv\Scripts\python.exe -m pytest tests\intake\test_cli_output.py -q`
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake -q`
-- [ ] `.venv\Scripts\python.exe -m draindeck_intake.cli --help`
+- [ ] Unit, Dashboard, and combined suites pass.
+- [ ] Durability harness passes all 60 scenarios on seeds 42 and 1337 with
+      raw per-scenario output.
+- [ ] Security, provenance, API, browser, and independent-review findings are
+      resolved or explicitly accepted by the user.
 
-**Dependencies:** Units 4 and 5
-
-**Files likely touched:** `src/draindeck_intake/output.py`,
-`src/draindeck_intake/cli.py`, `tests/intake/test_cli_output.py`,
-`pyproject.toml`
-
-**Estimated scope:** Medium
-
-### Unit 7 — Documentation, adversarial review, and final evidence
-
-**Description:** Document the public contract and operational limits, perform a
-fresh-context multi-axis review, fix every real finding test-first, and close
-the build with full evidence.
-
-**Acceptance criteria:**
-- [ ] README/docs cover commands, auth environment variables, generated-file
-      ownership, source limitations, immutable-after-ingestion behavior, and
-      official API references.
-- [ ] Security/review/simplification passes find no unresolved Critical or
-      Required issue; each real finding has a regression test.
-- [ ] Full test, Dashboard, durability, compile, diff, secret, and core-carveout
-      gates pass; final handoff separates VERIFIED from ASSUMED live-provider
-      behavior.
-
-**Verification:**
-- [ ] `.venv\Scripts\python.exe -m pytest tests\unit tests\intake tests\dashboard -q`
-- [ ] `.venv\Scripts\python.exe tests\crash\harness.py <temp> 42`
-- [ ] `.venv\Scripts\python.exe tests\crash\harness.py <temp> 1337`
-- [ ] `.venv\Scripts\python.exe -m compileall -q src\draindeck_intake`
-- [ ] `git diff --check`
-- [ ] `git diff --name-only master -- src/runtime docs/03-state-machine-and-event-schema.md` is empty
-- [ ] staged-diff secret scan before each commit
-
-**Dependencies:** Unit 6
-
-**Files likely touched:** `README.md`, `docs/29-draindeck-intake.md`,
-`docs/reviews/DRAINDECK_INTAKE_BUILD_EVIDENCE.md`, `NEXT.md`,
-`docs/handoffs/HANDOFF_2026-08-29_draindeck-intake-complete.md`
-
-**Estimated scope:** Medium
-
-## Checkpoints
-
-- After Unit 0: architecture accepted, baseline characterized, planning committed.
-- After Units 1-2: local end-to-end canonical/compiler path green.
-- After Units 3-5: all provider contracts green under adversarial fixtures.
-- After Unit 6: installable CLI path green.
-- After Unit 7: Definition of Done met; ready for user review, not merged/pushed.
+**Verification:** all commands in `tasks/todo.md`; `git diff --check`; final
+evidence distinguishes VERIFIED from ASSUMED.
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Provider response drift | High | Strict boundary mapping, sanitized failure, official-doc citations, fixtures |
-| Credential disclosure | High | env-only secrets, no redirects, allowlisted errors, staged secret scan |
-| Prompt/control injection through issue text | High | quote reserved parser-control lines; parser round-trip tests |
-| Unbounded source backlog/response | High | page/total/body/response/time bounds and cursor-cycle rejection |
-| Overwriting human Issues.md | High | managed marker, atomic replacement, unmanaged refusal by default |
-| Canonical ID collision | Medium | deterministic visible prefixes and collision refusal |
-| False update expectations | Medium | one-way docs and immutable-after-event-ingestion warning |
-
-## Authorization requested
-
-Approval of this plan authorizes one uninterrupted `/build auto` pass and a
-bounded series of **nine local commits** on `codex/draindeck-intake`: one
-preparatory spec/plan/archive commit followed by Units 0-7. It does not authorize
-push, merge, live credentialed calls, dependency installation, runtime/event
-changes, or mutation of the main checkout's untracked Dashboard files.
+| Dashboard and CLI drift | High | One shared apply function plus sentinel and import-boundary tests. |
+| New config misclassified as residue | High | Lease/state admission, no write with unresolved execution, provenance regression test. |
+| Config loss during publication | High | Same-directory temp, fsync, replace, digest check, crash matrix. |
+| Branch history reset | High | Explicit confirmation, plain existing-branch checkout, regression test. |
+| Stale browser overwrite | Medium | Preview digest required at apply, typed conflict, refresh flow. |
+| Dashboard expands write authority | High | Canonical path only, no shell execution, strict request schemas, review. |
