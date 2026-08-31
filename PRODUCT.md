@@ -12,7 +12,7 @@ The primary product environment is a desktop or tablet workstation. The initial 
 
 ## Product Purpose
 
-Draindeck Dashboard is the local operator surface for Draindeck. Its home screen fuses cross-repository health with current attention conditions; deeper workspaces provide repository, issue, run, execution, transcript, diff, and evidence inspection. It makes the runtime's durable record navigable while preserving the safety boundary that the Dashboard never modifies target repositories, event logs, or artifacts.
+Draindeck Dashboard is the local operator surface for Draindeck. Its home screen fuses cross-repository health with current attention conditions; deeper workspaces provide repository, issue, run, execution, transcript, diff, and evidence inspection, plus configured-issue selection and run launch. It makes the runtime's durable record navigable while preserving a narrowly-scoped safety boundary: the Dashboard never opens, parses, or repairs a target's event log, mutates target Git state or source, or touches the runtime workspace lease itself. Two explicit, ADR-gated exceptions exist — writing a target's own `.draindeck/config.local.yaml` (ADR-29), and launching at most one `draindeck run` process per registered repository via a fixed argv vector (ADR-30) — beyond those, target repositories, logs, and artifacts remain unmodified.
 
 Success means an operator can answer four questions quickly: What needs me now? What happened? What evidence supports that conclusion? Where can I inspect the exact related issue, run, execution, transcript, or diff? Every answer must distinguish observed facts from derived presentation and must remain useful under partial, malformed, legacy, or disconnected conditions.
 
@@ -36,7 +36,7 @@ The product should feel like a beautifully composed operations journal: confiden
 1. **Triage before tour.** Open on cross-repository health and attention, never on marketing or decoration.
 2. **Evidence before interpretation.** Lead with observed records, label derived facts, and never turn absence of evidence into a liveness claim.
 3. **Density with orientation.** Support serious tables, linked details, filters, pagination, and stable URLs while preserving clear hierarchy and context.
-4. **Local trust made explicit.** State and uphold that target repositories, logs, and artifacts are not modified; describe Dashboard-owned SQLite writes precisely.
+4. **Local trust made explicit.** State and uphold the narrow, named exceptions to "target repositories, logs, and artifacts are not modified" (config writes, run launches) rather than an unqualified claim; describe Dashboard-owned SQLite writes precisely.
 5. **Graceful degradation is a feature.** Loading, empty, stale, reconnecting, malformed, truncated, legacy, and inconsistent states receive first-class designs.
 
 ## Accessibility & Inclusion

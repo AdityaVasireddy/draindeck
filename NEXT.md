@@ -12,33 +12,78 @@
 
 ## 1. Current state (verified 2026-08-30)
 
-- **Dashboard issue selection and run control (ADR-30): IN PROGRESS, on branch
-  `feature/dashboard-issue-run-control`, baseline `master` `1ae07a5`.**
-  ADR-30 accepted (`docs/adr/ADR-30-dashboard-issue-selection-and-run-control.md`,
-  also `docs/08` §5l); spec `spec/dashboard-issue-run-control.md`; outcome
-  matrix `docs/31-dashboard-issue-run-control-outcome-matrix.md`; RED
-  inventory `docs/plans/dashboard-issue-run-control-failing-tests.md`; active
-  plan/todo `tasks/plan.md` / `tasks/todo.md`. **Units 0-5 of 10 complete**
-  (6 commits): documentation checkpoint; RED 0 architecture/frozen-contract
-  gate; RED 1 registration owns a validated canonical config path (additive
-  SQLite migration); RED 2 configured-issue reader (reuses
-  `runtime.queue.issues_md.parse`, reads the materialized `issue_views` read
-  model); RED 3 pure `plan_selected`/`plan_run_all` planner
-  (`src/runtime/queue/selection.py`); RED 4 runtime `--issue`/`--all-issues`/
-  `--issues-digest` exact-selection CLI and `Orchestrator.allowed_issue_ids`
-  filter. **1194 combined `tests/unit tests/dashboard` passed** (up from the
-  1104 pre-feature baseline), durability harness **ALL 60 SCENARIOS PASSED**
-  on both seed 42 and seed 1337 (re-run after the runtime.main/loop.py
-  change), every unit's RED confirmed genuine (collection/type error against
-  reverted code, not a fixture accident) before GREEN, `git diff --check`
-  clean at every commit. **Remaining:** RED 5 strict run-request API, RED 6-7
-  persistent FIFO queue and subprocess launcher, RED 8 selection/run-control
-  UI plus live-browser verification, RED 9 crash-harness extension/full
-  regression/fresh-context adversarial review/documentation closeout. No
-  merge, push, or `src/` mutation beyond what's described above. Full detail:
-  `tasks/todo.md`'s per-RED-group entries (each records exactly what was
-  implemented, the genuine-RED confirmation method, and verified pass
-  counts).
+- **Dashboard issue selection and run control (ADR-30): BUILD COMPLETE
+  (Units 0-9 of 10), on branch `feature/dashboard-issue-run-control`,
+  baseline `master` `1ae07a5`, pending user review before merge. No merge or
+  push has occurred.** ADR-30 accepted
+  (`docs/adr/ADR-30-dashboard-issue-selection-and-run-control.md`, also
+  `docs/08` §5l); spec `spec/dashboard-issue-run-control.md`; outcome matrix
+  `docs/31-dashboard-issue-run-control-outcome-matrix.md`; RED inventory
+  `docs/plans/dashboard-issue-run-control-failing-tests.md`; plan/todo
+  `tasks/plan.md` / `tasks/todo.md` (each RED group's entry records exactly
+  what was implemented, its genuine-RED confirmation method, and verified
+  pass counts). Lets an operator, from a registered repository whose
+  canonical `.draindeck/config.local.yaml` is on file, view the configured
+  issue file, select one/several/every current issue, and launch exactly one
+  sequential `draindeck run` process — without leaving the Dashboard for a
+  terminal. Built: an additive SQLite migration chain (`config_path` on
+  `repositories`, plus a new `run_commands` FIFO/idempotency queue table);
+  the configured-issue reader (delegates to `runtime.queue.issues_md.parse`,
+  reads the materialized `issue_views` read model, never source `STATUS`
+  text); a pure `plan_selected`/`plan_run_all` dependency planner in
+  `runtime.queue.selection` shared verbatim by the Dashboard API and the
+  runtime's own re-validation; `runtime.main run --issue/--all-issues/
+  --issues-digest` plus `Orchestrator.allowed_issue_ids`, re-validated after
+  ownership/recovery and strictly before `RunStarted`; a strict, bounded,
+  idempotent run-request API; an atomic per-repository FIFO claim with
+  dequeue revalidation and startup reconciliation of ambiguous claims
+  (`LAUNCH_OWNERSHIP_UNKNOWN`, fail-closed); a safe subprocess launcher
+  mirroring `observer_client.py`'s pattern exactly (fixed argv,
+  `shell=False`, the same allowlisted environment), with exit reconciliation
+  reusing `runtime.workspace_lease.probe_controller_identity`'s existing
+  PID/creation-time mechanism; and a new `/repositories/{id}/run-control` UI
+  page with an accessible selection table, a focusable error summary, and an
+  accessible confirmation dialog (focus trap, Escape-to-close).
+
+  **1264 combined `tests/unit tests/dashboard` passed** (up from the 1104
+  pre-feature baseline), durability harness **ALL 60 SCENARIOS PASSED** on
+  both seed 42 and seed 1337 (re-run twice — after the `runtime.main`/
+  `loop.py` change and again at final closeout), a dedicated
+  `tests/crash/run_control_harness.py` (15/15 scenarios) covering the
+  queue's own crash window, every unit's RED confirmed genuine before GREEN,
+  `git diff --check` clean at every commit. **Three real bugs found and
+  fixed test-first**, two via live-browser testing (a queue row rendering
+  the literal text "ALLnull" from a `null` passed to native
+  `Element.append()`; a missing `.ledger-table-wrapper` that would have
+  forced page-level horizontal scroll on a narrow viewport) and one via
+  fresh-context adversarial review (a genuine, reliably-reproducing
+  double-click race — two concurrent enqueue requests with the same
+  `Idempotency-Key` could both pass the SELECT-based check before either
+  committed, raising an uncaught `sqlite3.IntegrityError`/500 instead of
+  idempotently converging; reproduced 7/8 threads failing on every one of 3
+  runs before the fix). Real-browser verification (live this session against
+  a real `uvicorn` instance, three registered repositories, and a controlled
+  fake `.bat` "draindeck executable" — no paid engine, no real target
+  mutation) covered mixed-state rendering, both refusal paths, a full
+  successful run that genuinely enqueued/claimed/launched a real subprocess,
+  `UNAVAILABLE`-repository controls-disabled, dialog focus-trap/Escape
+  handling, and zero console errors throughout.
+
+  **One item remains genuinely open, documented not glossed over:** native
+  keyboard checkbox/Tab activation and a 320px viewport resize did not take
+  effect via this session's browser-automation tooling (CDP-synthesized key
+  events and `resize_window`, respectively) even though the page's own JS
+  keydown handling, mouse activation, and structural accessibility
+  attributes (tabIndex, aria-label, disabled state) all verified correct —
+  diagnosed as a tooling/session limitation, not a page defect, mirroring
+  this project's own prior `forced-colors: active` precedent
+  (`docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`). See
+  `tasks/todo.md` RED 8 for the full diagnostic trail.
+
+  **Remaining for Unit 10 (final closeout):** this NEXT.md entry (done here),
+  README/PRODUCT.md updates (done), and a final consolidated evidence
+  document. **Next action is a user decision:** review the evidence, then
+  approve merge or request more verification.
 
 - **Dashboard-controlled target configuration (ADR-29): BUILD COMPLETE
   (Units 0-6), committed directly to `master`, pending user review before

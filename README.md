@@ -88,5 +88,14 @@ Open <http://127.0.0.1:8420/>.
 Draindeck can modify target repositories and make commits. Start with a test
 repository, review `config.local.yaml`, and explicitly authorize real runs.
 
+The Dashboard registers and observes repositories read-only by default. Once
+a repository's canonical `.draindeck/config.local.yaml` is registered
+(`configPath`), the Dashboard can also plan and launch a `draindeck run`
+against it directly from the configured-issues page — select one, several,
+or every current issue and start a run without a separate terminal. It never
+opens or repairs `events.jsonl`, mutates target Git state, or touches the
+workspace lease itself; the launched runtime process remains the sole owner
+of all of that. See `docs/adr/ADR-30-dashboard-issue-selection-and-run-control.md`.
+
 For full architecture, safety, and provider details, see `docs/` and
 `docs/29-draindeck-intake.md`.

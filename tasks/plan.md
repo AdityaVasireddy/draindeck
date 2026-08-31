@@ -1,7 +1,16 @@
 # Implementation plan: Dashboard issue selection and run control
 
-**Status:** Documentation checkpoint complete 2026-08-30; `src/` implementation
-not yet started. Governing ADR: ADR-30
+**Status:** BUILD COMPLETE 2026-08-31 (Units 0-9 below, 11 commits), pending
+user review before merge. Full evidence:
+`docs/reviews/DASHBOARD_ISSUE_RUN_CONTROL_BUILD_EVIDENCE.md`. No merge or
+push has occurred. (RED 6 and RED 7 below -- FIFO/atomic-claim/dequeue-
+revalidation and the safe launcher -- were implemented and committed
+together as one unit rather than the two separate units originally planned:
+they turned out to be tightly coupled, and the RED 5 unit already had to
+introduce the `run_commands` table and basic enqueue logic to prove "a
+refusal queues nothing", leaving nothing to gain from splitting the
+remaining queue-mechanics and launcher work into separate commits.)
+Governing ADR: ADR-30
 (`docs/adr/ADR-30-dashboard-issue-selection-and-run-control.md`, also §5l of
 `docs/08-session-0-closure-and-adr-amendments.md`).
 **Normative contract:** `spec/dashboard-issue-run-control.md`.
@@ -39,42 +48,42 @@ doc, turned green before the next begins)
       dependency-branch conclusion (current `master` has everything ADR-30
       needs), verify baseline (589 unit / 515 dashboard / 1104 combined,
       confirmed live), commit before any `src/` edit.
-- [ ] **Unit 1 (RED 0) — Architecture and frozen-contract gate.** Tests that
+- [x] **Unit 1 (RED 0) — Architecture and frozen-contract gate.** Tests that
       lock the boundary itself: no `src/runtime` import of FastAPI/Dashboard,
       Dashboard never touches `events.jsonl` directly or mutates Git/lease,
       no new `RunStarted`/`RunFinished` payload key, launcher uses fixed argv
       without a shell.
-- [ ] **Unit 2 (RED 1) — Registration owns a validated canonical config
+- [x] **Unit 2 (RED 1) — Registration owns a validated canonical config
       path.** Additive SQLite migration adding a config-path column;
       registration validates absolute/exists/regular/parseable/
       same-repository before committing, atomically, with legacy rows
       observation-only until repaired.
-- [ ] **Unit 3 (RED 2) — Configured issue reader.** Read-only Dashboard
+- [x] **Unit 3 (RED 2) — Configured issue reader.** Read-only Dashboard
       service/API that resolves the issue file against `project.repository`
       (never Dashboard CWD), delegates to `runtime.queue.issues_md.parse`
       with no second parser, returns a SHA-256 file revision, and reflects
       `NOT_INGESTED`/unavailable-projection honestly.
-- [ ] **Unit 4 (RED 3) — Pure selection and dependency planner.** The shared
+- [x] **Unit 4 (RED 3) — Pure selection and dependency planner.** The shared
       pure function: exact allowlist semantics for Run Selected, full
       non-terminal-chain semantics for Run All, topological order with file
       order as tie-breaker, complete blocker/cycle reporting.
-- [ ] **Unit 5 (RED 4) — Runtime exact-selection CLI.** `--issue`/
+- [x] **Unit 5 (RED 4) — Runtime exact-selection CLI.** `--issue`/
       `--all-issues` on `runtime.main run`; re-read/re-parse/digest-check/
       re-validate after ownership+recovery and before `RunStarted`; orchestrator
       scheduling restricted to the validated allowlist.
-- [ ] **Unit 6 (RED 5) — Strict run-request API.** `extra=forbid` request
+- [x] **Unit 6 (RED 5) — Strict run-request API.** `extra=forbid` request
       models, bounded sizes, typed blocker envelopes, loopback/CORS/security
       header coverage, injection-shaped-value regression tests.
-- [ ] **Unit 7 (RED 6) — Persistent FIFO queue.** Dashboard-owned SQLite
+- [x] **Unit 7 (RED 6) — Persistent FIFO queue.** Dashboard-owned SQLite
       queue table, atomic per-repository claim, required `Idempotency-Key`
       handling, dequeue revalidation.
-- [ ] **Unit 8 (RED 7) — Safe launcher and event-derived status.** argv-vector
+- [x] **Unit 8 (RED 7) — Safe launcher and event-derived status.** argv-vector
       subprocess launch, bounded/redacted diagnostics, crash-window handling
       exactly as ADR-30 §4, status derived only from observed events.
-- [ ] **Unit 9 (RED 8) — Selection/run-control UI.** Configured-issues page,
+- [x] **Unit 9 (RED 8) — Selection/run-control UI.** Configured-issues page,
       accessible selection controls, confirmation dialog, error summary,
       SSE-safe selection, live-browser verification.
-- [ ] **Unit 10 (RED 9) — Crash/durability/regression closeout.** Targeted
+- [x] **Unit 10 (RED 9) — Crash/durability/regression closeout.** Targeted
       `tests/crash/run_control_harness.py` cases, full unit+dashboard+combined
       suites, both durability-harness seeds, fresh-context adversarial review,
       documentation/NEXT.md closeout.

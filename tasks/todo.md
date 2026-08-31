@@ -631,7 +631,24 @@ never request data, matching the codebase's existing pattern throughout
       -> ALL 60 SCENARIOS PASSED
 - [x] `python tests\crash\run_control_harness.py` -> ALL RUN-CONTROL CRASH
       SCENARIOS PASSED (15/15)
+- [x] README.md, PRODUCT.md, NEXT.md, `tasks/plan.md` (this file's
+      companion) updated to describe the launch-capable boundary accurately;
+      final evidence written to
+      `docs/reviews/DASHBOARD_ISSUE_RUN_CONTROL_BUILD_EVIDENCE.md`.
 
 **Verification:** all commands above; `git diff --check` clean; this todo
 distinguishes VERIFIED (ran it, saw it pass, shown above) from nothing left
 ASSUMED for this unit.
+
+## Build complete
+
+**Status: BUILD COMPLETE 2026-08-31 (Units 0-9, 11 commits), pending user
+review before merge.** No merge, push, or PR was performed. Full evidence:
+`docs/reviews/DASHBOARD_ISSUE_RUN_CONTROL_BUILD_EVIDENCE.md`. Every
+contracted RED-inventory test is implemented or explicitly reconciled
+(documented inline above at the point it occurs); three real bugs were
+found and fixed test-first (a route collision, a live-browser-found
+rendering defect, and a fresh-context-review-found concurrency race); one
+item remains genuinely open by tooling limitation, not omission (native
+keyboard/viewport-resize browser-automation verification — see RED 8's
+entry above and the evidence document for the full diagnostic trail).
