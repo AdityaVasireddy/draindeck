@@ -35,12 +35,25 @@ Legend: `[ ]` pending · `[~]` in progress · `[x]` verified complete
 
 ## RED 0 — architecture and frozen-contract gate
 
-- [ ] `test_dashboard_control_requires_accepted_adr_and_updated_product_boundary`
-- [ ] `test_core_runtime_does_not_import_fastapi_or_dashboard_modules`
-- [ ] `test_dashboard_never_writes_or_parses_events_jsonl_directly`
-- [ ] `test_dashboard_does_not_mutate_git_target_or_workspace_lease`
-- [ ] `test_no_new_run_lifecycle_payload_key_without_doc03_amendment`
-- [ ] `test_run_launcher_uses_fixed_argv_without_shell`
+- [x] `test_dashboard_control_requires_accepted_adr_and_updated_product_boundary`
+      — genuine RED->GREEN: package docstring updated to name ADR-30 and drop
+      the "read-only observability UI" claim.
+- [x] `test_core_runtime_does_not_import_fastapi_or_dashboard_modules` —
+      architecture-invariant guard, passed on first run (no violation exists).
+- [x] `test_dashboard_never_writes_or_parses_events_jsonl_directly` —
+      architecture-invariant guard, passed on first run.
+- [x] `test_dashboard_does_not_mutate_git_target_or_workspace_lease` —
+      architecture-invariant guard, passed on first run.
+- [x] `test_no_new_run_lifecycle_payload_key_without_doc03_amendment` —
+      architecture-invariant guard (reuses the same closed-payload assertion
+      as `tests/unit/test_run_lifecycle_wire_format.py`), passed on first run.
+- [x] `test_run_launcher_uses_fixed_argv_without_shell` —
+      architecture-invariant guard, passed on first run.
+
+Verified: `python -m pytest tests\dashboard\test_issue_run_control_architecture.py -v`
+(6/6 passed after the docstring fix) and
+`python -m pytest tests\unit tests\dashboard -q` (1110 passed, up from 1104
+baseline).
 
 ## RED 1 — registration owns a validated canonical config path
 
