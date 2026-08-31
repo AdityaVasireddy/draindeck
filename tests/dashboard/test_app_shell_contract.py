@@ -32,6 +32,7 @@ _NEW_JS_MODULES = [
     "pages/attention.js", "components/search.js", "pages/runs.js", "pages/issues.js",
     "components/timeline-topology.js", "pages/executions.js", "pages/evidence.js",
     "components/chart.js", "pages/about.js", "readiness.js",
+    "pages/run-control.js", "components/dialog.js",
 ]
 
 
@@ -88,3 +89,17 @@ def test_response_still_has_self_only_csp_on_the_shell_page(tmp_path):
     resp = client.get("/")
     csp = resp.headers["content-security-policy"]
     assert "default-src 'self'" in csp
+
+
+def test_configured_issues_route_and_navigation_are_registered(tmp_path):
+    """ADR-30 RED 8: the run-control route is server-registered (SPA
+    fallback serves the shell for a direct load/reload) and reachable from
+    the repository-overview page's nav section."""
+    client = _client(tmp_path)
+    resp = client.get("/repositories/1/run-control")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+
+    detail_source = (Path(__file__).parents[2] / "src" / "draindeck_dashboard" / "static" / "js"
+                     / "pages" / "repository-detail.js").read_text(encoding="utf-8")
+    assert "/run-control" in detail_source

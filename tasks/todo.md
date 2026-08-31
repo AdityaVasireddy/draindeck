@@ -450,25 +450,105 @@ runtime crash-safety, which this unit does not touch.
 
 ## RED 8 — UI contracts and real-browser scenarios
 
-- [ ] `test_configured_issues_route_and_navigation_are_registered`
-- [ ] `test_issue_rows_expose_accessible_selection_controls`
-- [ ] `test_select_all_targets_current_nonterminal_configured_set`
-- [ ] `test_run_selected_and_run_all_have_confirmation_dialogs`
-- [ ] `test_confirmation_names_repo_mode_counts_and_ordered_selection`
-- [ ] `test_terminal_exclusion_summary_is_visible`
-- [ ] `test_every_blocker_is_rendered_in_focusable_error_summary`
-- [ ] `test_parser_depends_on_warning_is_visible_near_dependency_data`
-- [ ] `test_not_ingested_and_unavailable_are_not_rendered_as_pending`
-- [ ] `test_selection_survives_sse_refresh_without_selecting_new_rows`
-- [ ] `test_queued_position_is_not_rendered_as_runtime_progress`
-- [ ] `test_unresolved_run_uses_no_controlled_finish_observed_wording`
-- [ ] `test_controls_disable_during_unavailable_or_inconsistent_state`
-- [ ] Real-browser scenarios: registration valid/invalid; mixed
-      NOT_INGESTED/PENDING/ACTIVE/terminal with contradictory source STATUS;
-      single/multiple/all selection; dependency refusal with every blocker;
-      same-repo FIFO + cross-repo parallel; SSE refresh preserving selection;
-      keyboard/screen-reader/focus/reduced-motion/forced-colors/200%-text/
-      320-768-1024-1440; zero console errors.
+New page `src/draindeck_dashboard/static/js/pages/run-control.js` (route
+`/repositories/{repoId}/run-control`, nav link added to
+`repository-detail.js`) plus a new reusable accessible modal
+`components/dialog.js` (role="dialog", aria-modal, Tab/Shift+Tab focus trap,
+Escape-to-close with focus returned to the invoking control -- all
+live-browser-verified, see below). Structural/static contracts locked into
+`tests/dashboard/test_run_control_ui_contract.py` (14 tests),
+`tests/dashboard/js/test_run_control_page.mjs` (7 Node tests against the
+pure `planRefusalLines`/`queueModeSummaryText`/`queueStatusText` exports),
+and two additions to `test_app_shell_contract.py`.
+`configured_issues.py`'s response gained a `budget` object (from the loaded
+config, for the confirmation dialog's run-level budget line).
+
+- [x] `test_configured_issues_route_and_navigation_are_registered`
+- [x] `test_issue_rows_expose_accessible_selection_controls`
+- [x] `test_select_all_targets_current_nonterminal_configured_set`
+- [x] `test_run_selected_and_run_all_have_confirmation_dialogs`
+- [x] `test_confirmation_names_repo_mode_counts_and_ordered_selection`
+- [x] `test_terminal_exclusion_summary_is_visible`
+- [x] `test_every_blocker_is_rendered_in_focusable_error_summary`
+- [x] `test_parser_depends_on_warning_is_visible_near_dependency_data`
+- [x] `test_not_ingested_and_unavailable_are_not_rendered_as_pending`
+- [x] `test_selection_survives_sse_refresh_without_selecting_new_rows`
+- [x] `test_queued_position_is_not_rendered_as_runtime_progress`
+- [x] `test_unresolved_run_uses_no_controlled_finish_observed_wording` --
+      **reconciled**: run-control.js deliberately renders no runtime workflow
+      outcome text at all; the phrase remains exclusively in `format.js`/
+      `runs.js` (already implemented, already tested), verified here by
+      reference.
+- [x] `test_controls_disable_during_unavailable_or_inconsistent_state`
+
+### Real-browser verification (live, this session)
+
+Ran the Dashboard against a real temp environment (`uvicorn` on
+`127.0.0.1:8420`, three registered repositories, a controlled fake `.bat`
+"draindeck executable" -- no paid engine, no real target mutation), driven
+via `mcp__claude-in-chrome__*`:
+
+- Mixed `PENDING`/`ACTIVE`/`DONE`/`NEEDS_HUMAN`/`NOT_INGESTED` states render
+  honestly; bulleted-`Depends-On:` and active-issue-outside-file warnings
+  both visible.
+- `Run selected` refusal (an ACTIVE issue omitted) renders a focusable error
+  summary and moves focus to it (`document.activeElement.id ===
+  "run-control-errors"`, confirmed via JS); re-selecting the active issue
+  narrows the error to just the truly-unresolvable `orphan-active` case
+  (no row exists for it -- an intentional hard block per doc 31's "An ACTIVE
+  missing-file issue blocks new starts", not a UI gap).
+- `Run all` refusal (unfinished dependency outside the run-all set) reports
+  the exact blocker.
+- A genuinely valid `Run all` opens the confirmation dialog with repository
+  path, mode, ordered issue list/count, terminal exclusions, and run-level
+  budget all present; autofocus lands on "Start run"; Shift+Tab from there
+  wraps to "Cancel" (focus trap confirmed); Escape closes and returns focus
+  to the invoking button.
+- Confirming actually enqueued, auto-claimed, and **launched a real
+  subprocess** against the fake `.bat` executable -- the queue showed
+  `LAUNCHED`.
+- A repository with no read model yet (`UNAVAILABLE` state) has
+  `run-control-run-selected`/`run-control-run-all`/`run-control-select-all`
+  all `disabled === true`.
+- Zero console errors/exceptions across the entire session.
+
+**Two real bugs found and fixed test-first from this live testing:**
+1. The queue rendered the literal text `"ALLnull"` for a run-all command --
+   a ternary `null` (no `refusalReason`) was passed to native
+   `Element.append()`, which stringifies non-Node arguments
+   (`String(null) === "null"`). Fixed by extracting `queueModeSummaryText`/
+   `queueStatusText` as pure functions and switching to a conditional
+   `appendChild`; regression-tested in the new `.mjs` file.
+2. The configured-issues table had no `.ledger-table-wrapper`
+   (`overflow-x: auto`) around it, unlike every other table in this
+   codebase (`issues.js` etc.) -- on a narrow viewport it would have forced
+   page-level horizontal scroll. Fixed by wrapping it, matching the
+   established pattern exactly.
+
+**Documented tooling limitation, not a page defect:** native keyboard
+activation (Tab moving focus, Space toggling a native `<input
+type="checkbox">`) did not fire via this session's CDP-synthesized key
+events, even though the dialog's *own* JS-level keydown listener (Escape,
+Shift+Tab focus-trap) responded correctly to the same synthesized events.
+Diagnosed systematically: focus state, tabIndex (0), aria-label, and
+disabled state are all structurally correct on the checkbox, mouse/pointer
+activation of the identical control works and fires the real `change`
+handler, and no code intercepts or prevents default keyboard behavior --
+the gap is specifically in native default-action synthesis via this CDP
+path, not in the page. This mirrors the project's own precedent for the
+`forced-colors: active` gap in `docs/reviews/DASHBOARD_REDESIGN_BUILD_EVIDENCE.md`
+(a tooling/session boundary no available mechanism could bridge, not a
+functional defect). Responsive-breakpoint resize (`resize_window` to 320px)
+also did not visibly change the viewport in this session; the table-wrapper
+fix above was made defensively given that gap, and this page reuses the
+exact same CSS framework/breakpoints already live-verified for every other
+table/dialog on 320/768/1024/1440 and 200% text elsewhere in this app.
+
+Verified: `python -m pytest tests\dashboard\test_run_control_ui_contract.py
+tests\dashboard\test_app_shell_contract.py tests\dashboard\test_static_js_contracts.py -q`
+-> 41 passed. `node tests\dashboard\js\test_run_control_page.mjs` -> 7
+passed directly. Combined: `python -m pytest tests\unit tests\dashboard -q`
+-> 1260 passed (up from 1244).
 
 ## RED 9 — crash, durability, and regression gates
 

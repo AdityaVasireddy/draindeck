@@ -127,6 +127,14 @@ def get_configured_issues(conn, repo_id: int) -> dict:
         "issuesFilePath": str(issues_file),
         "issuesFileRevision": revision,
         "parserWarning": parser_warning,
+        # Run-level budget context for the UI's pre-mutation confirmation
+        # (spec "User experience"); read straight from the loaded config,
+        # never a second source of truth.
+        "budget": {
+            "maxAttemptsPerIssue": cfg.budget.max_attempts_per_issue,
+            "maxExecutionsPerRun": cfg.budget.max_executions_per_run,
+            "hardStopProxyCostPerRunUsd": cfg.budget.hard_stop_proxy_cost_per_run_usd,
+        },
         "readModelStatus": status["status"] if status is not None else "UNAVAILABLE",
         # Surfaced for the pure planner (RED 3/4) to refuse a new selection
         # that omits an authoritative ACTIVE issue no longer in the file;

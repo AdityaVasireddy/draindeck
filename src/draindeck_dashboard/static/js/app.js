@@ -18,6 +18,7 @@ import * as targetConfigurationPage from "./pages/target-configuration.js";
 import * as attentionPage from "./pages/attention.js";
 import * as runsPage from "./pages/runs.js";
 import * as issuesPage from "./pages/issues.js";
+import * as runControlPage from "./pages/run-control.js";
 import * as executionsPage from "./pages/executions.js";
 import * as evidencePage from "./pages/evidence.js";
 import * as aboutPage from "./pages/about.js";
@@ -50,6 +51,8 @@ const _PAGE_MODULES = {
   "repository-issues": { render: (root, params, ctx) => issuesPage.render(root, params, ctx),
                          refresh: (root, params, ctx) => issuesPage.refresh(root, params, ctx) },
   "issue-detail": { render: (root, params) => issuesPage.renderDetail(root, params) },
+  "repository-run-control": { render: (root, params, ctx) => runControlPage.render(root, params, ctx),
+                              refresh: (root, params, ctx) => runControlPage.refresh(root, params, ctx) },
   executions: { render: (root, params, ctx) => executionsPage.render(root, params, ctx),
                refresh: (root, params, ctx) => executionsPage.refresh(root, params, ctx) },
   "repository-executions": { render: (root, params, ctx) => executionsPage.render(root, params, ctx),

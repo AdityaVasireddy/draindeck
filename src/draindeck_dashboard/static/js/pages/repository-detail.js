@@ -179,6 +179,7 @@ export async function render(root, params, ctx) {
   const navSection = el("section", { className: "detail-nav" }, [
     el("a", { href: `/repositories/${repoId}/runs`, className: "btn-ghost" }, ["Runs"]),
     el("a", { href: `/repositories/${repoId}/issues`, className: "btn-ghost" }, ["Issues"]),
+    el("a", { href: `/repositories/${repoId}/run-control`, className: "btn-ghost" }, ["Run issues"]),
     el("a", { href: `/repositories/${repoId}/executions`, className: "btn-ghost" }, ["Executions"]),
     el("a", { href: `/repositories/${repoId}/evidence`, className: "btn-ghost" }, ["Evidence"]),
     el("a", { href: `/repositories/${repoId}/configuration`, className: "btn-ghost" }, ["Edit configuration"]),

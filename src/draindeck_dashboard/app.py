@@ -815,6 +815,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             "/repositories/{repo_id}/configuration", "/repositories/{repo_id}",
             "/repositories/{repo_id}/runs", "/repositories/{repo_id}/runs/{run_id}",
             "/repositories/{repo_id}/issues", "/repositories/{repo_id}/issues/{issue_id}",
+            "/repositories/{repo_id}/run-control",
             "/repositories/{repo_id}/executions", "/repositories/{repo_id}/executions/{execution_id}",
             "/repositories/{repo_id}/evidence", "/repositories/{repo_id}/evidence/{evidence_id}",
             "/attention", "/runs", "/issues", "/executions", "/evidence", "/about",
