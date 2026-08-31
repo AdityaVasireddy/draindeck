@@ -101,6 +101,7 @@ class _RegisterRepositoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     projectPath: str
     logPath: Optional[str] = None
+    configPath: Optional[str] = None
 
 
 class _TargetConfigurationRequest(BaseModel):
@@ -197,6 +198,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             app.state.db,
             project_path=payload.projectPath,
             log_path=payload.logPath,
+            config_path=payload.configPath,
         )
 
     @app.get("/api/repositories")
@@ -276,7 +278,8 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
                 branch_change_confirmed=payload.branchChangeConfirmed,
             ))
             registration = register_repository(
-                app.state.db, project_path=payload.projectPath, log_path=str(result.resolved_log_path))
+                app.state.db, project_path=payload.projectPath,
+                log_path=str(result.resolved_log_path), config_path=str(result.config_path))
         except TargetConfigurationError as exc:
             raise _configuration_error(exc) from exc
         return {"result": {"configPath": str(result.config_path), "configDigest": result.config_digest,

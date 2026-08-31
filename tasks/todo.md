@@ -57,22 +57,53 @@ baseline).
 
 ## RED 1 — registration owns a validated canonical config path
 
-- [ ] `test_registration_requires_absolute_config_path`
-- [ ] `test_registration_rejects_missing_config_without_database_row`
-- [ ] `test_registration_rejects_directory_and_non_regular_config`
-- [ ] `test_registration_rejects_invalid_yaml_with_clear_error`
-- [ ] `test_registration_rejects_non_mapping_and_schema_invalid_config`
-- [ ] `test_registration_uses_runtime_load_config_not_dashboard_yaml_schema`
-- [ ] `test_registration_rejects_noncanonical_config_location`
-- [ ] `test_registration_rejects_config_for_different_project_repository`
-- [ ] `test_registration_canonicalizes_and_persists_config_path`
-- [ ] `test_registration_derives_log_path_with_resolve_event_log_path`
-- [ ] `test_registration_remains_atomic_when_config_validation_fails`
-- [ ] `test_duplicate_canonical_config_or_log_path_is_conflict`
-- [ ] `test_repository_migration_adds_config_path_without_losing_existing_rows`
-- [ ] `test_legacy_registration_without_config_is_observation_only_until_repaired`
-- [ ] `test_repository_api_returns_config_path_and_capability_state`
-- [ ] `test_unregister_deletes_queue_control_rows_but_never_target_files`
+All 16 implemented in `tests/dashboard/test_repositories.py`,
+`tests/dashboard/test_app_repositories_api.py`, and
+`tests/dashboard/test_migrations.py`. Genuine RED confirmed by stashing the
+`repositories.py`/`migrations.py` production changes and re-running: 18
+failures (16 new + 2 pre-existing-but-now-exercised-differently), all for the
+missing `config_path` column/kwarg — no import/collection errors — then
+restored to GREEN.
+
+- [x] `test_registration_requires_absolute_config_path`
+- [x] `test_registration_rejects_missing_config_without_database_row`
+- [x] `test_registration_rejects_directory_and_non_regular_config`
+- [x] `test_registration_rejects_invalid_yaml_with_clear_error`
+- [x] `test_registration_rejects_non_mapping_and_schema_invalid_config`
+- [x] `test_registration_uses_runtime_load_config_not_dashboard_yaml_schema`
+- [x] `test_registration_rejects_noncanonical_config_location`
+- [x] `test_registration_rejects_config_for_different_project_repository`
+- [x] `test_registration_canonicalizes_and_persists_config_path`
+- [x] `test_registration_derives_log_path_with_resolve_event_log_path`
+- [x] `test_registration_remains_atomic_when_config_validation_fails`
+- [x] `test_duplicate_canonical_config_or_log_path_is_conflict` — tests the
+      `canonical_config_path` uniqueness constraint specifically (re-registering
+      the same repository's canonical config a second time), since a config's
+      canonical location is a pure function of `project_path` and therefore
+      cannot literally collide across two *different* repositories the way
+      `canonical_log_path` can.
+- [x] `test_repository_migration_adds_config_path_without_losing_existing_rows`
+      (in test_migrations.py; plus an added
+      `test_canonical_config_path_column_is_unique_when_present`)
+- [x] `test_legacy_registration_without_config_is_observation_only_until_repaired`
+- [x] `test_repository_api_returns_config_path_and_capability_state`
+- [x] `test_unregister_deletes_queue_control_rows_but_never_target_files` —
+      **reconciled**: no Dashboard-owned queue table exists yet (arrives in
+      Unit 7 / RED 6). Implemented now as the currently-testable half (delete
+      never touches target files/repo); will be extended in Unit 7 to also
+      assert queue-row cleanup once that table exists.
+
+Also fixed 4 pre-existing tests whose literal `SCHEMA_VERSION`/`3` pins went
+stale from the SCHEMA_VERSION 3->4 bump (`test_fresh_database_lands_directly_at_v2_with_all_new_tables`
+in test_migrations.py; `test_schema_version_is_3` renamed
+`test_schema_version_is_at_least_3`, and two literal-`3` assertions changed to
+compare against `SCHEMA_VERSION`, in test_proxy_cost_migration.py) — same
+category of fix as any additive schema bump requires, not a weakening.
+
+Verified: `python -m pytest tests\dashboard\test_repositories.py
+tests\dashboard\test_app_repositories_api.py tests\dashboard\test_migrations.py
+tests\dashboard\test_proxy_cost_migration.py -q` all green;
+`python -m pytest tests\unit tests\dashboard -q` -> 1130 passed (up from 1110).
 
 ## RED 2 — configured issue reader reuses the existing parser
 

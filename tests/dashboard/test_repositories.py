@@ -197,3 +197,231 @@ def test_list_repositories_orders_by_id(tmp_path):
     rows = list_repositories(conn)
     assert [r["id"] for r in rows] == sorted(r["id"] for r in rows)
     assert len(rows) == 2
+
+
+# ── ADR-30 RED 1: registration owns a validated canonical config path ──────
+
+_VALID_CONFIG_YAML = """
+project:
+  name: T
+  repository: {repository!r}
+  branch: agent-work
+  issues_file: Issues.md
+  validation:
+    commands: ["echo ok"]
+engine:
+  provider: claude-headless
+  auth_mode: subscription
+  model: default
+  max_turns: 30
+  timeout_seconds: 1800
+reviewer:
+  provider: qwen
+  qwen:
+    endpoint: http://localhost:11434
+    model: qwen2.5-coder
+budget:
+  max_attempts_per_issue: 3
+  max_executions_per_run: 10
+  hard_stop_proxy_cost_per_run_usd: 15.0
+  proxy_pricing: api_list_rates
+experiment:
+  sample_size: 20
+  attempt1_success_min: 0.3
+  cost_per_shipped_issue_max_usd: 3.0
+billing:
+  posture: p
+  headless_split_status: paused
+  verified_on: '2026-07-10'
+  reverify_at: x
+event_log:
+  path: state/events.jsonl
+"""
+
+
+def _write_canonical_config(repo: "Path", *, repository: Optional[str] = None) -> "Path":
+    draindeck_dir = repo / ".draindeck"
+    draindeck_dir.mkdir(exist_ok=True)
+    config_path = draindeck_dir / "config.local.yaml"
+    config_path.write_text(
+        _VALID_CONFIG_YAML.format(repository=str(repository or repo)), encoding="utf-8",
+    )
+    return config_path
+
+
+def test_registration_requires_absolute_config_path(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path="relative/config.local.yaml")
+    assert exc_info.value.code == "CONFIG_PATH_NOT_ABSOLUTE"
+
+
+def test_registration_rejects_missing_config_without_database_row(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    missing = repo / ".draindeck" / "config.local.yaml"
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(missing))
+    assert exc_info.value.code == "CONFIG_PATH_NOT_FOUND"
+    assert list_repositories(conn) == []
+
+
+def test_registration_rejects_directory_and_non_regular_config(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    a_directory = repo / ".draindeck" / "config.local.yaml"
+    a_directory.mkdir(parents=True)
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(a_directory))
+    assert exc_info.value.code == "CONFIG_PATH_NOT_REGULAR_FILE"
+
+
+def test_registration_rejects_invalid_yaml_with_clear_error(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    draindeck_dir = repo / ".draindeck"
+    draindeck_dir.mkdir()
+    config_path = draindeck_dir / "config.local.yaml"
+    config_path.write_text("not: valid: yaml: [", encoding="utf-8")
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    assert exc_info.value.code == "CONFIG_INVALID"
+
+
+def test_registration_rejects_non_mapping_and_schema_invalid_config(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    draindeck_dir = repo / ".draindeck"
+    draindeck_dir.mkdir()
+    config_path = draindeck_dir / "config.local.yaml"
+    config_path.write_text("- just\n- a\n- list\n", encoding="utf-8")
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    assert exc_info.value.code == "CONFIG_INVALID"
+
+
+def test_registration_uses_runtime_load_config_not_dashboard_yaml_schema(tmp_path):
+    """A field the runtime schema forbids (extra="forbid" at the Config
+    level) must be rejected identically here -- proving this delegates to
+    runtime.config.load_config rather than a separate, possibly-looser
+    Dashboard schema."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(text + "\nunknown_top_level_field: true\n", encoding="utf-8")
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    assert exc_info.value.code == "CONFIG_INVALID"
+
+
+def test_registration_rejects_noncanonical_config_location(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    elsewhere = repo / "config.local.yaml"
+    elsewhere.write_text(_VALID_CONFIG_YAML.format(repository=str(repo)), encoding="utf-8")
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(elsewhere))
+    assert exc_info.value.code == "CONFIG_PATH_MISMATCH"
+
+
+def test_registration_rejects_config_for_different_project_repository(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    other_repo = _git_worktree(tmp_path, "other")
+    config_path = _write_canonical_config(repo, repository=other_repo)
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    assert exc_info.value.code == "CONFIG_REPOSITORY_MISMATCH"
+    assert list_repositories(conn) == []
+
+
+def test_registration_canonicalizes_and_persists_config_path(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
+    result = register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    assert result["configPath"] == str(config_path)
+    assert result["controlCapability"] == "LAUNCH_CAPABLE"
+    fetched = get_repository(conn, result["id"])
+    assert fetched["configPath"] == str(config_path)
+
+
+def test_registration_derives_log_path_with_resolve_event_log_path(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
+    result = register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    assert result["logPath"] == str(repo / "state" / "events.jsonl")
+
+
+def test_registration_remains_atomic_when_config_validation_fails(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    bad_config = repo / ".draindeck" / "config.local.yaml"
+    bad_config.parent.mkdir()
+    bad_config.write_text("not valid yaml: [", encoding="utf-8")
+    with pytest.raises(RegistrationError):
+        register_repository(conn, project_path=str(repo), config_path=str(bad_config))
+    assert list_repositories(conn) == []
+
+
+def test_duplicate_canonical_config_or_log_path_is_conflict(tmp_path):
+    """Mirrors test_canonical_log_path_is_unique_across_registrations: a
+    canonical config path (deterministic per project_path, per
+    runtime.init.service.canonical_config_path) can only back one
+    registration row. Re-registering the same repository a second time hits
+    that uniqueness constraint rather than silently creating a second
+    launch-capable row for the same target."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
+    register_repository(conn, project_path=str(repo), config_path=str(config_path))
+
+    # Give the second attempt a distinct explicit logPath so only the
+    # config-path collision is under test (both would otherwise collide,
+    # since the derived logPath is also deterministic per repository).
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(
+            conn, project_path=str(repo), config_path=str(config_path),
+            log_path=str(tmp_path / "a-different-log.jsonl"),
+        )
+    assert exc_info.value.code == "CONFIG_PATH_ALREADY_REGISTERED"
+
+
+def test_legacy_registration_without_config_is_observation_only_until_repaired(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    result = register_repository(conn, project_path=str(repo), log_path=None)
+    assert result["configPath"] is None
+    assert result["controlCapability"] == "OBSERVATION_ONLY"
+
+
+def test_repository_api_returns_config_path_and_capability_state(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
+    result = register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    fetched = get_repository(conn, result["id"])
+    assert fetched["configPath"] == str(config_path)
+    assert fetched["controlCapability"] == "LAUNCH_CAPABLE"
+    listed = list_repositories(conn)
+    assert listed[0]["controlCapability"] == "LAUNCH_CAPABLE"
+
+
+def test_unregister_deletes_queue_control_rows_but_never_target_files(tmp_path):
+    """No Dashboard-owned run-control queue table exists yet (that arrives in
+    Unit 7 / RED 6); this test currently proves the pre-existing invariant
+    (delete never touches target files/repo) and will be extended in Unit 7
+    to also assert queue rows are cleaned up, per
+    docs/plans/dashboard-issue-run-control-failing-tests.md RED 1."""
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
+    result = register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    delete_repository(conn, result["id"])
+    with pytest.raises(NotFoundError):
+        get_repository(conn, result["id"])
+    assert config_path.exists()
+    assert repo.exists()

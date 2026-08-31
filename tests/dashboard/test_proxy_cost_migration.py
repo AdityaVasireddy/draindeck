@@ -51,14 +51,16 @@ def _seed_repo_and_gen(conn):
     ).lastrowid
 
 
-def test_schema_version_is_3():
-    assert SCHEMA_VERSION == 3
+def test_schema_version_is_at_least_3():
+    # Pinned to the proxy-cost step's own floor, not the global ceiling --
+    # later features (e.g. ADR-30) may add further additive steps above it.
+    assert SCHEMA_VERSION >= 3
 
 
 def test_fresh_database_has_new_execution_views_columns(tmp_path):
     conn = db.connect_and_init(tmp_path / "d.sqlite3")
     try:
-        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
         assert _NEW_COLS <= _execution_views_columns(conn)
     finally:
         conn.close()
@@ -97,7 +99,7 @@ def test_v2_database_migrates_to_v3_preserving_rows_and_adding_columns(tmp_path)
     conn = db.connect(db_path)
     try:
         run_migrations(conn)
-        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
         assert _NEW_COLS <= _execution_views_columns(conn)
         # existing row preserved; new columns are NULL/0
         row = conn.execute(
@@ -190,7 +192,7 @@ def test_concurrent_start_converges_on_v3(tmp_path):
     assert not errors, f"concurrent migration raised: {errors}"
     conn = db.connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
         assert conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 1
     finally:
         conn.close()

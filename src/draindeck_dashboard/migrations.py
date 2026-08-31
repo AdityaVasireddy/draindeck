@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # The conceptual version of a fresh database once db.py's ``init_schema`` has
 # created the v1 base tables but before any migration step runs. The runner
@@ -249,6 +249,27 @@ def _apply_v2_to_v3_ddl(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE read_model_state SET status = 'REBUILDING' WHERE status = 'READY'")
 
 
+def _apply_v3_to_v4_ddl(conn: sqlite3.Connection) -> None:
+    """v3->v4 (ADR-30 / spec `spec/dashboard-issue-run-control.md` "Registration
+    and configured issue source"): add nullable ``config_path``/
+    ``canonical_config_path`` columns to ``repositories`` so registration can
+    own a validated canonical `.draindeck/config.local.yaml` path.
+
+    Additive only, mirroring the existing ``log_path``/``canonical_log_path``
+    pair: ``ALTER TABLE ... ADD COLUMN`` never rewrites existing rows (both
+    new columns are NULL), so a pre-existing registration remains a valid,
+    observation-only row -- it does not gain launch capability until an
+    operator explicitly supplies a valid config path through the ordinary
+    registration/repair path. No existing row's project_path/log_path is
+    touched."""
+    conn.execute("ALTER TABLE repositories ADD COLUMN config_path TEXT")
+    conn.execute("ALTER TABLE repositories ADD COLUMN canonical_config_path TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_repositories_canonical_config_path "
+        "ON repositories(canonical_config_path) WHERE canonical_config_path IS NOT NULL"
+    )
+
+
 # Ordered migration chain (spec §4.2). Each step (from_version, to_version,
 # apply_fn) is additive and idempotent within its own version gap; the runner
 # applies every step whose to_version exceeds the database's current version, in
@@ -257,6 +278,7 @@ def _apply_v2_to_v3_ddl(conn: sqlite3.Connection) -> None:
 _MIGRATIONS = [
     (1, 2, _apply_v1_to_v2_ddl),
     (2, 3, _apply_v2_to_v3_ddl),
+    (3, 4, _apply_v3_to_v4_ddl),
 ]
 
 
