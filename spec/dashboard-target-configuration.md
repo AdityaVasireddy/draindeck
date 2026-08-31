@@ -154,4 +154,3 @@ The final two commands require retained raw per-scenario stdout/stderr and
 exit codes. A green harness is regression evidence for the frozen runtime;
 the feature-specific safety claims require the focused tests named in
 `tasks/todo.md` and the outcome matrix.
-

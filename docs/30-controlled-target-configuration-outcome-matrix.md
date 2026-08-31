@@ -45,4 +45,3 @@ runtime; targeted service tests settle the rows above.
 The outcome matrix itself must be committed before the first `src/` edit. Any
 new failure window discovered during implementation requires a matrix amendment
 and user review before the corresponding mutation logic proceeds.
-

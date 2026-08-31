@@ -1,0 +1,64 @@
+calibration: worker wall 2.007s → kill window [0.201, 1.906]s
+PASS det[after_append:IssueCreated:1]
+PASS det[after_append:IssueCreated:2]
+PASS det[after_append:IssueActivated:1]
+PASS det[after_append:IssueActivated:2]
+PASS det[after_append:ExecutionSpawned:1]
+PASS det[after_append:ExecutionSpawned:2]
+PASS det[engine:post-edit:1]
+PASS det[engine:post-edit:2]
+PASS det[git:snapshot:post-add:1]
+PASS det[git:snapshot:post-add:2]
+PASS det[engine:post-snapshot:1]
+PASS det[engine:post-snapshot:2]
+PASS det[engine:post-attempt-ref:1]
+PASS det[engine:post-attempt-ref:2]
+PASS det[after_append:ExecutionFinished:1]
+PASS det[after_append:ExecutionFinished:2]
+PASS det[validate:post-artifact:1]
+PASS det[validate:post-artifact:2]
+PASS det[after_append:ValidationFailed:1]
+PASS det[after_append:ValidationFailed:2]
+PASS det[after_append:ValidationPassed:1]
+PASS det[after_append:ValidationPassed:2]
+PASS det[after_append:ReviewRejected:1]
+PASS det[after_append:ReviewRejected:2] (point fired <2x; ran clean)
+PASS det[after_append:ReviewApproved:1]
+PASS det[after_append:ReviewApproved:2]
+PASS det[after_append:CommitIntent:1]
+PASS det[after_append:CommitIntent:2]
+PASS det[git:merge:post-tree:1]
+PASS det[git:merge:post-tree:2]
+PASS det[git:merge:post-commit-tree:1]
+PASS det[git:merge:post-commit-tree:2]
+PASS det[git:merge:post-update-ref:1]
+PASS det[git:merge:post-update-ref:2]
+PASS det[after_append:CommitCreated:1]
+PASS det[after_append:CommitCreated:2]
+PASS det[after_append:IssueCompleted:1]
+PASS det[after_append:IssueCompleted:2]
+PASS det[after_append:IssueEscalated:1]
+PASS det[after_append:IssueEscalated:2] (point fired <2x; ran clean)
+PASS rand[0] (1 kills survived)
+PASS rand[1] (2 kills survived)
+PASS rand[2] (1 kills survived)
+PASS rand[3] (1 kills survived)
+PASS rand[4] (1 kills survived)
+PASS rand[5] (2 kills survived)
+PASS rand[6] (2 kills survived)
+PASS rand[7] (3 kills survived)
+PASS rand[8] (1 kills survived)
+PASS rand[9] (1 kills survived)
+PASS rand[10] (2 kills survived)
+PASS rand[11] (2 kills survived)
+PASS rand[12] (1 kills survived)
+PASS rand[13] (4 kills survived)
+PASS rand[14] (3 kills survived)
+PASS fixture[f1-stale-lock]
+PASS fixture[f2-dirty-boot]
+PASS fixture[f4-engine-orphan]
+PASS fixture[f5-reset]
+PASS control
+
+ALL 60 SCENARIOS PASSED
+EXIT_CODE=0
