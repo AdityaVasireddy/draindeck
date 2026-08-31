@@ -12,6 +12,34 @@
 
 ## 1. Current state (verified 2026-08-30)
 
+- **Dashboard issue selection and run control (ADR-30): IN PROGRESS, on branch
+  `feature/dashboard-issue-run-control`, baseline `master` `1ae07a5`.**
+  ADR-30 accepted (`docs/adr/ADR-30-dashboard-issue-selection-and-run-control.md`,
+  also `docs/08` §5l); spec `spec/dashboard-issue-run-control.md`; outcome
+  matrix `docs/31-dashboard-issue-run-control-outcome-matrix.md`; RED
+  inventory `docs/plans/dashboard-issue-run-control-failing-tests.md`; active
+  plan/todo `tasks/plan.md` / `tasks/todo.md`. **Units 0-5 of 10 complete**
+  (6 commits): documentation checkpoint; RED 0 architecture/frozen-contract
+  gate; RED 1 registration owns a validated canonical config path (additive
+  SQLite migration); RED 2 configured-issue reader (reuses
+  `runtime.queue.issues_md.parse`, reads the materialized `issue_views` read
+  model); RED 3 pure `plan_selected`/`plan_run_all` planner
+  (`src/runtime/queue/selection.py`); RED 4 runtime `--issue`/`--all-issues`/
+  `--issues-digest` exact-selection CLI and `Orchestrator.allowed_issue_ids`
+  filter. **1194 combined `tests/unit tests/dashboard` passed** (up from the
+  1104 pre-feature baseline), durability harness **ALL 60 SCENARIOS PASSED**
+  on both seed 42 and seed 1337 (re-run after the runtime.main/loop.py
+  change), every unit's RED confirmed genuine (collection/type error against
+  reverted code, not a fixture accident) before GREEN, `git diff --check`
+  clean at every commit. **Remaining:** RED 5 strict run-request API, RED 6-7
+  persistent FIFO queue and subprocess launcher, RED 8 selection/run-control
+  UI plus live-browser verification, RED 9 crash-harness extension/full
+  regression/fresh-context adversarial review/documentation closeout. No
+  merge, push, or `src/` mutation beyond what's described above. Full detail:
+  `tasks/todo.md`'s per-RED-group entries (each records exactly what was
+  implemented, the genuine-RED confirmation method, and verified pass
+  counts).
+
 - **Dashboard-controlled target configuration (ADR-29): BUILD COMPLETE
   (Units 0-6), committed directly to `master`, pending user review before
   merge (no push/merge occurred — commits are already on `master` since the
