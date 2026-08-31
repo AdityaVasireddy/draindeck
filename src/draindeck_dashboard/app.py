@@ -12,16 +12,24 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from . import api_queries
 from . import proxy_cost_agg
 from .artifacts import artifact_root_for_log, resolve_contained_artifact
 from .config import DashboardConfig
 from .configured_issues import get_configured_issues
+from .run_queue import (
+    IdempotencyKeyReusedError,
+    RunPlanError,
+    enqueue_command,
+    get_command,
+    list_commands_for_repository,
+    plan_run,
+)
 from .db import connect_and_init
 from .diffs import compute_diff
 from .errors import DashboardApiError, InvalidFilterError, NotFoundError, register_error_handlers
@@ -120,6 +128,54 @@ class _RenderTargetConfigurationRequest(BaseModel):
     commands: list[str]
 
 
+# ADR-30: bounds enforced before planning ever runs (never trust MaxBodySize-
+# Middleware's whole-body cap alone for a structured, attacker-shaped field).
+_MAX_RUN_ISSUE_IDS = 500
+_MAX_ISSUE_ID_BYTES = 200
+
+
+class _RunModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: str
+    issueIds: Optional[list[str]] = None
+    expectedIssuesDigest: str
+
+    @field_validator("mode")
+    @classmethod
+    def _mode_is_known(cls, v: str) -> str:
+        if v not in ("SELECTED", "ALL"):
+            raise ValueError("mode must be SELECTED or ALL")
+        return v
+
+    @field_validator("expectedIssuesDigest")
+    @classmethod
+    def _digest_is_well_formed(cls, v: str) -> str:
+        if len(v) != 64 or v != v.lower() or any(c not in "0123456789abcdef" for c in v):
+            raise ValueError("expectedIssuesDigest must be 64 lowercase hex characters")
+        return v
+
+
+def _check_run_request_bounds(payload: "_RunModeRequest") -> None:
+    if payload.mode == "ALL" and payload.issueIds is not None:
+        raise DashboardApiError(
+            "RUN_ALL_REJECTS_ISSUE_IDS", "issueIds must not be supplied for mode=ALL",
+            status_code=422,
+        )
+    if payload.mode == "SELECTED":
+        ids = payload.issueIds or []
+        if len(ids) > _MAX_RUN_ISSUE_IDS:
+            raise DashboardApiError(
+                "TOO_MANY_ISSUE_IDS", f"at most {_MAX_RUN_ISSUE_IDS} issue ids per request",
+                status_code=422,
+            )
+        for iid in ids:
+            if len(iid.encode("utf-8")) > _MAX_ISSUE_ID_BYTES:
+                raise DashboardApiError(
+                    "ISSUE_ID_TOO_LONG", f"issue id exceeds {_MAX_ISSUE_ID_BYTES} bytes",
+                    status_code=422,
+                )
+
+
 def _require_git_worktree(project_path: str) -> Path:
     repo_path = Path(project_path)
     if not repo_path.is_absolute() or not repo_path.is_dir() or not (repo_path / ".git").exists():
@@ -213,6 +269,49 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.get("/api/repositories/{repo_id}/configured-issues")
     async def get_configured_issues_route(repo_id: int) -> dict:
         return get_configured_issues(app.state.db, repo_id)
+
+    @app.post("/api/repositories/{repo_id}/run-plans")
+    async def create_run_plan(repo_id: int, payload: _RunModeRequest) -> dict:
+        _check_run_request_bounds(payload)
+        return plan_run(
+            app.state.db, repo_id, mode=payload.mode, issue_ids=payload.issueIds,
+            expected_issues_digest=payload.expectedIssuesDigest,
+        )
+
+    # NOTE: "run-commands" (not "runs") -- Dashboard-owned queue control state
+    # is deliberately a different path segment from the pre-existing
+    # /api/repositories/{repo_id}/runs (runtime RunStarted/RunFinished
+    # history), so this control-plane surface can never shadow or be
+    # shadowed by that route.
+    @app.post("/api/repositories/{repo_id}/run-commands", status_code=201)
+    async def create_run_command(repo_id: int, payload: _RunModeRequest,
+                                 idempotency_key: str = Header(..., alias="Idempotency-Key")) -> dict:
+        _check_run_request_bounds(payload)
+        if not idempotency_key or len(idempotency_key) > 200:
+            raise DashboardApiError(
+                "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be 1-200 characters",
+                status_code=422,
+            )
+        try:
+            return enqueue_command(
+                app.state.db, repo_id, mode=payload.mode, issue_ids=payload.issueIds,
+                expected_issues_digest=payload.expectedIssuesDigest,
+                idempotency_key=idempotency_key,
+            )
+        except (RunPlanError, IdempotencyKeyReusedError):
+            raise
+
+    @app.get("/api/repositories/{repo_id}/run-commands")
+    async def get_run_commands_for_repository(repo_id: int) -> dict:
+        get_repository(app.state.db, repo_id)  # 404 if unknown
+        return {"commands": list_commands_for_repository(app.state.db, repo_id)}
+
+    @app.get("/api/repositories/{repo_id}/run-commands/{command_id}")
+    async def get_run_command(repo_id: int, command_id: int) -> dict:
+        command = get_command(app.state.db, command_id)
+        if command["repositoryId"] != repo_id:
+            raise NotFoundError(f"run command {command_id} not found for repository {repo_id}")
+        return command
 
     @app.delete("/api/repositories/{repo_id}", status_code=204)
     async def remove_repository(repo_id: int) -> None:

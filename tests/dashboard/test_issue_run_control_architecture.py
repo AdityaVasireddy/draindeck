@@ -79,6 +79,23 @@ def test_core_runtime_does_not_import_fastapi_or_dashboard_modules():
     assert offenders == [], f"src/runtime must stay framework- and Dashboard-free: {offenders}"
 
 
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    """id()s of the string-constant nodes that are docstrings (the first
+    statement of the module or any function/class body) -- excluded from the
+    literal-scan below so documenting the boundary in prose (e.g. "this
+    table is never written to events.jsonl") isn't mistaken for code that
+    touches the file. Comments are never part of the AST at all, so they
+    need no special handling here."""
+    ids: set[int] = set()
+    candidates = [tree] + [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    for node in candidates:
+        body = getattr(node, "body", None)
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                and isinstance(body[0].value.value, str):
+            ids.add(id(body[0].value))
+    return ids
+
+
 def test_dashboard_never_writes_or_parses_events_jsonl_directly():
     forbidden_modules = {"runtime.events.log", "runtime.events.readonly_log"}
     offenders = []
@@ -86,8 +103,13 @@ def test_dashboard_never_writes_or_parses_events_jsonl_directly():
         if py_file in _EVENTS_JSONL_ALLOWED_FILES:
             continue
         text = py_file.read_text(encoding="utf-8")
-        if re.search(r"events\.jsonl", text):
-            offenders.append((str(py_file.relative_to(REPO_ROOT)), "literal events.jsonl"))
+        tree = ast.parse(text, filename=str(py_file))
+        docstring_ids = _docstring_nodes(tree)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and "events.jsonl" in node.value and id(node) not in docstring_ids):
+                offenders.append((str(py_file.relative_to(REPO_ROOT)), "literal events.jsonl"))
+                break
         hit = _imported_dotted_modules(py_file) & forbidden_modules
         if hit:
             offenders.append((str(py_file.relative_to(REPO_ROOT)), sorted(hit)))

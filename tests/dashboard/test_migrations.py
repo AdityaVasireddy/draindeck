@@ -80,7 +80,7 @@ def test_fresh_database_lands_directly_at_v2_with_all_new_tables(tmp_path):
     conn = db.connect_and_init(tmp_path / "d.sqlite3")
     try:
         version = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == SCHEMA_VERSION == 4
+        assert version == SCHEMA_VERSION == 5
         for table in (
             "issue_views", "run_views", "execution_views", "containment_views",
             "read_model_state", "attention_conditions",

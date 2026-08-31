@@ -269,23 +269,58 @@ clean at a new path).
 
 ## RED 5 — run-request API is strict, exact, and race-safe
 
-- [ ] `test_run_selected_requires_nonempty_unique_issue_ids_and_revision`
-- [ ] `test_run_all_rejects_client_supplied_issue_ids`
-- [ ] `test_unknown_request_fields_are_422`
-- [ ] `test_oversized_issue_count_id_and_body_are_rejected_before_planning`
-- [ ] `test_issue_revision_conflict_queues_nothing`
-- [ ] `test_selected_refusal_returns_all_blockers_in_typed_envelope`
-- [ ] `test_selected_terminal_refusal_queues_nothing`
-- [ ] `test_run_all_returns_terminal_exclusion_summary`
-- [ ] `test_run_all_zero_result_returns_noop_without_queue_or_process`
-- [ ] `test_api_rechecks_current_event_state_not_source_status`
-- [ ] `test_api_never_accepts_executable_config_or_issue_path_from_run_body`
-- [ ] `test_non_loopback_host_and_origin_cannot_enqueue_run`
-- [ ] `test_cors_remains_disabled_for_run_routes`
-- [ ] `test_security_headers_wrap_success_and_failure_responses`
-- [ ] `test_injection_shaped_issue_id_remains_data`
-- [ ] `test_html_shaped_issue_text_is_escaped_in_api_consumer_contract`
-- [ ] `test_run_api_does_not_persist_environment_or_secrets`
+All 17 implemented in `tests/dashboard/test_issue_run_api.py` (19 tests
+total, +2 for idempotency-key repeat/reuse). Adds SQLite v4->v5 migration
+(`run_commands` table, control-plane only, never written to `events.jsonl`),
+`src/draindeck_dashboard/run_queue.py` (`plan_run` wraps `get_configured_issues`
++ the RED-3 planner with digest/readiness checks; `enqueue_command` adds
+idempotency-key dedup and the queue insert), and three routes:
+`POST /api/repositories/{repoId}/run-plans` (validate only, no mutation),
+`POST /api/repositories/{repoId}/run-commands` (idempotent enqueue,
+`Idempotency-Key` header required), `GET .../run-commands[/{id}]`.
+
+**Real bug found and fixed test-first during this unit:** the first draft
+used `/api/repositories/{repoId}/runs` for the new enqueue/list routes,
+which is also the path of the pre-existing runtime-run-history routes
+(`GET .../runs` and `GET .../runs/{run_id}` in `views.py`/further down
+`app.py`). Because FastAPI matches routes in registration order and mine
+were registered first, they silently shadowed the existing routes, breaking
+`test_app_views_api.py`'s and `test_app_redesign_api.py`'s run-history tests
+(caught immediately by the full regression suite, not by RED 5's own tests,
+since those all use a fresh repo with no runtime history to shadow).
+Renamed to `/run-commands` throughout; full suite re-run confirmed clean.
+Also had to switch `test_dashboard_never_writes_or_parses_events_jsonl_directly`
+(RED 0) from a raw substring scan to an AST-based one that skips docstrings,
+since `migrations.py`/`run_queue.py`'s own boundary-documenting prose ("this
+table is never written to events.jsonl") was tripping the naive check —
+same false-positive class as `__init__.py` earlier, fixed properly this time
+instead of growing an allowlist forever.
+
+- [x] `test_run_selected_requires_nonempty_unique_issue_ids_and_revision`
+- [x] `test_run_all_rejects_client_supplied_issue_ids`
+- [x] `test_unknown_request_fields_are_422`
+- [x] `test_oversized_issue_count_id_and_body_are_rejected_before_planning`
+- [x] `test_issue_revision_conflict_queues_nothing`
+- [x] `test_selected_refusal_returns_all_blockers_in_typed_envelope`
+- [x] `test_selected_terminal_refusal_queues_nothing`
+- [x] `test_run_all_returns_terminal_exclusion_summary`
+- [x] `test_run_all_zero_result_returns_noop_without_queue_or_process`
+- [x] `test_api_rechecks_current_event_state_not_source_status`
+- [x] `test_api_never_accepts_executable_config_or_issue_path_from_run_body`
+- [x] `test_non_loopback_host_and_origin_cannot_enqueue_run`
+- [x] `test_cors_remains_disabled_for_run_routes`
+- [x] `test_security_headers_wrap_success_and_failure_responses`
+- [x] `test_injection_shaped_issue_id_remains_data`
+- [x] `test_html_shaped_issue_text_is_escaped_in_api_consumer_contract`
+- [x] `test_run_api_does_not_persist_environment_or_secrets`
+
+Genuine RED confirmed: stashed `app.py`/`migrations.py`/`run_queue.py` and
+re-ran -- 17 of 19 failed with real 404s (routes didn't exist), then
+restored to GREEN.
+
+Verified: `python -m pytest tests\dashboard\test_issue_run_api.py -q` -> 19
+passed. `python -m pytest tests\unit tests\dashboard -q` -> 1213 passed (up
+from 1194, and zero regressions after the route-rename fix).
 
 ## RED 6 — one-process-per-repository FIFO queue
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # The conceptual version of a fresh database once db.py's ``init_schema`` has
 # created the v1 base tables but before any migration step runs. The runner
@@ -270,6 +270,47 @@ def _apply_v3_to_v4_ddl(conn: sqlite3.Connection) -> None:
     )
 
 
+def _apply_v4_to_v5_ddl(conn: sqlite3.Connection) -> None:
+    """v4->v5 (ADR-30 decision 3, "Persisted queue ownership"): the
+    Dashboard-owned run-command queue. FIFO order is the database-assigned
+    ``id`` (AUTOINCREMENT, monotonic per whole table -- ordering is filtered
+    to one repository at query time, never a separate per-repo counter).
+    Idempotency is enforced by a unique index on (repository_id,
+    idempotency_key); ``normalized_request_json`` is compared at the
+    application layer to distinguish a repeat of the identical request
+    (return the existing row) from key reuse with different content
+    (IDEMPOTENCY_KEY_REUSED). This table is exclusively Dashboard control-
+    plane state -- it is never written to events.jsonl and never read by
+    src/runtime."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS run_commands ("
+        "  id                      INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  repository_id           INTEGER NOT NULL,"
+        "  mode                    TEXT NOT NULL,"  # 'SELECTED' | 'ALL'
+        "  issue_ids_json          TEXT,"  # ordered list, SELECTED only
+        "  issues_digest           TEXT NOT NULL,"
+        "  idempotency_key         TEXT NOT NULL,"
+        "  normalized_request_json TEXT NOT NULL,"
+        "  status                  TEXT NOT NULL,"
+        "  refusal_reason          TEXT,"
+        "  process_pid             INTEGER,"
+        "  process_creation_time   TEXT,"
+        "  run_id_correlation      TEXT,"
+        "  created_at              TEXT NOT NULL,"
+        "  claimed_at              TEXT,"
+        "  finished_at             TEXT"
+        ")"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_run_commands_repo_idempotency "
+        "ON run_commands(repository_id, idempotency_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_run_commands_repo_status "
+        "ON run_commands(repository_id, status, id)"
+    )
+
+
 # Ordered migration chain (spec §4.2). Each step (from_version, to_version,
 # apply_fn) is additive and idempotent within its own version gap; the runner
 # applies every step whose to_version exceeds the database's current version, in
@@ -279,6 +320,7 @@ _MIGRATIONS = [
     (1, 2, _apply_v1_to_v2_ddl),
     (2, 3, _apply_v2_to_v3_ddl),
     (3, 4, _apply_v3_to_v4_ddl),
+    (4, 5, _apply_v4_to_v5_ddl),
 ]
 
 
