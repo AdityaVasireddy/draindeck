@@ -152,30 +152,43 @@ tests\dashboard\test_app_configured_issues_api.py -q` -> 22 passed.
 
 ## RED 3 — pure batch admission and deterministic ordering
 
-- [ ] `test_selected_empty_refuses_without_plan`
-- [ ] `test_selected_unknown_ids_are_all_reported`
-- [ ] `test_selected_duplicate_ids_refuse_without_silent_dedupe`
-- [ ] `test_selected_terminal_issues_are_all_reported_and_none_run`
-- [ ] `test_selected_done_dependency_need_not_be_selected`
-- [ ] `test_selected_unfinished_dependency_in_selection_is_allowed`
-- [ ] `test_selected_unfinished_dependency_outside_selection_refuses_whole_batch`
-- [ ] `test_selected_reports_every_missing_dependency_for_every_issue`
-- [ ] `test_unknown_dependency_is_unfinished_and_blocks`
-- [ ] `test_dependency_absent_from_file_but_done_in_events_is_satisfied`
-- [ ] `test_needs_human_or_decomposition_dependency_is_not_done`
-- [ ] `test_self_dependency_reports_cycle`
-- [ ] `test_multi_issue_dependency_cycle_reports_all_members`
-- [ ] `test_selected_active_issue_is_included_once`
-- [ ] `test_omitted_active_issue_refuses_new_selection`
-- [ ] `test_dependency_order_is_topological`
-- [ ] `test_file_order_breaks_topological_ties_deterministically`
-- [ ] `test_run_all_includes_every_nonterminal_issue`
-- [ ] `test_run_all_excludes_terminal_issues_with_state_counts`
-- [ ] `test_run_all_all_terminal_is_successful_noop`
-- [ ] `test_run_all_empty_file_is_successful_noop`
-- [ ] `test_run_all_includes_full_nonterminal_dependency_chain`
-- [ ] `test_run_all_refuses_unfinished_dependency_outside_result_set`
-- [ ] `test_admission_never_reads_status_text_for_state`
+All 24 implemented in `tests/unit/test_issue_selection.py`. New module
+`src/runtime/queue/selection.py` (`plan_selected`/`plan_run_all`, pure —
+IssueSpec + state map in, PlanResult out; never reads `.body`, structurally
+verified). Lives in `runtime.queue`, not Dashboard, so both the Dashboard API
+(RED 5) and runtime CLI re-validation (RED 4) import the same implementation
+without runtime ever importing Dashboard. Genuine RED confirmed: moved the
+module aside and re-ran — `ModuleNotFoundError` at collection (module didn't
+exist), restored and all 24 passed.
+
+- [x] `test_selected_empty_refuses_without_plan`
+- [x] `test_selected_unknown_ids_are_all_reported`
+- [x] `test_selected_duplicate_ids_refuse_without_silent_dedupe`
+- [x] `test_selected_terminal_issues_are_all_reported_and_none_run`
+- [x] `test_selected_done_dependency_need_not_be_selected`
+- [x] `test_selected_unfinished_dependency_in_selection_is_allowed`
+- [x] `test_selected_unfinished_dependency_outside_selection_refuses_whole_batch`
+- [x] `test_selected_reports_every_missing_dependency_for_every_issue`
+- [x] `test_unknown_dependency_is_unfinished_and_blocks`
+- [x] `test_dependency_absent_from_file_but_done_in_events_is_satisfied`
+- [x] `test_needs_human_or_decomposition_dependency_is_not_done`
+- [x] `test_self_dependency_reports_cycle`
+- [x] `test_multi_issue_dependency_cycle_reports_all_members`
+- [x] `test_selected_active_issue_is_included_once`
+- [x] `test_omitted_active_issue_refuses_new_selection`
+- [x] `test_dependency_order_is_topological`
+- [x] `test_file_order_breaks_topological_ties_deterministically`
+- [x] `test_run_all_includes_every_nonterminal_issue`
+- [x] `test_run_all_excludes_terminal_issues_with_state_counts`
+- [x] `test_run_all_all_terminal_is_successful_noop`
+- [x] `test_run_all_empty_file_is_successful_noop`
+- [x] `test_run_all_includes_full_nonterminal_dependency_chain`
+- [x] `test_run_all_refuses_unfinished_dependency_outside_result_set`
+- [x] `test_admission_never_reads_status_text_for_state`
+
+Verified: `python -m pytest tests\unit\test_issue_selection.py -q` -> 24
+passed. `python -m pytest tests\unit tests\dashboard -q` -> 1176 passed (up
+from 1152).
 
 ## RED 4 — runtime exact allowlist and lifecycle preservation
 
