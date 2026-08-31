@@ -28,13 +28,30 @@ _EVENTS_JSONL_ALLOWED_FILES = {
     DASHBOARD_SRC / "observer_client.py",
     DASHBOARD_SRC / "__init__.py",  # package docstring names the boundary in prose
 }
-# runtime.init.service (ADR-29) is the sole approved gate onto Git/workspace
-# lease mutation; nothing else in the Dashboard may import those modules.
-_GIT_LEASE_MODULES = {
-    "runtime.repo.git_adapter",
-    "runtime.workspace_lease",
+# runtime.init.service (ADR-29) is the sole approved gate onto Git mutation;
+# runtime.repo.git_adapter is banned outright. runtime.workspace_lease is
+# narrower: only its MUTATING surface (acquiring/releasing/repairing the
+# lease) is banned. ADR-30 decision 4 explicitly permits the Dashboard to
+# observe a recorded PID/creation-time identity ("control-plane information,
+# not workflow state, and grants no authority to acquire or repair the
+# runtime lease") via the exact same read-only probe runtime.workspace_lease
+# already uses for its own orphan detection -- reusing it is the point, not
+# a violation, so those specific read-only names are allowed.
+_GIT_LEASE_FULLY_BANNED_MODULES = {"runtime.repo.git_adapter"}
+_WORKSPACE_LEASE_READONLY_NAMES = {
+    "probe_controller_identity", "ControllerIdentityResult", "ControllerIdentityState",
+    "WindowsProcessIdentityApi",
 }
 _GIT_LEASE_ALLOWED_FILES: set[str] = set()  # nothing imports these directly today
+
+
+def _imported_names_from(py_file: Path, module: str) -> set[str]:
+    tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == module:
+            names |= {alias.name for alias in node.names}
+    return names
 
 
 def _py_files(root: Path) -> list[Path]:
@@ -121,12 +138,19 @@ def test_dashboard_does_not_mutate_git_target_or_workspace_lease():
     for py_file in _py_files(DASHBOARD_SRC):
         if py_file.name in _GIT_LEASE_ALLOWED_FILES:
             continue
-        hit = _imported_dotted_modules(py_file) & _GIT_LEASE_MODULES
+        hit = _imported_dotted_modules(py_file) & _GIT_LEASE_FULLY_BANNED_MODULES
         if hit:
             offenders.append((str(py_file.relative_to(REPO_ROOT)), sorted(hit)))
+        mutating_lease_names = (
+            _imported_names_from(py_file, "runtime.workspace_lease") - _WORKSPACE_LEASE_READONLY_NAMES
+        )
+        if mutating_lease_names:
+            offenders.append((str(py_file.relative_to(REPO_ROOT)),
+                              sorted(f"workspace_lease.{n}" for n in mutating_lease_names)))
     assert offenders == [], (
         f"Dashboard must reach Git/workspace-lease mutation only through "
-        f"runtime.init.service (ADR-29): {offenders}"
+        f"runtime.init.service (ADR-29); only the read-only process-identity "
+        f"probe may be imported directly from runtime.workspace_lease: {offenders}"
     )
 
 

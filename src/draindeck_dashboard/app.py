@@ -22,13 +22,17 @@ from . import proxy_cost_agg
 from .artifacts import artifact_root_for_log, resolve_contained_artifact
 from .config import DashboardConfig
 from .configured_issues import get_configured_issues
+from .run_launcher import try_launch_next
 from .run_queue import (
     IdempotencyKeyReusedError,
     RunPlanError,
+    delete_commands_for_repository,
     enqueue_command,
     get_command,
     list_commands_for_repository,
     plan_run,
+    reconcile_ambiguous_claims_on_startup,
+    repository_has_active_command,
 )
 from .db import connect_and_init
 from .diffs import compute_diff
@@ -198,6 +202,10 @@ def _configuration_error(exc: TargetConfigurationError) -> DashboardApiError:
 
 def create_app(cfg: DashboardConfig) -> FastAPI:
     conn = connect_and_init(cfg.db_path)
+    # ADR-30 decision 4: any command left CLAIMED across a restart is an
+    # ambiguous spawn window -- never auto-retried. Done once, here, before
+    # any route can enqueue or launch anything.
+    reconcile_ambiguous_claims_on_startup(conn)
     tailer = ChangeTailer(conn)
     scheduler = Scheduler(conn, cfg.observer_executable)
 
@@ -293,13 +301,26 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
                 status_code=422,
             )
         try:
-            return enqueue_command(
+            result = enqueue_command(
                 app.state.db, repo_id, mode=payload.mode, issue_ids=payload.issueIds,
                 expected_issues_digest=payload.expectedIssuesDigest,
                 idempotency_key=idempotency_key,
             )
         except (RunPlanError, IdempotencyKeyReusedError):
             raise
+        try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable)
+        return get_command(app.state.db, result["id"]) if "id" in result else result
+
+    @app.post("/api/repositories/{repo_id}/run-commands/drain")
+    async def drain_run_commands(repo_id: int) -> dict:
+        """Explicit, idempotent progression: reconciles any completed/exited
+        LAUNCHED command for this repository and claims+launches the next
+        QUEUED one if the repository is now free. No background timer calls
+        this in this pass (see tasks/todo.md RED 6-7) -- the UI (RED 8) calls
+        it opportunistically on its own SSE-triggered refresh."""
+        get_repository(app.state.db, repo_id)  # 404 if unknown
+        result = try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable)
+        return {"launched": result}
 
     @app.get("/api/repositories/{repo_id}/run-commands")
     async def get_run_commands_for_repository(repo_id: int) -> dict:
@@ -315,6 +336,13 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
 
     @app.delete("/api/repositories/{repo_id}", status_code=204)
     async def remove_repository(repo_id: int) -> None:
+        if repository_has_active_command(app.state.db, repo_id):
+            raise DashboardApiError(
+                "REPOSITORY_HAS_ACTIVE_RUN",
+                "cannot unregister a repository with an active or unresolved run command",
+                status_code=409,
+            )
+        delete_commands_for_repository(app.state.db, repo_id)
         delete_repository(app.state.db, repo_id)
 
     @app.get("/api/target-configurations/detect")

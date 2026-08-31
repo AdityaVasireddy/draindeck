@@ -36,6 +36,14 @@ STATUS_LAUNCH_FAILED = "LAUNCH_FAILED"
 STATUS_LAUNCH_OWNERSHIP_UNKNOWN = "LAUNCH_OWNERSHIP_UNKNOWN"
 STATUS_REFUSED = "REFUSED"
 STATUS_COMPLETED = "COMPLETED"
+STATUS_ABNORMAL_EXIT = "ABNORMAL_EXIT"
+
+# Statuses that keep a repository closed to a further automatic claim
+# (ADR-30 decision 4: an abnormal or ambiguous exit pauses later commands
+# for that repository rather than cascading further launches).
+_BLOCKING_STATUSES = (
+    STATUS_CLAIMED, STATUS_LAUNCHED, STATUS_LAUNCH_OWNERSHIP_UNKNOWN, STATUS_ABNORMAL_EXIT,
+)
 
 
 def _now() -> str:
@@ -105,7 +113,8 @@ def plan_run(conn: sqlite3.Connection, repo_id: int, *, mode: str,
 
 def _row_to_command_dict(conn: sqlite3.Connection, row) -> dict:
     (cmd_id, repo_id, mode, issue_ids_json, issues_digest, status, refusal_reason,
-     process_pid, run_id_correlation, created_at, claimed_at, finished_at) = row
+     process_pid, process_creation_time, run_id_correlation, created_at, claimed_at,
+     finished_at) = row
     position = None
     if status in (STATUS_QUEUED, STATUS_CLAIMED):
         position = conn.execute(
@@ -121,6 +130,8 @@ def _row_to_command_dict(conn: sqlite3.Connection, row) -> dict:
         "issuesDigest": issues_digest,
         "status": status,
         "refusalReason": refusal_reason,
+        "processPid": process_pid,
+        "processCreationTime": process_creation_time,
         "queuePosition": position,
         "runIdCorrelation": run_id_correlation,
         "createdAt": created_at,
@@ -131,7 +142,7 @@ def _row_to_command_dict(conn: sqlite3.Connection, row) -> dict:
 
 _COMMAND_COLUMNS = (
     "id, repository_id, mode, issue_ids_json, issues_digest, status, refusal_reason, "
-    "process_pid, run_id_correlation, created_at, claimed_at, finished_at"
+    "process_pid, process_creation_time, run_id_correlation, created_at, claimed_at, finished_at"
 )
 
 
@@ -198,3 +209,112 @@ def list_commands_for_repository(conn: sqlite3.Connection, repo_id: int) -> list
         (repo_id,),
     ).fetchall()
     return [_row_to_command_dict(conn, r) for r in rows]
+
+
+def delete_commands_for_repository(conn: sqlite3.Connection, repo_id: int) -> None:
+    """Removes only Dashboard-owned queue rows -- never target files, never
+    events.jsonl. Callers (app.py) must refuse the unregister first if
+    `repository_has_active_command` is true; this function does not itself
+    guard against deleting an active command's row."""
+    conn.execute("DELETE FROM run_commands WHERE repository_id = ?", (repo_id,))
+    conn.commit()
+
+
+def repository_has_active_command(conn: sqlite3.Connection, repo_id: int) -> bool:
+    placeholders = ",".join("?" for _ in _BLOCKING_STATUSES)
+    row = conn.execute(
+        f"SELECT 1 FROM run_commands WHERE repository_id = ? AND status IN ({placeholders}) LIMIT 1",
+        (repo_id, *_BLOCKING_STATUSES),
+    ).fetchone()
+    return row is not None
+
+
+def claim_next_launchable_command(conn: sqlite3.Connection, repo_id: int) -> Optional[dict]:
+    """Atomically claims the earliest still-QUEUED command for this
+    repository, or returns None if there is none or the repository already
+    has an active/blocked command. The claim (durable spawn intent) commits
+    before any process is spawned -- see run_launcher.py."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if repository_has_active_command(conn, repo_id):
+            conn.execute("ROLLBACK")
+            return None
+        next_row = conn.execute(
+            "SELECT id FROM run_commands WHERE repository_id = ? AND status = ? "
+            "ORDER BY id LIMIT 1",
+            (repo_id, STATUS_QUEUED),
+        ).fetchone()
+        if next_row is None:
+            conn.execute("ROLLBACK")
+            return None
+        conn.execute(
+            "UPDATE run_commands SET status = ?, claimed_at = ? WHERE id = ?",
+            (STATUS_CLAIMED, _now(), next_row[0]),
+        )
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
+    return get_command(conn, next_row[0])
+
+
+def revalidate_claimed_command(conn: sqlite3.Connection, command: dict) -> dict:
+    """Re-checks a CLAIMED command against current state immediately before
+    launch (ADR-30 decision 3: "dequeue revalidates config, issue digest,
+    selection, dependencies"). A stale selected id or a changed issue file
+    refuses the exact command (REFUSED, slot released); a run-all command
+    that has recomputed to zero remaining completes as a clean no-op
+    (COMPLETED, slot released) rather than spawning anything."""
+    try:
+        plan = plan_run(
+            conn, command["repositoryId"], mode=command["mode"],
+            issue_ids=command["issueIds"], expected_issues_digest=command["issuesDigest"],
+        )
+    except RunPlanError as exc:
+        conn.execute(
+            "UPDATE run_commands SET status = ?, refusal_reason = ?, finished_at = ? WHERE id = ?",
+            (STATUS_REFUSED, str(exc), _now(), command["id"]),
+        )
+        conn.commit()
+        return get_command(conn, command["id"])
+
+    if not plan["ok"]:
+        conn.execute(
+            "UPDATE run_commands SET status = ?, refusal_reason = ?, finished_at = ? WHERE id = ?",
+            (STATUS_REFUSED, "selection is no longer valid at dequeue time", _now(), command["id"]),
+        )
+        conn.commit()
+        return get_command(conn, command["id"])
+
+    if not plan["orderedIds"]:
+        conn.execute(
+            "UPDATE run_commands SET status = ?, finished_at = ? WHERE id = ?",
+            (STATUS_COMPLETED, _now(), command["id"]),
+        )
+        conn.commit()
+        return get_command(conn, command["id"])
+
+    return command  # still valid -- caller proceeds to launch
+
+
+def reconcile_ambiguous_claims_on_startup(conn: sqlite3.Connection) -> list[dict]:
+    """Called once per Dashboard process startup. Any command left CLAIMED
+    (spawn intent recorded, outcome never confirmed) is an ambiguous crash
+    window -- the prior process may have died before, during, or just after
+    the OS spawn call. Never auto-retried: marked LAUNCH_OWNERSHIP_UNKNOWN,
+    which keeps that repository closed to further automatic launch until an
+    operator resolves it (ADR-30 decision 4)."""
+    rows = conn.execute(
+        "SELECT id FROM run_commands WHERE status = ?", (STATUS_CLAIMED,),
+    ).fetchall()
+    for (cmd_id,) in rows:
+        conn.execute(
+            "UPDATE run_commands SET status = ?, refusal_reason = ? WHERE id = ?",
+            (STATUS_LAUNCH_OWNERSHIP_UNKNOWN,
+             "Dashboard restarted with an unresolved spawn claim for this command",
+             cmd_id),
+        )
+    if rows:
+        conn.commit()
+    return [get_command(conn, r[0]) for r in rows]

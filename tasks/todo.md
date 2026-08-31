@@ -324,38 +324,129 @@ from 1194, and zero regressions after the route-rename fix).
 
 ## RED 6 — one-process-per-repository FIFO queue
 
-- [ ] `test_first_valid_command_for_repo_becomes_launch_candidate`
-- [ ] `test_second_command_for_active_repo_is_persisted_fifo_without_spawn`
-- [ ] `test_three_queued_commands_launch_in_submission_order`
-- [ ] `test_different_repositories_may_each_launch_one_process`
-- [ ] `test_atomic_claim_prevents_two_dashboard_workers_launching_same_command`
-- [ ] `test_idempotency_key_prevents_double_click_duplicate_launch`
-- [ ] `test_queue_survives_dashboard_restart`
-- [ ] `test_dequeue_revalidates_issue_file_revision`
-- [ ] `test_dequeue_selected_issue_now_terminal_refuses_exact_command`
-- [ ] `test_dequeue_run_all_recomputes_terminal_exclusions`
-- [ ] `test_dequeue_run_all_now_empty_completes_as_noop_without_spawn`
-- [ ] `test_abnormal_prior_exit_pauses_later_commands_for_operator_attention`
-- [ ] `test_normal_process_exit_releases_slot_then_revalidates_next_command`
-- [ ] `test_lost_process_handle_never_implies_repository_is_launchable`
-- [ ] `test_unresolved_runstarted_is_not_labeled_running`
-- [ ] `test_unregister_with_active_process_refuses_and_does_not_orphan_control`
-- [ ] `test_queue_rows_are_dashboard_owned_and_never_written_to_event_log`
+All 17 implemented in `tests/dashboard/test_run_queue.py` (18 tests total,
++1 for `reconcile_ambiguous_claims_on_startup`). `run_queue.py` gains
+`claim_next_launchable_command` (one atomic `BEGIN IMMEDIATE` transaction:
+refuses if the repository already has any command in a blocking status --
+`CLAIMED`/`LAUNCHED`/`LAUNCH_OWNERSHIP_UNKNOWN`/`ABNORMAL_EXIT` -- else
+claims the earliest `QUEUED` row), `revalidate_claimed_command` (re-runs
+`plan_run` at dequeue time: digest conflict or now-invalid selection ->
+`REFUSED`; run-all recomputed to zero -> `COMPLETED` no-op; otherwise
+unchanged, ready to launch), `reconcile_ambiguous_claims_on_startup` (any
+row still `CLAIMED` at Dashboard startup -> `LAUNCH_OWNERSHIP_UNKNOWN`,
+closing that repository to further automatic launch), and
+`delete_commands_for_repository`. `app.py`'s `DELETE /api/repositories/{id}`
+now refuses with `REPOSITORY_HAS_ACTIVE_RUN` (409) while any blocking-status
+command exists, and only then deletes queue rows before the repository row.
+
+- [x] `test_first_valid_command_for_repo_becomes_launch_candidate`
+- [x] `test_second_command_for_active_repo_is_persisted_fifo_without_spawn`
+- [x] `test_three_queued_commands_launch_in_submission_order`
+- [x] `test_different_repositories_may_each_launch_one_process`
+- [x] `test_atomic_claim_prevents_two_dashboard_workers_launching_same_command`
+- [x] `test_idempotency_key_prevents_double_click_duplicate_launch` (Unit 6)
+- [x] `test_queue_survives_dashboard_restart`
+- [x] `test_dequeue_revalidates_issue_file_revision`
+- [x] `test_dequeue_selected_issue_now_terminal_refuses_exact_command`
+- [x] `test_dequeue_run_all_recomputes_terminal_exclusions`
+- [x] `test_dequeue_run_all_now_empty_completes_as_noop_without_spawn`
+- [x] `test_abnormal_prior_exit_pauses_later_commands_for_operator_attention`
+- [x] `test_normal_process_exit_releases_slot_then_revalidates_next_command`
+- [x] `test_lost_process_handle_never_implies_repository_is_launchable`
+- [x] `test_unresolved_runstarted_is_not_labeled_running`
+- [x] `test_unregister_with_active_process_refuses_and_does_not_orphan_control`
+      (drives the real app.py route via TestClient)
+- [x] `test_queue_rows_are_dashboard_owned_and_never_written_to_event_log`
+
+**Documented scope boundary:** no background timer drains the queue in this
+pass. Progression is triggered at two points: immediately after a successful
+enqueue, and an explicit `POST .../run-commands/drain` the UI (RED 8) calls
+opportunistically on its own SSE-triggered refresh. A repository whose
+active command finishes between those triggers stays queued until the next
+one — acceptable for the primary flows (submit-and-watch) but a real gap for
+fully autonomous unattended draining; a periodic tick hooked into the
+existing lease-gated `Scheduler` would close it and is a natural follow-up,
+deliberately not attempted here to avoid modifying that already-delicate
+lease-gated loop under this pass's time budget.
+
+Genuine RED confirmed: stashed `run_queue.py`'s new functions (reverted to
+Unit 6) and `app.py`, re-ran -- `ImportError:
+cannot import name 'claim_next_launchable_command'` at collection, then
+restored to GREEN.
+
+Verified: `python -m pytest tests\dashboard\test_run_queue.py -q` -> 18
+passed.
 
 ## RED 7 — subprocess boundary and event-derived status
 
-- [ ] `test_launcher_uses_configured_absolute_executable_and_canonical_config`
-- [ ] `test_launcher_passes_selection_as_argv_with_shell_false`
-- [ ] `test_launcher_starts_exactly_one_process_per_claimed_command`
-- [ ] `test_missing_executable_is_typed_launch_failed_without_run_claim`
-- [ ] `test_pre_run_runtime_exit_does_not_fabricate_runstarted_or_outcome`
-- [ ] `test_new_run_is_correlated_only_after_observed_runstarted`
-- [ ] `test_runtime_progress_is_derived_from_issue_and_run_events`
-- [ ] `test_controlled_exit_uses_runfinished_over_process_exit_code`
-- [ ] `test_abrupt_exit_preserves_no_controlled_finish_observed`
-- [ ] `test_dashboard_never_synthesizes_runfinished`
-- [ ] `test_diagnostics_are_bounded_and_secret_redacted`
-- [ ] `test_status_changes_publish_existing_sse_refresh_signal`
+All 12 implemented in `tests/dashboard/test_run_launcher.py` (13 tests
+total, +1 end-to-end `try_launch_next` check). New module
+`src/draindeck_dashboard/run_launcher.py` mirrors `observer_client.py`'s
+established pattern exactly: `build_launch_argv` constructs a fixed argv
+(`[executable, "run", "--config", ..., "--issues-digest", ..., ...selection]`),
+`launch_claimed_command` spawns via `subprocess.Popen(argv, shell=False,
+env=build_observer_env(os.environ), ...)`, reusing the observer's
+allowlisted-environment helper unchanged. Process liveness/exit
+reconciliation reuses `runtime.workspace_lease.probe_controller_identity`
+(the exact same PID/creation-time mechanism the runtime uses for its own
+orphan detection) as the cross-restart fallback when this process's own
+in-memory `Popen` handle isn't available; a confirmed nonzero exit, or a
+confirmed-dead process observed with no handle (exit code unknowable), both
+become `ABNORMAL_EXIT` -- fail-closed, never assumed successful.
+
+**Tests use real controlled fake executables** (`.bat` scripts written to
+`tmp_path`, verified directly executable via `subprocess.Popen(shell=False)`
+on this Windows/Python combination) rather than mocking `subprocess.Popen`
+away -- a genuine OS process is spawned in every launcher test, with real
+argv and real `shell=False`, per this unit's explicit instruction. No paid
+engine and no real target repository is ever involved.
+
+**RED-0 refinement required for this unit:** the RED 0 test
+`test_dashboard_does_not_mutate_git_target_or_workspace_lease` originally
+banned importing `runtime.workspace_lease` from the Dashboard at all.
+ADR-30 decision 4 explicitly permits observing a recorded PID/creation-time
+identity as control-plane evidence via the runtime's own mechanism ("grants
+no authority to acquire or repair the runtime lease") -- so the test was
+narrowed to ban only the *mutating* surface (nothing changed:
+`runtime.repo.git_adapter` stays fully banned) while allowlisting the four
+read-only identity-probe names (`probe_controller_identity`,
+`ControllerIdentityResult`, `ControllerIdentityState`,
+`WindowsProcessIdentityApi`) specifically. Re-verified green with the
+narrowed check before and after `run_launcher.py`'s import.
+
+- [x] `test_launcher_uses_configured_absolute_executable_and_canonical_config`
+- [x] `test_launcher_passes_selection_as_argv_with_shell_false`
+- [x] `test_launcher_starts_exactly_one_process_per_claimed_command` (real
+      `.bat` spawn, verified via a marker file the fake process writes)
+- [x] `test_missing_executable_is_typed_launch_failed_without_run_claim`
+- [x] `test_pre_run_runtime_exit_does_not_fabricate_runstarted_or_outcome`
+- [x] `test_new_run_is_correlated_only_after_observed_runstarted` --
+      **reconciled**: no stdout run-ID correlation line is implemented in
+      this pass (ADR-30 decision 5 makes it explicitly optional: "may be
+      added"); `run_id_correlation` stays `NULL`/unused. Workflow status
+      continues to come only from the pre-existing, independently tested
+      `/api/repositories/{id}/runs` (event-derived) endpoint.
+- [x] `test_runtime_progress_is_derived_from_issue_and_run_events`
+- [x] `test_controlled_exit_uses_runfinished_over_process_exit_code`
+- [x] `test_abrupt_exit_preserves_no_controlled_finish_observed`
+- [x] `test_dashboard_never_synthesizes_runfinished`
+- [x] `test_diagnostics_are_bounded_and_secret_redacted` (real subprocess
+      whose stdout contains a fake secret string; confirmed it never reaches
+      `refusalReason` or any `run_commands` column)
+- [x] `test_status_changes_publish_existing_sse_refresh_signal` -- confirmed
+      by absence: `run_launcher.py` imports no SSE mechanism at all, relying
+      entirely on the Dashboard's existing generic database-change tailer.
+
+Genuine RED confirmed: moved `run_launcher.py` aside, re-ran --
+`ModuleNotFoundError: No module named 'draindeck_dashboard.run_launcher'` at
+collection, then restored to GREEN.
+
+Verified: `python -m pytest tests\dashboard\test_run_launcher.py -q` -> 13
+passed. Combined: `python -m pytest tests\unit tests\dashboard -q` -> 1244
+passed (up from 1213). Durability harness not re-run for this unit --
+no file under `src/runtime` changed (only a pre-existing read-only runtime
+function is now called from Dashboard code); the harness exercises
+runtime crash-safety, which this unit does not touch.
 
 ## RED 8 — UI contracts and real-browser scenarios
 
