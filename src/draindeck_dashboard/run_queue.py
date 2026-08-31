@@ -192,14 +192,32 @@ def enqueue_command(conn: sqlite3.Connection, repo_id: int, *, mode: str,
         return {"noop": True, "excluded": plan["excluded"]}
 
     now = _now()
-    cur = conn.execute(
-        "INSERT INTO run_commands (repository_id, mode, issue_ids_json, issues_digest, "
-        "idempotency_key, normalized_request_json, status, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (repo_id, mode,
-         json.dumps(plan["orderedIds"]) if mode == "SELECTED" else None,
-         expected_issues_digest, idempotency_key, normalized_json, STATUS_QUEUED, now),
-    )
+    try:
+        cur = conn.execute(
+            "INSERT INTO run_commands (repository_id, mode, issue_ids_json, issues_digest, "
+            "idempotency_key, normalized_request_json, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (repo_id, mode,
+             json.dumps(plan["orderedIds"]) if mode == "SELECTED" else None,
+             expected_issues_digest, idempotency_key, normalized_json, STATUS_QUEUED, now),
+        )
+    except sqlite3.IntegrityError:
+        # A genuine double-click race: two concurrent requests both passed
+        # the SELECT-based idempotency check above before either committed.
+        # ux_run_commands_repo_idempotency is the real enforcement point;
+        # this falls back to it exactly like an ordinary repeat would.
+        conn.rollback()
+        existing = conn.execute(
+            "SELECT id, normalized_request_json FROM run_commands "
+            "WHERE repository_id = ? AND idempotency_key = ?",
+            (repo_id, idempotency_key),
+        ).fetchone()
+        if existing is None:
+            raise  # not actually an idempotency-key collision -- re-raise
+        if existing[1] != normalized_json:
+            raise IdempotencyKeyReusedError()
+        return get_command(conn, existing[0])
+    conn.commit()
     return get_command(conn, cur.lastrowid)
 
 

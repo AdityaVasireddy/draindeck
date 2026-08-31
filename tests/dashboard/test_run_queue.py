@@ -344,3 +344,131 @@ def test_delete_commands_for_repository_removes_only_queue_rows(tmp_path):
         "SELECT COUNT(*) FROM run_commands WHERE repository_id = ?", (repo_id,)
     ).fetchone()[0]
     assert remaining == 0
+
+
+# ── fresh-context adversarial review additions ──────────────────────────
+
+def test_concurrent_claims_from_two_real_connections_never_double_claim(tmp_path):
+    """Stronger than same-connection reuse: two genuinely separate sqlite3
+    connections (simulating two Dashboard worker threads/processes) race to
+    claim the same repository's queued commands. BEGIN IMMEDIATE's RESERVED
+    lock must serialize them -- exactly one winner per command, never both,
+    and never a lost update."""
+    import threading
+    db_path = tmp_path / "d.sqlite3"
+    conn = connect_and_init(db_path)
+    repo_id, digest = _register_ready(conn, tmp_path)
+    ids = [
+        enqueue_command(conn, repo_id, mode="SELECTED", issue_ids=["a"],
+                        expected_issues_digest=digest, idempotency_key=f"k{i}")["id"]
+        for i in range(5)
+    ]
+    conn.close()
+
+    claimed_by: dict[int, list] = {0: [], 1: []}
+    errors: list[BaseException] = []
+
+    def worker(idx):
+        worker_conn = connect_and_init(db_path)
+        try:
+            for _ in range(10):
+                result = claim_next_launchable_command(worker_conn, repo_id)
+                if result is not None:
+                    claimed_by[idx].append(result["id"])
+                    worker_conn.execute(
+                        "UPDATE run_commands SET status = 'COMPLETED' WHERE id = ?", (result["id"],),
+                    )
+                    worker_conn.commit()
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            worker_conn.close()
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, f"concurrent claim raised: {errors}"
+    all_claimed = claimed_by[0] + claimed_by[1]
+    assert sorted(all_claimed) == ids, f"expected exactly {ids}, got {sorted(all_claimed)}"
+    assert len(all_claimed) == len(set(all_claimed)), "a command was claimed more than once"
+
+
+def test_concurrent_double_click_same_idempotency_key_creates_exactly_one_row(tmp_path):
+    """A genuine race: two connections race past the idempotency SELECT
+    check before either commits its INSERT. ux_run_commands_repo_idempotency
+    (the DB-level UNIQUE constraint) is the real enforcement point;
+    enqueue_command must catch the resulting IntegrityError and fall back to
+    returning the winner's row, never propagate a 500 or create two rows."""
+    import threading
+    db_path = tmp_path / "d.sqlite3"
+    conn = connect_and_init(db_path)
+    repo_id, digest = _register_ready(conn, tmp_path)
+    conn.close()
+
+    barrier = threading.Barrier(8)
+    results: list[dict] = []
+    errors: list[BaseException] = []
+
+    def worker():
+        worker_conn = connect_and_init(db_path)
+        try:
+            barrier.wait(timeout=5)  # maximize the chance all threads pass
+            # the idempotency SELECT before any INSERT commits
+            result = enqueue_command(worker_conn, repo_id, mode="ALL", issue_ids=None,
+                                     expected_issues_digest=digest, idempotency_key="race-key")
+            results.append(result)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+        finally:
+            worker_conn.close()
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, f"enqueue_command raised under a real double-click race: {errors}"
+    assert len(results) == 8
+    ids = {r["id"] for r in results}
+    assert len(ids) == 1, f"expected every racer to converge on one row, got ids {ids}"
+
+    conn2 = connect_and_init(db_path)
+    total = conn2.execute(
+        "SELECT COUNT(*) FROM run_commands WHERE repository_id = ?", (repo_id,),
+    ).fetchone()[0]
+    assert total == 1
+
+
+def test_run_command_id_cannot_be_read_across_repositories(tmp_path):
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_a, digest_a = _register_ready(conn, tmp_path, "a")
+    repo_b, digest_b = _register_ready(conn, tmp_path, "b")
+    cmd_a = _enqueue_all(conn, repo_a, digest_a, "ka")
+
+    from fastapi.testclient import TestClient
+    from draindeck_dashboard.app import create_app
+    from draindeck_dashboard.config import DashboardConfig
+    cfg = DashboardConfig(db_path=str(tmp_path / "d.sqlite3"), observer_executable=str(tmp_path / "x.exe"))
+    # A separate app instance over the SAME db file, matching how a real
+    # browser session would query it.
+    client = TestClient(create_app(cfg), base_url="http://127.0.0.1")
+    resp = client.get(f"/api/repositories/{repo_b}/run-commands/{cmd_a['id']}")
+    assert resp.status_code == 404
+
+
+def test_non_loopback_host_cannot_call_drain_route(tmp_path):
+    from fastapi.testclient import TestClient
+    from draindeck_dashboard.app import create_app
+    from draindeck_dashboard.config import DashboardConfig
+    cfg = DashboardConfig(db_path=str(tmp_path / "d.sqlite3"), observer_executable=str(tmp_path / "x.exe"))
+    app = create_app(cfg)
+    loopback_client = TestClient(app, base_url="http://127.0.0.1")
+    repo_id, _digest = _register_ready(loopback_client.app.state.db, tmp_path)
+
+    evil_client = TestClient(app, base_url="http://evil.example.com")
+    resp = evil_client.post(f"/api/repositories/{repo_id}/run-commands/drain")
+    assert resp.status_code == 403

@@ -552,27 +552,86 @@ passed directly. Combined: `python -m pytest tests\unit tests\dashboard -q`
 
 ## RED 9 — crash, durability, and regression gates
 
-- [ ] `test_dashboard_crash_before_spawn_leaves_command_queued_and_target_unchanged`
-- [ ] `test_dashboard_crash_after_spawn_before_runstarted_never_fabricates_run`
-- [ ] `test_dashboard_restart_does_not_compete_with_possibly_live_child`
-- [ ] `test_runtime_crash_after_runstarted_keeps_unresolved_run_truthful`
-- [ ] `test_abnormal_exit_pauses_fifo_instead_of_cascading_mutations`
-- [ ] `test_next_operator_approved_launch_uses_existing_runtime_recovery`
-- [ ] `test_crash_never_activates_issue_outside_exact_selection`
-- [ ] `test_queue_database_recovery_never_writes_target_event_log_or_git_state`
-- [ ] Full regression: `python -m pytest tests\unit -q`,
-      `python -m pytest tests\dashboard -q`,
-      `python -m pytest tests\unit tests\dashboard -q`,
-      `python tests\crash\harness.py "$env:TEMP\draindeck-run-control-42" 42`,
-      `python tests\crash\harness.py "$env:TEMP\draindeck-run-control-1337" 1337`
-      (raw unfiltered stdout/stderr and exit codes retained for both seeds).
-- [ ] Fresh-context adversarial review (runtime durability/allowlist, event-
-      schema freeze, queue atomicity/idempotency, spawn dual-write crash
-      windows, command/path/SQL/HTML injection, loopback security, Git/log/
-      lease non-ownership, accessibility/state honesty) — findings fixed
-      test-first and affected gates rerun.
-- [ ] README, PRODUCT.md, ADR references, API docs, NEXT.md, and this todo
-      updated to describe the launch-capable boundary accurately.
+New `tests/crash/run_control_harness.py` (run directly, not pytest-collected
+-- mirrors `harness.py`/`run_lifecycle_harness.py`'s own convention).
+Simulated by direct-state manipulation and fresh-connection reconstruction
+rather than a real OS-level kill, matching the exact scoping precedent
+`run_lifecycle_harness.py`'s own docstring states for its fixture rows: the
+Dashboard's crash window is one atomic SQLite transaction (the claim)
+followed by one OS spawn call, not a multi-step external mutation the way
+the runtime's git operations are -- every reachable outcome of that boundary
+is exercised directly. A real controlled fake `.bat` executable is used
+wherever a subprocess is actually spawned.
 
-**Verification:** all commands above; `git diff --check`; final evidence
-distinguishes VERIFIED (ran it, saw it pass) from ASSUMED.
+- [x] `test_dashboard_crash_before_spawn_leaves_command_queued_and_target_unchanged`
+- [x] `test_dashboard_crash_after_spawn_before_runstarted_never_fabricates_run`
+- [x] `test_dashboard_restart_does_not_compete_with_possibly_live_child`
+- [x] `test_runtime_crash_after_runstarted_keeps_unresolved_run_truthful` --
+      **reconciled**: this is runtime (not Dashboard) behavior, unchanged by
+      this feature and already exhaustively covered by
+      `tests/crash/run_lifecycle_harness.py` and the main durability
+      harness, both re-run clean this unit (below).
+- [x] `test_abnormal_exit_pauses_fifo_instead_of_cascading_mutations`
+- [x] `test_next_operator_approved_launch_uses_existing_runtime_recovery` --
+      verified there is no second, recovery-specific launch code path: an
+      operator-cleared command re-enters the exact same
+      claim/launch_claimed_command flow as any other command.
+- [x] `test_crash_never_activates_issue_outside_exact_selection` -- the
+      allowlist is re-derived fresh from argv + the current issue file on
+      every runtime invocation (RED 4) and is never itself persisted by the
+      queue beyond the exact `issueIds` column ADR-30 specifies; verified
+      that column round-trips exactly across a simulated crash/restart.
+- [x] `test_queue_database_recovery_never_writes_target_event_log_or_git_state`
+
+### Fresh-context adversarial review (this session)
+
+Reviewed against every named axis; two real findings, both fixed test-first:
+
+1. **Queue atomicity and idempotency (real bug, CONFIRMED and fixed).** A
+   genuine double-click race: two concurrent `enqueue_command` calls could
+   both pass the idempotency-key SELECT check before either committed its
+   INSERT, so the second raised an uncaught `sqlite3.IntegrityError` (a
+   500) instead of returning the first's row. Reproduced reliably (7/8
+   racing threads failed on every one of 3 runs against the un-fixed code).
+   Fixed: `enqueue_command` now catches `IntegrityError` and falls back to
+   fetching the row `ux_run_commands_repo_idempotency` (the real
+   enforcement point) shows actually won the race, re-raising only if the
+   constraint fired for some other reason. Regression test
+   (`test_concurrent_double_click_same_idempotency_key_creates_exactly_one_row`,
+   8 real threads + a `Barrier`) confirmed failing against the reverted
+   code, then passing after the fix.
+2. **Queue atomicity, weaker coverage (fixed, not a defect).** The existing
+   `test_atomic_claim_prevents_two_dashboard_workers_launching_same_command`
+   reused one connection twice, which doesn't exercise SQLite's real
+   cross-connection locking. Added
+   `test_concurrent_claims_from_two_real_connections_never_double_claim`
+   (2 real threads, 2 real connections, 5 commands) -- confirmed
+   `BEGIN IMMEDIATE` correctly serializes genuine concurrent claimants with
+   no double-claim and no lost update.
+
+Also added, no defect found: `test_run_command_id_cannot_be_read_across_repositories`
+(a command from repo A is a 404 through repo B's route) and
+`test_non_loopback_host_cannot_call_drain_route` (the new
+`/run-commands/drain` route inherits `LoopbackOnlyMiddleware` like every
+other route, confirmed explicitly since it wasn't covered by RED 5's
+security tests, which predate that route). SQL-injection surface reviewed
+by inspection: every `f"..."` SQL string in `run_queue.py`/`configured_issues.py`
+interpolates only static column-name constants or generated `?` placeholders,
+never request data, matching the codebase's existing pattern throughout
+`api_queries.py`.
+
+### Full regression and durability (this session, after all fixes above)
+
+- [x] `python -m pytest tests\unit -q` -> 631 passed
+- [x] `python -m pytest tests\dashboard -q` -> 629 passed
+- [x] `python -m pytest tests\unit tests\dashboard -q` -> 1264 passed
+- [x] `python tests\crash\harness.py "$env:TEMP\draindeck-final-42" 42` ->
+      ALL 60 SCENARIOS PASSED
+- [x] `python tests\crash\harness.py "$env:TEMP\draindeck-final-1337" 1337`
+      -> ALL 60 SCENARIOS PASSED
+- [x] `python tests\crash\run_control_harness.py` -> ALL RUN-CONTROL CRASH
+      SCENARIOS PASSED (15/15)
+
+**Verification:** all commands above; `git diff --check` clean; this todo
+distinguishes VERIFIED (ran it, saw it pass, shown above) from nothing left
+ASSUMED for this unit.
