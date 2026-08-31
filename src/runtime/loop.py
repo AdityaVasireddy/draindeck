@@ -71,6 +71,7 @@ class Orchestrator:
         budget: BudgetManager,
         artifacts_dir: Path,
         run_id: str,
+        allowed_issue_ids: "frozenset[str] | None" = None,
     ) -> None:
         self.cfg = cfg
         self.log = log
@@ -85,6 +86,12 @@ class Orchestrator:
         self.target = cfg.project.branch
         self.workspace = Path(cfg.project.repository)
         self.stop_reason = ""
+        # ADR-30: None (the default, and every pre-existing direct-CLI call
+        # site) preserves the original unfiltered scan exactly. When set, it
+        # is an exact allowlist -- an issue outside it is never returned by
+        # _next_actionable regardless of its state, so it can never be
+        # activated, spawned, or otherwise touched by this run.
+        self.allowed_issue_ids = allowed_issue_ids
 
     # ── durable emit (reconciler._emit pattern: append+fsync, then apply) ──
     def _emit(self, ev: Event) -> None:
@@ -119,6 +126,8 @@ class Orchestrator:
         issue (in flight — finish it before starting another, sequential per
         doc 01), or a PENDING issue whose deps are all DONE."""
         for iid in self.proj.issues:  # dict preserves IssueCreated (file) order
+            if self.allowed_issue_ids is not None and iid not in self.allowed_issue_ids:
+                continue
             st = self.proj.issues[iid]
             if st is IssueState.ACTIVE:
                 return iid

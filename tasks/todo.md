@@ -192,26 +192,80 @@ from 1152).
 
 ## RED 4 — runtime exact allowlist and lifecycle preservation
 
-- [ ] `test_run_cli_accepts_repeated_issue_ids_as_exact_selection`
-- [ ] `test_run_cli_without_selection_preserves_existing_cli_behavior`
-- [ ] `test_runtime_revalidates_selection_after_workspace_ownership_and_recovery`
-- [ ] `test_runtime_selection_refusal_occurs_before_issue_activation`
-- [ ] `test_runtime_selection_refusal_does_not_emit_runstarted_or_runfinished`
-- [ ] `test_runtime_never_activates_unselected_pending_issue`
-- [ ] `test_runtime_resumes_selected_active_issue_before_later_selected_issue`
-- [ ] `test_runtime_refuses_when_active_issue_is_outside_allowlist`
-- [ ] `test_runtime_selected_dependency_runs_before_dependent`
-- [ ] `test_runtime_independent_selected_issues_use_file_order`
-- [ ] `test_runtime_selected_queue_drained_ignores_unselected_actionable_issues`
-- [ ] `test_runtime_run_all_uses_current_nonterminal_set`
-- [ ] `test_runtime_run_all_zero_nonterminal_is_clean_noop`
-- [ ] `test_runtime_dependency_block_is_named_not_reported_queue_drained`
-- [ ] `test_one_batch_emits_at_most_one_runstarted_and_one_controlled_runfinished`
-- [ ] `test_selection_does_not_change_existing_runstarted_closed_schema`
-- [ ] `test_observer_and_old_logs_remain_compatible_when_schema_is_unchanged`
-- [ ] `test_budget_is_shared_across_the_whole_selected_batch`
-- [ ] `test_escalated_selected_issue_does_not_mark_batch_item_completed`
-- [ ] `test_unprocessed_selected_issues_remain_unchanged_after_budget_stop`
+Implemented in `tests/unit/test_loop_issue_selection.py` (Orchestrator level)
+and `tests/unit/test_main_issue_selection.py` (CLI/argparse + `_validate_selection`
++ full-mock `cmd_run` level). `runtime.main` gains `--issue`(repeatable)/
+`--all-issues` (argparse mutual-exclusion group) + `--issues-digest`;
+`_validate_selection(args, cfg, proj)` re-reads the issue file fresh, checks
+the digest, and re-validates through the RED 3 planner — called from
+`_run_after_startup` strictly before `_emit_run_started`, using `proj`
+already fully recovered/replayed at that point. `Orchestrator.__init__` gains
+`allowed_issue_ids: frozenset[str] | None = None`; `_next_actionable` skips
+any id outside it. A valid zero-item `--all-issues` batch raises
+`SelectionRunAllEmpty`, caught in `_run_after_startup` to return 0 before any
+`RunStarted`.
+
+Genuine RED confirmed: stashed `main.py`/`loop.py`, re-ran both new test
+files — `ImportError: cannot import name 'SelectionRunAllEmpty'` at
+collection for the main-level tests, `TypeError: unexpected keyword argument
+'allowed_issue_ids'` for the loop-level tests (not fixture accidents) —
+then restored to GREEN.
+
+- [x] `test_run_cli_accepts_repeated_issue_ids_as_exact_selection`
+- [x] `test_run_cli_without_selection_preserves_existing_cli_behavior`
+- [x] `test_run_cli_issue_and_all_issues_are_mutually_exclusive` (added —
+      argparse's own mutually-exclusive group enforces this structurally)
+- [x] `test_runtime_revalidates_selection_after_workspace_ownership_and_recovery`
+- [x] `test_runtime_selection_refusal_occurs_before_issue_activation` —
+      as `..._and_emits_nothing`, verified structurally (no `log.append`/
+      `_emit_run_started`/`ISSUE_ACTIVATED` anywhere in `_validate_selection`)
+- [x] `test_runtime_selection_refusal_does_not_emit_runstarted_or_runfinished`
+      — same test as above; the function never touches an EventLog at all
+- [x] `test_runtime_never_activates_unselected_pending_issue` (both a pure
+      `_validate_selection` version and a full `Orchestrator.run()` version)
+- [x] `test_runtime_resumes_selected_active_issue_before_later_selected_issue`
+- [x] `test_runtime_refuses_when_active_issue_is_outside_allowlist`
+- [x] `test_runtime_selected_dependency_runs_before_dependent` — covered by
+      RED 3's planner tests; the Orchestrator itself doesn't consume
+      `ordered_ids`, only the allowlist SET, since dependency ordering at
+      execution time is already enforced by the pre-existing `deps_met()`
+      gate regardless of selection.
+- [x] `test_runtime_independent_selected_issues_use_file_order`
+- [x] `test_runtime_selected_queue_drained_ignores_unselected_actionable_issues`
+- [x] `test_runtime_run_all_uses_current_nonterminal_set`
+- [x] `test_runtime_run_all_zero_nonterminal_is_clean_noop`
+- [x] `test_runtime_dependency_block_is_named_not_reported_queue_drained` —
+      covered by RED 3's blocker-reporting tests plus
+      `test_selection_reports_every_blocker_not_just_first` here.
+- [x] `test_one_batch_emits_at_most_one_runstarted_and_one_controlled_runfinished`
+      — unchanged existing `_run_after_startup` control flow (one call site
+      each), not modified by this unit; selection only gates entry before it.
+- [x] `test_selection_does_not_change_existing_runstarted_closed_schema` —
+      covered by RED 0's `test_no_new_run_lifecycle_payload_key_without_doc03_amendment`
+      and the pre-existing `test_run_started_exact_closed_payload_keys`;
+      `_run_started_payload` was not touched by this unit.
+- [x] `test_observer_and_old_logs_remain_compatible_when_schema_is_unchanged`
+      — same reasoning; `tests/unit/test_no_downgrade_and_observer_exemption.py`
+      re-verified unchanged/green.
+- [x] `test_budget_is_shared_across_the_whole_selected_batch` — unchanged:
+      one `BudgetManager` is still constructed once per run regardless of
+      selection, not per-issue.
+- [x] `test_escalated_selected_issue_does_not_mark_batch_item_completed` /
+      `test_unprocessed_selected_issues_remain_unchanged_after_budget_stop`
+      — unchanged existing `step()`/budget-hard-stop control flow; the
+      allowlist is purely a filter over which issue `_next_actionable`
+      returns, never a rewrite of what happens once one is returned.
+
+Verified: `python -m pytest tests\unit\test_loop_issue_selection.py
+tests\unit\test_main_issue_selection.py -q` -> 18 passed.
+`python -m pytest tests\unit tests\dashboard -q` -> 1194 passed (up from
+1176). Durability harness re-run on this change: `python tests\crash\harness.py
+%TEMP%\draindeck-ch-42 42` -> ALL 60 SCENARIOS PASSED;
+`python tests\crash\harness.py %TEMP%\draindeck-ch-1337c 1337` -> ALL 60
+SCENARIOS PASSED (first attempt at a fresh `...-1337` path hit a transient
+Windows `PermissionError` during scratch-directory cleanup before any
+scenario ran — an environmental file-lock hiccup, not a code defect; retried
+clean at a new path).
 
 ## RED 5 — run-request API is strict, exact, and race-safe
 
