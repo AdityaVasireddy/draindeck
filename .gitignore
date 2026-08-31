@@ -1,5 +1,10 @@
 state/
 config.local.yaml
+# Local Dashboard runtime configuration and SQLite state.
+dashboard.local.yaml
+dashboard.sqlite3
+dashboard.sqlite3-shm
+dashboard.sqlite3-wal
 knowledge/
 __pycache__/
 *.torn.*
