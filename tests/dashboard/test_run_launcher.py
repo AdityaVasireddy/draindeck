@@ -96,6 +96,30 @@ def _fake_exe(tmp_path: Path, name: str, body: str) -> str:
     return str(path)
 
 
+_API_KEY_CONFIG_YAML = _VALID_CONFIG_YAML.replace(
+    "auth_mode: subscription", "auth_mode: api_key",
+)
+
+
+def _register_ready_with_yaml(conn, tmp_path, yaml_template, name="repo"):
+    repo = _git_worktree(tmp_path, name)
+    (repo / "Issues.md").write_text("## a: A\nbody\n", encoding="utf-8", newline="")
+    draindeck_dir = repo / ".draindeck"
+    draindeck_dir.mkdir()
+    config_path = draindeck_dir / "config.local.yaml"
+    config_path.write_text(yaml_template.format(repository=str(repo)), encoding="utf-8")
+    registration = register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    repo_id = registration["id"]
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status) "
+        "VALUES (?, 1, 'READY')", (repo_id,),
+    )
+    conn.commit()
+    from draindeck_dashboard.configured_issues import get_configured_issues
+    digest = get_configured_issues(conn, repo_id)["issuesFileRevision"]
+    return repo_id, digest, config_path
+
+
 def test_launcher_uses_configured_absolute_executable_and_canonical_config(tmp_path):
     exe = _fake_exe(tmp_path, "fake_exit0.bat", "exit /b 0\r\n")
     argv = build_launch_argv(exe, config_path="C:/x/config.local.yaml",
@@ -174,12 +198,206 @@ def test_pre_run_runtime_exit_does_not_fabricate_runstarted_or_outcome(tmp_path)
     assert reconciled["status"] != STATUS_COMPLETED
 
 
-def test_new_run_is_correlated_only_after_observed_runstarted():
-    """No stdout correlation line is implemented in this pass (ADR-30
-    decision 5 makes it optional: "may be added"); run_id_correlation stays
-    None until a future increment wires real RunStarted correlation through
-    the observer projection. This is a documented scope boundary, not a
-    missing test -- see tasks/todo.md RED 7."""
+# ── ADR-30 review finding 1: runtime-specific launch environment ──────────
+
+def test_launch_env_preserves_windows_profile_discovery_variables(tmp_path, monkeypatch):
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest, config_path = _register_ready(conn, tmp_path)
+    fake_profile = str(tmp_path / "fake-profile")
+    monkeypatch.setenv("USERPROFILE", fake_profile)
+    marker = tmp_path / "profile.txt"
+    exe = _fake_exe(tmp_path, "fake_profile.bat", f'echo %USERPROFILE%> "{marker}"\r\nexit /b 0\r\n')
+    cmd = enqueue_command(conn, repo_id, mode="ALL", issue_ids=None,
+                          expected_issues_digest=digest, idempotency_key="k1")
+    claimed = claim_next_launchable_command(conn, repo_id)
+    launch_claimed_command(conn, claimed, executable=exe, config_path=str(config_path))
+    for _ in range(50):
+        if marker.exists():
+            break
+        time.sleep(0.1)
+    assert marker.exists()
+    assert fake_profile in marker.read_text(encoding="utf-8")
+
+
+def test_launch_env_preserves_api_key_for_api_key_auth_mode(tmp_path, monkeypatch):
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest, config_path = _register_ready_with_yaml(conn, tmp_path, _API_KEY_CONFIG_YAML)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-should-reach-child")
+    marker = tmp_path / "key.txt"
+    exe = _fake_exe(tmp_path, "fake_key.bat", f'echo %ANTHROPIC_API_KEY%> "{marker}"\r\nexit /b 0\r\n')
+    cmd = enqueue_command(conn, repo_id, mode="ALL", issue_ids=None,
+                          expected_issues_digest=digest, idempotency_key="k1")
+    claimed = claim_next_launchable_command(conn, repo_id)
+    launch_claimed_command(conn, claimed, executable=exe, config_path=str(config_path))
+    for _ in range(50):
+        if marker.exists():
+            break
+        time.sleep(0.1)
+    assert marker.exists()
+    assert "sk-ant-test-should-reach-child" in marker.read_text(encoding="utf-8")
+
+
+def test_launch_env_excludes_api_key_for_subscription_auth_mode(tmp_path, monkeypatch):
+    """ADR-18 (CLAUDE.md): keep ANTHROPIC_API_KEY unset for subscription
+    mode -- even if the Dashboard's own process happens to have one set,
+    it must never leak into a subscription-mode child (billing/routing
+    credentials must not leak into the engine)."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest, config_path = _register_ready(conn, tmp_path)  # auth_mode: subscription
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-must-not-leak")
+    marker = tmp_path / "key.txt"
+    exe = _fake_exe(tmp_path, "fake_key.bat", f'echo [%ANTHROPIC_API_KEY%]> "{marker}"\r\nexit /b 0\r\n')
+    cmd = enqueue_command(conn, repo_id, mode="ALL", issue_ids=None,
+                          expected_issues_digest=digest, idempotency_key="k1")
+    claimed = claim_next_launchable_command(conn, repo_id)
+    launch_claimed_command(conn, claimed, executable=exe, config_path=str(config_path))
+    for _ in range(50):
+        if marker.exists():
+            break
+        time.sleep(0.1)
+    assert marker.exists()
+    content = marker.read_text(encoding="utf-8")
+    assert "sk-ant-must-not-leak" not in content
+    assert "[]" in content or "[%ANTHROPIC_API_KEY%]" in content
+
+
+# ── ADR-30 review finding 5: stdout/stderr pipe deadlock ──────────────────
+
+def test_multi_megabyte_stdout_and_stderr_do_not_deadlock_the_launcher(tmp_path):
+    """A child producing output larger than the OS pipe buffer (~64KB on
+    Windows) must still finish -- the launcher must continuously drain
+    stdout/stderr rather than only reading them once, non-blockingly, after
+    poll() reports exit. If the launcher only reads on reconciliation (the
+    pre-fix behavior), the child blocks forever on its own write() call
+    once the unread pipe fills, and this test times out waiting for
+    STATUS_COMPLETED instead of reaching it."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest, config_path = _register_ready(conn, tmp_path)
+    exe = _fake_exe(
+        tmp_path, "fake_big_output.bat",
+        'powershell -NoProfile -Command '
+        '"[Console]::Out.Write((\'X\' * 200 + [Environment]::NewLine) * 20000)"\r\n'
+        'powershell -NoProfile -Command '
+        '"[Console]::Error.Write((\'Y\' * 200 + [Environment]::NewLine) * 20000)"\r\n'
+        'exit /b 0\r\n',
+    )
+    cmd = enqueue_command(conn, repo_id, mode="ALL", issue_ids=None,
+                          expected_issues_digest=digest, idempotency_key="k1")
+    claimed = claim_next_launchable_command(conn, repo_id)
+    launched = launch_claimed_command(conn, claimed, executable=exe, config_path=str(config_path))
+    assert launched["status"] == STATUS_LAUNCHED
+
+    reconciled = launched
+    try:
+        for _ in range(200):  # up to ~20s
+            reconciled = reconcile_launched_command(conn, get_command(conn, cmd["id"]))
+            if reconciled["status"] != STATUS_LAUNCHED:
+                break
+            time.sleep(0.1)
+    finally:
+        if reconciled["status"] == STATUS_LAUNCHED and launched["processPid"] is not None:
+            import subprocess as _sp
+            _sp.run(["taskkill", "/PID", str(launched["processPid"]), "/T", "/F"],
+                   capture_output=True)
+    assert reconciled["status"] == STATUS_COMPLETED, (
+        f"launcher deadlocked or failed instead of completing: {reconciled}"
+    )
+
+
+# ── ADR-30 review finding 6: batch workflow status is event-derived ───────
+
+def test_extract_correlation_hint_finds_the_token():
+    from draindeck_dashboard.run_launcher import _extract_correlation_hint
+    head = b"[startup] checked out agent-work\nDRAINDECK_RUN_ID=run-abc-123\nmore\n"
+    assert _extract_correlation_hint(head) == "run-abc-123"
+
+
+def test_extract_correlation_hint_absent_returns_none():
+    from draindeck_dashboard.run_launcher import _extract_correlation_hint
+    assert _extract_correlation_hint(b"nothing relevant in this output at all") is None
+
+
+def _seed_confirmable_run(conn, repo_id: int, run_id: str) -> None:
+    conn.execute(
+        "INSERT INTO run_views (repository_id, identity_generation_id, run_id, outcome, "
+        "inconsistent, updated_at) VALUES (?, 1, ?, 'COMPLETED', 0, '2026-08-30T00:00:00Z')",
+        (repo_id, run_id),
+    )
+    conn.execute(
+        "INSERT INTO checkpoints (repository_id, identity_generation_id, last_record_cursor, "
+        "last_record_hash, halted_oversized, reduced_confidence, availability, updated_at) "
+        "VALUES (?, 1, NULL, NULL, 0, 0, 'AVAILABLE', '2026-08-30T00:00:00Z')",
+        (repo_id,),
+    )
+    conn.commit()
+
+
+def test_new_run_is_correlated_only_after_observed_runstarted(tmp_path):
+    """A bounded stdout hint (runtime.main prints "DRAINDECK_RUN_ID=..."
+    immediately after the fsynced RunStarted) is persisted as
+    run_id_correlation only once confirmed against a real run_views row --
+    exactly the "observed RunStarted" this test's name refers to."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest, config_path = _register_ready(conn, tmp_path)
+    run_id = "run-20260830T000000Z-11111111-1111-1111-1111-111111111111"
+    _seed_confirmable_run(conn, repo_id, run_id)
+    exe = _fake_exe(tmp_path, "fake_correlated.bat", f"echo DRAINDECK_RUN_ID={run_id}\r\nexit /b 0\r\n")
+    cmd = enqueue_command(conn, repo_id, mode="ALL", issue_ids=None,
+                          expected_issues_digest=digest, idempotency_key="k1")
+    claimed = claim_next_launchable_command(conn, repo_id)
+    launch_claimed_command(conn, claimed, executable=exe, config_path=str(config_path))
+    reconciled = get_command(conn, cmd["id"])
+    for _ in range(50):
+        reconciled = reconcile_launched_command(conn, get_command(conn, cmd["id"]))
+        if reconciled["status"] != STATUS_LAUNCHED:
+            break
+        time.sleep(0.1)
+    assert reconciled["status"] == STATUS_COMPLETED
+    assert reconciled["runIdCorrelation"] == run_id
+
+
+def test_correlation_hint_never_trusted_without_confirming_run_views(tmp_path):
+    """A stdout hint naming a run_id with no matching run_views row (spoofed,
+    stale, or simply not yet indexed) must never be trusted --
+    run_id_correlation stays None; status/queue behavior is unaffected."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest, config_path = _register_ready(conn, tmp_path)
+    unconfirmed_run_id = "run-20260830T000000Z-not-a-real-observed-run"
+    exe = _fake_exe(tmp_path, "fake_unconfirmed.bat",
+                    f"echo DRAINDECK_RUN_ID={unconfirmed_run_id}\r\nexit /b 0\r\n")
+    cmd = enqueue_command(conn, repo_id, mode="ALL", issue_ids=None,
+                          expected_issues_digest=digest, idempotency_key="k1")
+    claimed = claim_next_launchable_command(conn, repo_id)
+    launch_claimed_command(conn, claimed, executable=exe, config_path=str(config_path))
+    reconciled = get_command(conn, cmd["id"])
+    for _ in range(50):
+        reconciled = reconcile_launched_command(conn, get_command(conn, cmd["id"]))
+        if reconciled["status"] != STATUS_LAUNCHED:
+            break
+        time.sleep(0.1)
+    assert reconciled["status"] == STATUS_COMPLETED
+    assert reconciled["runIdCorrelation"] is None
+
+
+def test_correlation_hint_absent_leaves_correlation_none(tmp_path):
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest, config_path = _register_ready(conn, tmp_path)
+    exe = _fake_exe(tmp_path, "fake_no_hint.bat", "echo nothing relevant here\r\nexit /b 0\r\n")
+    cmd = enqueue_command(conn, repo_id, mode="ALL", issue_ids=None,
+                          expected_issues_digest=digest, idempotency_key="k1")
+    claimed = claim_next_launchable_command(conn, repo_id)
+    launch_claimed_command(conn, claimed, executable=exe, config_path=str(config_path))
+    reconciled = get_command(conn, cmd["id"])
+    for _ in range(50):
+        reconciled = reconcile_launched_command(conn, get_command(conn, cmd["id"]))
+        if reconciled["status"] != STATUS_LAUNCHED:
+            break
+        time.sleep(0.1)
+    assert reconciled["status"] == STATUS_COMPLETED
+    assert reconciled["runIdCorrelation"] is None
+
+
+def test_run_command_columns_still_carry_run_id_correlation():
     from draindeck_dashboard.run_queue import _COMMAND_COLUMNS
     assert "run_id_correlation" in _COMMAND_COLUMNS
 

@@ -85,16 +85,19 @@ def test_queued_position_is_not_rendered_as_runtime_progress():
     assert "RunFinished" not in _RUN_CONTROL_SOURCE and "RunStarted" not in _RUN_CONTROL_SOURCE
 
 
-def test_unresolved_run_uses_no_controlled_finish_observed_wording():
-    """Reconciled: run-control.js deliberately renders no runtime workflow
-    outcome text at all (the queue's own status vocabulary -- QUEUED/
-    CLAIMED/LAUNCHED/etc -- is a separate, disjoint axis, per ADR-30
-    decision 3). The existing, already-tested runs.js/format.js already
-    render this exact phrase for the one axis it belongs to (event-derived
-    run outcome) -- verified here by reference, not duplicated."""
+def test_unresolved_run_reuses_the_canonical_no_controlled_finish_wording():
+    """ADR-30 review blocker 1: run-control.js now DOES render a runtime
+    outcome for a COMPLETED (process-exit-0) queue command -- process-exit
+    facts and runtime workflow outcome must be shown as two distinct axes,
+    never one implying the other. It reuses format.js's own canonical
+    `runDisplayOutcome`/`NO_CONTROLLED_FINISH_TEXT` (the same helper the
+    event-derived /runs endpoint already uses) rather than a second,
+    hardcoded copy of the wording, so an unresolved run is never labelled
+    "Running" here either."""
     format_source = (_JS_DIR / "format.js").read_text(encoding="utf-8")
     assert "no controlled finish observed" in format_source
-    assert "no controlled finish observed" not in _RUN_CONTROL_SOURCE  # not a second source of this wording
+    assert "no controlled finish observed" not in _RUN_CONTROL_SOURCE  # never hardcoded a second time
+    assert "runDisplayOutcome" in _RUN_CONTROL_SOURCE  # reuses the canonical helper
 
 
 def test_controls_disable_during_unavailable_or_inconsistent_state():

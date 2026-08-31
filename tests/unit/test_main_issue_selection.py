@@ -115,8 +115,8 @@ def test_runtime_revalidates_selection_after_workspace_ownership_and_recovery(tm
 
     stale_digest = hashlib.sha256(b"stale content").hexdigest()
     args = SimpleNamespace(issue_ids=["a"], all_issues=False, issues_digest=stale_digest)
-    allowed, error = _validate_selection(args, cfg, proj)
-    assert allowed is None
+    plan, error = _validate_selection(args, cfg, proj)
+    assert plan is None
     assert "mismatch" in error
 
 
@@ -142,9 +142,11 @@ def test_runtime_never_activates_unselected_pending_issue_via_validate(tmp_path)
     cfg = _cfg(repo)
     proj = _proj_with({})
     args = SimpleNamespace(issue_ids=["a"], all_issues=False, issues_digest=digest)
-    allowed, error = _validate_selection(args, cfg, proj)
+    plan, error = _validate_selection(args, cfg, proj)
     assert error is None
-    assert allowed == frozenset({"a"})
+    assert plan.allowed_ids == frozenset({"a"})
+    assert plan.ordered_ids == ("a",)
+    assert plan.dependencies == {"a": (), "b": ()}
 
 
 def test_runtime_run_all_uses_current_nonterminal_set(tmp_path):
@@ -155,9 +157,9 @@ def test_runtime_run_all_uses_current_nonterminal_set(tmp_path):
     cfg = _cfg(repo)
     proj = _proj_with({"b": "DONE"})
     args = SimpleNamespace(issue_ids=None, all_issues=True, issues_digest=digest)
-    allowed, error = _validate_selection(args, cfg, proj)
+    plan, error = _validate_selection(args, cfg, proj)
     assert error is None
-    assert allowed == frozenset({"a"})
+    assert plan.allowed_ids == frozenset({"a"})
 
 
 def test_runtime_run_all_zero_nonterminal_is_clean_noop(tmp_path):
@@ -176,8 +178,8 @@ def test_selection_digest_must_be_lowercase_hex_64(tmp_path):
     cfg = _cfg(tmp_path)
     proj = _proj_with({})
     args = SimpleNamespace(issue_ids=["a"], all_issues=False, issues_digest="not-hex")
-    allowed, error = _validate_selection(args, cfg, proj)
-    assert allowed is None
+    plan, error = _validate_selection(args, cfg, proj)
+    assert plan is None
     assert "64 lowercase hex" in error
 
 
@@ -189,8 +191,8 @@ def test_selection_reports_every_blocker_not_just_first(tmp_path):
     cfg = _cfg(repo)
     proj = _proj_with({})  # neither a nor b has any dependency here; use unknown ids instead
     args = SimpleNamespace(issue_ids=["ghost1", "ghost2"], all_issues=False, issues_digest=digest)
-    allowed, error = _validate_selection(args, cfg, proj)
-    assert allowed is None
+    plan, error = _validate_selection(args, cfg, proj)
+    assert plan is None
     assert "ghost1" in error and "ghost2" in error
 
 
@@ -268,3 +270,5 @@ def test_selected_run_passes_allowed_issue_ids_to_orchestrator(tmp_path):
     exit_code, kwargs = _drive_selected(tmp_path, ["a"], digest, proj_issue_states={})
     assert exit_code == 0
     assert kwargs.get("allowed_issue_ids") == frozenset({"a"})
+    assert kwargs.get("selection_order") == ("a",)
+    assert kwargs.get("selection_dependencies") == {"a": (), "b": ()}

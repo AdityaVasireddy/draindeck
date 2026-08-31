@@ -11,6 +11,7 @@
 import { ApiError, apiFetch } from "../api.js";
 import { openDialog } from "../components/dialog.js";
 import { clear, el, syncList } from "../dom.js";
+import { runDisplayOutcome } from "../format.js";
 
 const _TERMINAL_STATES = new Set(["DONE", "NEEDS_HUMAN", "NEEDS_DECOMPOSITION"]);
 const _STATE_TONE = {
@@ -191,6 +192,7 @@ function confirmAndSubmit(root, repoId, ctx, { mode, issueIds, digest, plan, bud
 async function submitPlan(root, repoId, ctx, mode) {
   const data = root.__runControlData;
   if (!data) return;
+  clearStatus(root);
   const selection = root.__runControlSelection;
   const issueIds = mode === "SELECTED" ? Array.from(selection) : undefined;
   let plan;
@@ -213,6 +215,14 @@ async function submitPlan(root, repoId, ctx, mode) {
     return;
   }
   clearErrors(root);
+  if (plan.orderedIds.length === 0) {
+    // ADR-30 review finding 9: a valid, zero-non-terminal-issue plan is a
+    // clean no-op -- no confirmation dialog, no queue row, no process, and
+    // no runtime workflow lifecycle event of any kind. Say so explicitly
+    // rather than silently returning to an unchanged queue view.
+    showStatus(root, noRunSummaryText(plan));
+    return;
+  }
   let projectPath;
   try {
     const repo = await apiFetch(`/api/repositories/${repoId}`);
@@ -223,9 +233,40 @@ async function submitPlan(root, repoId, ctx, mode) {
   });
 }
 
+export function noRunSummaryText(plan) {
+  const total = plan.totalTerminalCount || 0;
+  if (total === 0) return "Nothing to run; no issues are configured.";
+  return `Nothing to run; ${total} issue${total === 1 ? " is" : "s are"} already terminal.`;
+}
+
+function showStatus(root, text) {
+  const node = root.querySelector("#run-control-status");
+  node.textContent = text;
+  node.hidden = false;
+}
+
+function clearStatus(root) {
+  const node = root.querySelector("#run-control-status");
+  node.hidden = true;
+  node.textContent = "";
+}
+
 export function queueStatusText(command) {
-  return command.status === "QUEUED" && command.queuePosition
-    ? `QUEUED (position ${command.queuePosition})` : command.status;
+  if (command.status === "QUEUED" && command.queuePosition) {
+    return `QUEUED (position ${command.queuePosition})`;
+  }
+  if (command.status === "COMPLETED") {
+    // ADR-30 review blocker 1: COMPLETED here is exclusively a
+    // process-exit-0 fact -- runtime.main documents that both the
+    // runtime's own COMPLETED and INTERRUPTED outcomes can leave that
+    // same exit code, so it must never be presented as batch success on
+    // its own. Reuses format.js's own canonical runDisplayOutcome (the
+    // same helper the event-derived /runs endpoint already uses) rather
+    // than a second, hardcoded copy of its wording -- an unresolved run
+    // is therefore never labelled "Running" here either.
+    return `process exited — runtime: ${runDisplayOutcome(command.runtimeOutcome)}`;
+  }
+  return command.status;
 }
 
 export function queueModeSummaryText(command) {
@@ -299,6 +340,10 @@ export async function render(root, params, ctx) {
   root.appendChild(el("div", {
     id: "run-control-errors", className: "state-panel state-panel--error",
     role: "alert", tabindex: "-1", hidden: true,
+  }));
+  root.appendChild(el("div", {
+    id: "run-control-status", className: "state-panel state-panel--success",
+    role: "status", hidden: true,
   }));
 
   const selectAll = el("input", { type: "checkbox", id: "run-control-select-all" });

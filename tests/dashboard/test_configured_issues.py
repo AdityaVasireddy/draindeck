@@ -127,6 +127,48 @@ def test_config_and_issues_file_are_reread_after_registration(tmp_path):
     assert second["issuesFileRevision"] != first["issuesFileRevision"]
 
 
+# ── ADR-30 review finding 3: config ownership is revalidated on every read ──
+
+def test_config_edited_to_point_elsewhere_after_registration_refuses_read(tmp_path):
+    """A registered repository's config.local.yaml can be edited in place
+    (same canonical path) after registration. If it now resolves
+    project.repository to a different repository -- even one with a
+    byte-identical Issues.md -- every subsequent read must fail closed,
+    never silently serve the other repository's issues."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo = _git_worktree(tmp_path)
+    (repo / "Issues.md").write_text(_TWO_ISSUES, encoding="utf-8")
+    registration = _register(conn, repo)
+    assert get_configured_issues(conn, registration["id"])["issues"]  # sanity: works first
+
+    other_repo = _git_worktree(tmp_path, "other")
+    (other_repo / "Issues.md").write_text(_TWO_ISSUES, encoding="utf-8")  # byte-identical
+    config_path = Path(registration["configPath"])
+    config_path.write_text(
+        _VALID_CONFIG_YAML.format(repository=str(other_repo), issues_file="Issues.md"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfiguredIssuesError) as exc_info:
+        get_configured_issues(conn, registration["id"])
+    assert exc_info.value.code == "CONFIG_REPOSITORY_DRIFT"
+
+
+def test_config_edited_to_change_event_log_path_after_registration_refuses_read(tmp_path):
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo = _git_worktree(tmp_path)
+    (repo / "Issues.md").write_text(_TWO_ISSUES, encoding="utf-8")
+    registration = _register(conn, repo)
+    assert get_configured_issues(conn, registration["id"])["issues"]  # sanity: works first
+
+    config_path = Path(registration["configPath"])
+    drifted_yaml = _VALID_CONFIG_YAML.format(repository=str(repo), issues_file="Issues.md")
+    drifted_yaml += "\nevent_log:\n  path: a-different-place/events.jsonl\n"
+    config_path.write_text(drifted_yaml, encoding="utf-8")
+    with pytest.raises(ConfiguredIssuesError) as exc_info:
+        get_configured_issues(conn, registration["id"])
+    assert exc_info.value.code == "CONFIG_LOG_PATH_DRIFT"
+
+
 def test_missing_issues_file_returns_typed_error_not_partial_list(tmp_path):
     conn = connect_and_init(tmp_path / "d.sqlite3")
     repo = _git_worktree(tmp_path)

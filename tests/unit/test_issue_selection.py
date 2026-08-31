@@ -203,6 +203,33 @@ def test_run_all_refuses_unfinished_dependency_outside_result_set():
     assert result.blockers[0].missing_dependency_id == "outside"
 
 
+# ── ADR-30 review finding 8: run-all refuses an ACTIVE issue outside the file ──
+
+def test_run_all_refuses_when_an_active_issue_is_outside_the_file():
+    specs = [_spec("a")]
+    states = {"a": "PENDING", "orphan-active": "ACTIVE"}  # not in specs at all
+    result = plan_run_all(specs, states)
+    assert result.ok is False
+    assert result.omitted_active_ids == ("orphan-active",)
+    assert result.ordered_ids == ()
+
+
+def test_run_all_names_every_omitted_active_issue():
+    specs = []
+    states = {"z-active": "ACTIVE", "a-active": "ACTIVE"}
+    result = plan_run_all(specs, states)
+    assert result.ok is False
+    assert result.omitted_active_ids == ("a-active", "z-active")  # sorted, both named
+
+
+def test_run_all_active_issue_inside_the_file_does_not_refuse():
+    specs = [_spec("a"), _spec("b")]
+    states = {"a": "ACTIVE", "b": "PENDING"}
+    result = plan_run_all(specs, states)
+    assert result.ok is True
+    assert set(result.ordered_ids) == {"a", "b"}
+
+
 def test_admission_never_reads_status_text_for_state():
     """Every fixture spec's body contains 'STATUS: DONE', but no fixture
     ever puts the corresponding id in the states map -- if the planner read

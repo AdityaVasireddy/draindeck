@@ -94,6 +94,169 @@ def _enqueue_all(conn, repo_id, digest, key):
                            expected_issues_digest=digest, idempotency_key=key)
 
 
+# ── ADR-30 review finding 9: explicit terminal count summaries ─────────────
+
+def test_plan_run_reports_torun_and_terminal_state_counts(tmp_path):
+    from draindeck_dashboard.run_queue import plan_run
+
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest = _register_ready(conn, tmp_path)  # issues a, b, both PENDING
+    conn.execute(
+        "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
+        "VALUES (?, 1, 'a', 'DONE', '2026-08-30T00:00:00Z')", (repo_id,),
+    )
+    conn.commit()
+    result = plan_run(conn, repo_id, mode="ALL", issue_ids=None, expected_issues_digest=digest)
+    assert result["ok"] is True
+    assert result["toRunCount"] == 1  # only b
+    assert result["totalTerminalCount"] == 1
+    assert result["terminalCounts"] == {"DONE": 1, "NEEDS_HUMAN": 0, "NEEDS_DECOMPOSITION": 0}
+
+
+def test_plan_run_terminal_counts_cover_all_three_states(tmp_path):
+    from draindeck_dashboard.run_queue import plan_run
+
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo = _git_worktree(tmp_path, "three")
+    (repo / "Issues.md").write_text(
+        "## a: A\nbody\n\n## b: B\nbody\n\n## c: C\nbody\n", encoding="utf-8", newline="",
+    )
+    draindeck_dir = repo / ".draindeck"
+    draindeck_dir.mkdir()
+    config_path = draindeck_dir / "config.local.yaml"
+    config_path.write_text(_VALID_CONFIG_YAML.format(repository=str(repo)), encoding="utf-8")
+    registration = register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    repo_id = registration["id"]
+    conn.execute(
+        "INSERT INTO read_model_state (repository_id, identity_generation_id, status) "
+        "VALUES (?, 1, 'READY')", (repo_id,),
+    )
+    for iid, state in (("a", "DONE"), ("b", "NEEDS_HUMAN"), ("c", "NEEDS_DECOMPOSITION")):
+        conn.execute(
+            "INSERT INTO issue_views (repository_id, identity_generation_id, issue_id, state, updated_at) "
+            "VALUES (?, 1, ?, ?, '2026-08-30T00:00:00Z')", (repo_id, iid, state),
+        )
+    conn.commit()
+    from draindeck_dashboard.configured_issues import get_configured_issues
+    digest = get_configured_issues(conn, repo_id)["issuesFileRevision"]
+
+    result = plan_run(conn, repo_id, mode="ALL", issue_ids=None, expected_issues_digest=digest)
+    assert result["ok"] is True
+    assert result["toRunCount"] == 0
+    assert result["totalTerminalCount"] == 3
+    assert result["terminalCounts"] == {"DONE": 1, "NEEDS_HUMAN": 1, "NEEDS_DECOMPOSITION": 1}
+
+
+# ── ADR-30 review blocker 1: process exit is not runtime batch completion ──
+
+def _seed_confirmable_run_outcome(conn, repo_id: int, run_id: str, outcome) -> None:
+    conn.execute(
+        "INSERT INTO run_views (repository_id, identity_generation_id, run_id, outcome, "
+        "inconsistent, updated_at) VALUES (?, 1, ?, ?, 0, '2026-08-31T00:00:00Z')",
+        (repo_id, run_id, outcome),
+    )
+    conn.execute(
+        "INSERT INTO checkpoints (repository_id, identity_generation_id, last_record_cursor, "
+        "last_record_hash, halted_oversized, reduced_confidence, availability, updated_at) "
+        "VALUES (?, 1, NULL, NULL, 0, 0, 'AVAILABLE', '2026-08-31T00:00:00Z')",
+        (repo_id,),
+    )
+    conn.commit()
+
+
+def test_command_has_no_runtime_outcome_without_confirmed_correlation(tmp_path):
+    """An exit-0 process with no confirmed event correlation must not be
+    displayed as completed -- runtimeOutcome stays None even though the
+    queue's own status is COMPLETED."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest = _register_ready(conn, tmp_path)
+    cmd = _enqueue_all(conn, repo_id, digest, "k1")
+    fetched = get_command(conn, cmd["id"])
+    assert fetched["runtimeOutcome"] is None
+    assert fetched["runIdCorrelation"] is None
+
+
+def test_command_shows_confirmed_interrupted_outcome_not_completed(tmp_path):
+    """An exit-0 process whose confirmed event outcome is INTERRUPTED must
+    surface INTERRUPTED, never a fabricated/implied COMPLETED."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest = _register_ready(conn, tmp_path)
+    cmd = _enqueue_all(conn, repo_id, digest, "k1")
+    run_id = "run-interrupted-1"
+    _seed_confirmable_run_outcome(conn, repo_id, run_id, "INTERRUPTED")
+    conn.execute("UPDATE run_commands SET status = ?, run_id_correlation = ? WHERE id = ?",
+                (STATUS_COMPLETED, run_id, cmd["id"]))
+    conn.commit()
+
+    fetched = get_command(conn, cmd["id"])
+    assert fetched["status"] == STATUS_COMPLETED  # the queue's own process-exit fact, unchanged
+    assert fetched["runtimeOutcome"] == "INTERRUPTED"  # the real, event-derived outcome
+
+
+def test_command_shows_confirmed_completed_outcome_correctly(tmp_path):
+    """An observed event-derived COMPLETED outcome is displayed correctly."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest = _register_ready(conn, tmp_path)
+    cmd = _enqueue_all(conn, repo_id, digest, "k1")
+    run_id = "run-completed-1"
+    _seed_confirmable_run_outcome(conn, repo_id, run_id, "COMPLETED")
+    conn.execute("UPDATE run_commands SET status = ?, run_id_correlation = ? WHERE id = ?",
+                (STATUS_COMPLETED, run_id, cmd["id"]))
+    conn.commit()
+
+    fetched = get_command(conn, cmd["id"])
+    assert fetched["runtimeOutcome"] == "COMPLETED"
+
+
+def test_command_with_confirmed_correlation_but_no_finish_yet_has_no_outcome(tmp_path):
+    """RunStarted observed and confirmed, but no RunFinished yet -- the
+    projection's own outcome column is NULL. Must not be displayed as
+    completed either (never fabricates an outcome the projection itself
+    doesn't have)."""
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest = _register_ready(conn, tmp_path)
+    cmd = _enqueue_all(conn, repo_id, digest, "k1")
+    run_id = "run-unresolved-1"
+    _seed_confirmable_run_outcome(conn, repo_id, run_id, None)
+    conn.execute("UPDATE run_commands SET status = ?, run_id_correlation = ? WHERE id = ?",
+                (STATUS_COMPLETED, run_id, cmd["id"]))
+    conn.commit()
+
+    fetched = get_command(conn, cmd["id"])
+    assert fetched["runtimeOutcome"] is None
+
+
+# ── ADR-30 review finding 3: planning and dequeue refuse on config drift ───
+
+def test_plan_and_dequeue_refuse_when_registered_config_drifts_to_another_repository(tmp_path):
+    from draindeck_dashboard.repositories import get_repository
+    from draindeck_dashboard.run_queue import plan_run
+
+    conn = connect_and_init(tmp_path / "d.sqlite3")
+    repo_id, digest = _register_ready(conn, tmp_path, name="repo")
+    queued = _enqueue_all(conn, repo_id, digest, "drift-k1")
+    assert queued["status"] == STATUS_QUEUED
+
+    other_repo = _git_worktree(tmp_path, "other")
+    (other_repo / "Issues.md").write_text(
+        "## a: A\nbody\n\n## b: B\nbody\n", encoding="utf-8", newline="",
+    )  # byte-identical to repo's Issues.md
+    registration = get_repository(conn, repo_id)
+    Path(registration["configPath"]).write_text(
+        _VALID_CONFIG_YAML.format(repository=str(other_repo)), encoding="utf-8",
+    )
+
+    with pytest.raises(DashboardApiError) as exc_info:
+        plan_run(conn, repo_id, mode="ALL", issue_ids=None, expected_issues_digest=digest)
+    assert exc_info.value.code == "CONFIG_REPOSITORY_DRIFT"
+
+    claimed = claim_next_launchable_command(conn, repo_id)
+    assert claimed is not None
+    revalidated = revalidate_claimed_command(conn, claimed)
+    assert revalidated["status"] == STATUS_REFUSED
+    assert "no longer resolves to the registered repository" in (revalidated["refusalReason"] or "")
+
+
 def test_first_valid_command_for_repo_becomes_launch_candidate(tmp_path):
     conn = connect_and_init(tmp_path / "d.sqlite3")
     repo_id, digest = _register_ready(conn, tmp_path)

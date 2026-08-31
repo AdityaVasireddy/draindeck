@@ -397,6 +397,13 @@ def _emit_run_started(log: EventLog, proj: StateProjection, cfg: Config, run_id:
     _validate_lifecycle_event(candidate)
     eid = log.append(candidate)
     proj.apply(Event(type=EventType.RUN_STARTED, run_id=run_id, payload=payload, event_id=eid))
+    # ADR-30 review finding 6 / spec "Frozen event schema": a bounded,
+    # machine-readable stdout line immediately after the fsynced RunStarted
+    # above, so a launcher can correlate a spawned process with its run. It
+    # is only a hint -- adds no event, schema, or payload field, and a
+    # consumer must independently confirm run_id through the normal
+    # observer/indexed evidence before trusting it for anything.
+    print(f"DRAINDECK_RUN_ID={run_id}")
 
 
 def _emit_run_finished(log: EventLog, proj: StateProjection, run_id: str, outcome: str) -> None:
@@ -448,6 +455,22 @@ def _format_plan_refusal(result) -> str:
     return "; ".join(parts) if parts else "selection refused"
 
 
+@dataclass(frozen=True)
+class SelectionPlan:
+    """ADR-30 review finding 2: carries the validated topological order and
+    a current-configured-file dependency map (built from the freshly
+    re-read/re-parsed issue file, at this same validation call) through into
+    the Orchestrator, so historical IssueCreated ordering/dependency
+    metadata can never override a freshly validated selection or run-all
+    batch. `dependencies` covers every issue in the freshly parsed file, not
+    only the selected/run-all subset, since a dependency can reference an
+    issue outside the batch."""
+
+    allowed_ids: "frozenset[str]"
+    ordered_ids: "tuple[str, ...]"
+    dependencies: "dict[str, tuple[str, ...]]"
+
+
 class SelectionRunAllEmpty(Exception):
     """Raised by _validate_selection for the one successful-but-early-exit
     case: a valid --all-issues batch with zero non-terminal issues remaining.
@@ -456,7 +479,7 @@ class SelectionRunAllEmpty(Exception):
     into the (allowed_ids, error) return shape below."""
 
 
-def _validate_selection(args, cfg: Config, proj: StateProjection) -> tuple[Optional[frozenset], Optional[str]]:
+def _validate_selection(args, cfg: Config, proj: StateProjection) -> tuple[Optional[SelectionPlan], Optional[str]]:
     """ADR-30 sec2: re-reads the configured issue file fresh (never the
     Dashboard's cached copy), verifies the issues-digest against those exact
     bytes, replays authoritative state from `proj` (already fully recovered
@@ -497,7 +520,13 @@ def _validate_selection(args, cfg: Config, proj: StateProjection) -> tuple[Optio
         return None, _format_plan_refusal(result)
     if all_issues and not result.ordered_ids:
         raise SelectionRunAllEmpty()
-    return frozenset(result.ordered_ids), None
+    dependencies = {s.id: tuple(s.depends_on) for s in specs}
+    plan = SelectionPlan(
+        allowed_ids=frozenset(result.ordered_ids),
+        ordered_ids=tuple(result.ordered_ids),
+        dependencies=dependencies,
+    )
+    return plan, None
 
 
 def _ingest_issues(cfg: Config, log: EventLog, proj: StateProjection,
@@ -540,7 +569,7 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
     # supplying neither --issue nor --all-issues get (None, None) and are
     # completely unaffected.
     try:
-        allowed_issue_ids, selection_error = _validate_selection(args, cfg, proj)
+        selection_plan, selection_error = _validate_selection(args, cfg, proj)
     except SelectionRunAllEmpty:
         print("[run-all] no non-terminal issues remain — successful no-op, "
               "no run started")
@@ -628,7 +657,9 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         budget=BudgetManager(cfg.budget.max_executions_per_run,
                              cfg.budget.hard_stop_proxy_cost_per_run_usd),
         artifacts_dir=artifacts_dir, run_id=run_id,
-        allowed_issue_ids=allowed_issue_ids,
+        allowed_issue_ids=selection_plan.allowed_ids if selection_plan else None,
+        selection_order=selection_plan.ordered_ids if selection_plan else None,
+        selection_dependencies=selection_plan.dependencies if selection_plan else None,
     )
     # COMPLETED and INTERRUPTED both leave exit_code at 0 today (an existing,
     # unchanged property of this loop) -- outcome is therefore decided by

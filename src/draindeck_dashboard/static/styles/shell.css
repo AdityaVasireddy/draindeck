@@ -258,6 +258,12 @@
 
 #main-content {
   flex: 1;
+  /* A flex item's default min-width is `auto` -- without this, #main-content
+     would refuse to shrink below the intrinsic (unconstrained) width of its
+     widest descendant, which can silently defeat a descendant's own
+     `overflow-x: auto` containment at narrow viewports (ADR-30 review
+     blocker 2). */
+  min-width: 0;
   padding: var(--space-lg);
   /* Sticky utility bar establishes scroll-padding so a keyboard focus
      target never lands obscured beneath it (WCAG 2.2 Focus Not Obscured). */

@@ -373,21 +373,49 @@ def test_duplicate_canonical_config_or_log_path_is_conflict(tmp_path):
     runtime.init.service.canonical_config_path) can only back one
     registration row. Re-registering the same repository a second time hits
     that uniqueness constraint rather than silently creating a second
-    launch-capable row for the same target."""
+    launch-capable row for the same target.
+
+    Since config is now the sole source of truth for logPath whenever
+    configPath is supplied (finding 3), a second registration of the same
+    config necessarily also derives the identical logPath -- so it collides
+    on canonical_config_path AND canonical_log_path simultaneously.
+    register_repository checks config-path uniqueness first specifically so
+    this test (and any other identical-repeat attempt) surfaces
+    CONFIG_PATH_ALREADY_REGISTERED rather than the log-path variant."""
     conn = connect_and_init(tmp_path / "dash.sqlite3")
     repo = _git_worktree(tmp_path)
     config_path = _write_canonical_config(repo)
     register_repository(conn, project_path=str(repo), config_path=str(config_path))
 
-    # Give the second attempt a distinct explicit logPath so only the
-    # config-path collision is under test (both would otherwise collide,
-    # since the derived logPath is also deterministic per repository).
+    with pytest.raises(RegistrationError) as exc_info:
+        register_repository(conn, project_path=str(repo), config_path=str(config_path))
+    assert exc_info.value.code == "CONFIG_PATH_ALREADY_REGISTERED"
+
+
+# ── ADR-30 review finding 3: config is the sole source of truth for logPath ─
+
+def test_config_path_with_mismatching_explicit_log_path_is_rejected(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
     with pytest.raises(RegistrationError) as exc_info:
         register_repository(
             conn, project_path=str(repo), config_path=str(config_path),
             log_path=str(tmp_path / "a-different-log.jsonl"),
         )
-    assert exc_info.value.code == "CONFIG_PATH_ALREADY_REGISTERED"
+    assert exc_info.value.code == "LOG_PATH_CONFIG_MISMATCH"
+    assert list_repositories(conn) == []
+
+
+def test_config_path_with_matching_explicit_log_path_is_accepted(tmp_path):
+    conn = connect_and_init(tmp_path / "dash.sqlite3")
+    repo = _git_worktree(tmp_path)
+    config_path = _write_canonical_config(repo)
+    derived = str(repo / "state" / "events.jsonl")
+    result = register_repository(
+        conn, project_path=str(repo), config_path=str(config_path), log_path=derived,
+    )
+    assert result["logPath"] == derived
 
 
 def test_legacy_registration_without_config_is_observation_only_until_repaired(tmp_path):

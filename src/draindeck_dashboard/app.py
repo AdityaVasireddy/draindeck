@@ -39,6 +39,7 @@ from .diffs import compute_diff
 from .errors import DashboardApiError, InvalidFilterError, NotFoundError, register_error_handlers
 from .health import build_health
 from .projections import RUN_METADATA_UNAVAILABLE
+from .queue_scheduler import QueueDrainScheduler
 from .repositories import (
     delete_repository,
     get_repository,
@@ -208,18 +209,26 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     reconcile_ambiguous_claims_on_startup(conn)
     tailer = ChangeTailer(conn)
     scheduler = Scheduler(conn, cfg.observer_executable)
+    queue_scheduler = QueueDrainScheduler(conn, cfg.observer_executable)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        # One database tailer, and one ingestion scheduler, per process
-        # (docs/19): started once here, not per request/connection. The
+        # One database tailer, one ingestion scheduler, and one queue-drain
+        # scheduler, per process (docs/19 / ADR-30 review finding 4):
+        # started once here, not per request/connection. The ingestion
         # scheduler only actually indexes while this process holds the
-        # single indexer-writer lease -- see scheduler.py.
+        # single indexer-writer lease (see scheduler.py); the queue-drain
+        # scheduler needs no lease -- every registered repository's queue
+        # progresses in every Dashboard process, exactly like the
+        # pre-existing enqueue-triggered and drain-route-triggered calls to
+        # the same try_launch_next it uses.
         tailer.start()
         scheduler.start()
+        queue_scheduler.start()
         try:
             yield
         finally:
+            await queue_scheduler.stop()
             await scheduler.stop()
             tailer.stop()
 
@@ -243,6 +252,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     app.state.config = cfg
     app.state.tailer = tailer
     app.state.scheduler = scheduler
+    app.state.queue_scheduler = queue_scheduler
 
     @app.get("/api/health")
     async def health() -> dict:
@@ -315,9 +325,13 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     async def drain_run_commands(repo_id: int) -> dict:
         """Explicit, idempotent progression: reconciles any completed/exited
         LAUNCHED command for this repository and claims+launches the next
-        QUEUED one if the repository is now free. No background timer calls
-        this in this pass (see tasks/todo.md RED 6-7) -- the UI (RED 8) calls
-        it opportunistically on its own SSE-triggered refresh."""
+        QUEUED one if the repository is now free. Normal queue correctness
+        no longer relies on this route -- QueueDrainScheduler (ADR-30
+        review finding 4) already progresses every registered repository's
+        queue periodically and automatically; this remains only as an
+        idempotent administrative trigger the UI also calls opportunistically
+        on its own SSE-triggered refresh, for a prompt reaction rather than
+        waiting for the next scheduled tick."""
         get_repository(app.state.db, repo_id)  # 404 if unknown
         result = try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable)
         return {"launched": result}

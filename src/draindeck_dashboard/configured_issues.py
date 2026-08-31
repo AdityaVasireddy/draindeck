@@ -20,7 +20,7 @@ from runtime.queue.issues_md import IssueSpec, IssuesParseError, parse
 
 from .errors import DashboardApiError
 from .read_models import read_model_status
-from .repositories import get_repository
+from .repositories import RegistrationError, get_repository, verify_config_matches_registration
 
 # The parser only recognizes an un-bulleted `Depends-On:` line; a bulleted
 # one is silently treated as plain body text (no dependency). This regex
@@ -64,6 +64,11 @@ def get_configured_issues(conn, repo_id: int) -> dict:
         cfg = load_config(config_path)
     except ConfigError as exc:
         raise ConfiguredIssuesError("CONFIG_INVALID", str(exc), status_code=409) from exc
+
+    try:
+        verify_config_matches_registration(cfg, registration)
+    except RegistrationError as exc:
+        raise ConfiguredIssuesError(exc.code, exc.message, status_code=exc.status_code) from exc
 
     issues_file = _resolve_issues_file(cfg)
     if not issues_file.exists():

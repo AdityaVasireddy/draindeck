@@ -25,7 +25,8 @@ from runtime.state.model import IssueState                          # noqa: E402
 
 
 def _build(tmp_path, *, issues, allowed_issue_ids=None, engine=None, validator=None,
-           reviewer=None, max_attempts=3, budget=None, cfg=None, active_ids=()):
+           reviewer=None, max_attempts=3, budget=None, cfg=None, active_ids=(),
+           selection_order=None, selection_dependencies=None):
     cfg = cfg or _config(max_attempts)
     log = EventLog(tmp_path / "events.jsonl")
     proj = StateProjection()
@@ -48,6 +49,8 @@ def _build(tmp_path, *, issues, allowed_issue_ids=None, engine=None, validator=N
         budget=budget or BudgetManager(50, 100.0),
         artifacts_dir=tmp_path / "art", run_id="run-test",
         allowed_issue_ids=allowed_issue_ids,
+        selection_order=selection_order,
+        selection_dependencies=selection_dependencies,
     )
     return orch
 
@@ -103,6 +106,53 @@ def test_runtime_independent_selected_issues_use_file_order(tmp_path):
     orch.step = spy_step
     orch.run()
     assert order == ["z", "a", "m"]  # proj.issues preserves IssueCreated/file order
+
+
+# ── ADR-30 review finding 2: the validated plan's order/dependencies govern ──
+
+def test_selected_dependent_blocked_when_current_file_dependency_is_not_done(tmp_path):
+    """A current-configured-file dependency (passed via selection_dependencies,
+    independent of what IssueCreated recorded) must gate activation: if that
+    dependency's authoritative state is anything but DONE -- even a terminal
+    escalation like NEEDS_HUMAN -- the dependent must never be offered as
+    actionable, regardless of its own position in selection_order."""
+    orch = _build(tmp_path, issues=[("a", []), ("b", [])],
+                 allowed_issue_ids=frozenset({"a", "b"}),
+                 selection_order=("a", "b"),
+                 selection_dependencies={"b": ("a",)})
+    orch.proj.issues["a"] = IssueState.NEEDS_HUMAN  # escalated, not DONE
+    assert orch._next_actionable() is None  # b's dependency is unsatisfied
+
+
+def test_selection_order_overrides_historical_ingest_order(tmp_path):
+    """Historical IssueCreated order is a, b; the validated plan says b runs
+    first (e.g. the current file lists it first) -- selection_order, not
+    proj.issues' dict/ingest order, must govern activation sequence."""
+    orch = _build(tmp_path, issues=[("a", []), ("b", [])],
+                 allowed_issue_ids=frozenset({"a", "b"}),
+                 selection_order=("b", "a"),
+                 selection_dependencies={})
+    order: list[str] = []
+    real_step = orch.step
+
+    def spy_step(issue):
+        if issue not in order:
+            order.append(issue)
+        return real_step(issue)
+    orch.step = spy_step
+    orch.run()
+    assert order == ["b", "a"]
+
+
+def test_active_selected_issue_resumes_before_earlier_selection_order_entry(tmp_path):
+    """An already-ACTIVE selected issue is resumed before any PENDING work,
+    regardless of its position in selection_order (sequential recovery
+    safety)."""
+    orch = _build(tmp_path, issues=[("a", []), ("b", [])], active_ids=["b"],
+                 allowed_issue_ids=frozenset({"a", "b"}),
+                 selection_order=("a", "b"),
+                 selection_dependencies={})
+    assert orch._next_actionable() == "b"
 
 
 def test_allowed_issue_ids_none_preserves_existing_unfiltered_behavior(tmp_path):

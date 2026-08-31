@@ -97,6 +97,16 @@ def plan_run(conn: sqlite3.Connection, repo_id: int, *, mode: str,
     else:
         result = plan_selected(specs, states, issue_ids or [])
 
+    # ADR-30 review finding 9: explicit, deterministic summary fields so the
+    # UI can show a count summary before confirmation, and treat "zero
+    # non-terminal issues" as a clean no-op rather than silently returning
+    # to an unchanged, unexplained queue view.
+    terminal_exclusions = result.excluded if mode == "ALL" else result.terminal_selected
+    terminal_counts = {"DONE": 0, "NEEDS_HUMAN": 0, "NEEDS_DECOMPOSITION": 0}
+    for exclusion in terminal_exclusions:
+        if exclusion.state in terminal_counts:
+            terminal_counts[exclusion.state] += 1
+
     return {
         "ok": result.ok,
         "orderedIds": list(result.ordered_ids),
@@ -108,7 +118,36 @@ def plan_run(conn: sqlite3.Connection, repo_id: int, *, mode: str,
         "omittedActiveIds": list(result.omitted_active_ids),
         "excluded": [_exclusion_dict(e) for e in result.excluded],
         "emptySelection": result.empty_selection,
+        "toRunCount": len(result.ordered_ids),
+        "totalTerminalCount": len(terminal_exclusions),
+        "terminalCounts": terminal_counts,
     }
+
+
+def _resolve_runtime_outcome(conn: sqlite3.Connection, repo_id: int,
+                             run_id_correlation: Optional[str]) -> Optional[str]:
+    """ADR-30 review blocker 1: `run_commands.status` (e.g. COMPLETED) is
+    exclusively a process-exit fact -- `runtime.main` documents that both
+    the runtime's own COMPLETED and INTERRUPTED outcomes can leave a
+    process exit code of 0, so process-exit-0 alone can never be read as
+    "the batch completed". The real, event-derived outcome is resolved
+    fresh on every read (never persisted, never written to events.jsonl)
+    through the same current-generation run_views/checkpoints join
+    app.py's `_run_metadata_field` and run_launcher.py's
+    `_confirm_correlated_run` already use -- and only once a stdout hint
+    has actually been confirmed (`run_id_correlation` is set); an
+    unconfirmed or not-yet-finished run correctly resolves to None here,
+    the same "no controlled finish observed" case the pre-existing
+    event-derived /runs endpoint already renders honestly."""
+    if run_id_correlation is None:
+        return None
+    row = conn.execute(
+        "SELECT rv.outcome FROM run_views rv JOIN checkpoints c "
+        "ON c.repository_id = rv.repository_id AND c.identity_generation_id = rv.identity_generation_id "
+        "WHERE rv.repository_id = ? AND rv.run_id = ?",
+        (repo_id, run_id_correlation),
+    ).fetchone()
+    return row[0] if row is not None else None
 
 
 def _row_to_command_dict(conn: sqlite3.Connection, row) -> dict:
@@ -134,6 +173,7 @@ def _row_to_command_dict(conn: sqlite3.Connection, row) -> dict:
         "processCreationTime": process_creation_time,
         "queuePosition": position,
         "runIdCorrelation": run_id_correlation,
+        "runtimeOutcome": _resolve_runtime_outcome(conn, repo_id, run_id_correlation),
         "createdAt": created_at,
         "claimedAt": claimed_at,
         "finishedAt": finished_at,
@@ -289,7 +329,13 @@ def revalidate_claimed_command(conn: sqlite3.Connection, command: dict) -> dict:
             conn, command["repositoryId"], mode=command["mode"],
             issue_ids=command["issueIds"], expected_issues_digest=command["issuesDigest"],
         )
-    except RunPlanError as exc:
+    except DashboardApiError as exc:
+        # Catches RunPlanError (digest/projection problems) and any other
+        # typed refusal the planning stack can raise -- e.g.
+        # ConfiguredIssuesError CONFIG_REPOSITORY_DRIFT/CONFIG_LOG_PATH_DRIFT
+        # (ADR-30 review finding 3) -- so dequeue always fails closed to
+        # REFUSED rather than propagating an unhandled exception out of the
+        # launch orchestration path with the claim left dangling.
         conn.execute(
             "UPDATE run_commands SET status = ?, refusal_reason = ?, finished_at = ? WHERE id = ?",
             (STATUS_REFUSED, str(exc), _now(), command["id"]),

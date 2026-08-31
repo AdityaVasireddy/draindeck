@@ -358,16 +358,20 @@ command exists, and only then deletes queue rows before the repository row.
       (drives the real app.py route via TestClient)
 - [x] `test_queue_rows_are_dashboard_owned_and_never_written_to_event_log`
 
-**Documented scope boundary:** no background timer drains the queue in this
-pass. Progression is triggered at two points: immediately after a successful
-enqueue, and an explicit `POST .../run-commands/drain` the UI (RED 8) calls
-opportunistically on its own SSE-triggered refresh. A repository whose
-active command finishes between those triggers stays queued until the next
-one — acceptable for the primary flows (submit-and-watch) but a real gap for
-fully autonomous unattended draining; a periodic tick hooked into the
-existing lease-gated `Scheduler` would close it and is a natural follow-up,
-deliberately not attempted here to avoid modifying that already-delicate
-lease-gated loop under this pass's time budget.
+**Scope boundary closed (2026-08-31, independent-review response — see
+`docs/reviews/DASHBOARD_ISSUE_RUN_CONTROL_BUILD_EVIDENCE.md` "Independent
+review response").** At the time this unit was originally written, no
+background timer drained the queue: progression was triggered only
+immediately after a successful enqueue and by an explicit
+`POST .../run-commands/drain` the UI called opportunistically on its own
+SSE-triggered refresh, leaving fully autonomous unattended draining as a
+real, documented gap. `src/draindeck_dashboard/queue_scheduler.py`
+(`QueueDrainScheduler`) now closes it: a lightweight asyncio task, started
+with Dashboard lifespan (needs no lease — unlike the ingestion `Scheduler`,
+every process runs it), calls `try_launch_next` for every registered
+repository on a short interval. The drain route remains as an idempotent
+administrative trigger only; normal correctness no longer depends on it or
+on the UI's SSE refresh. See `tests/dashboard/test_queue_scheduler.py`.
 
 Genuine RED confirmed: stashed `run_queue.py`'s new functions (reverted to
 Unit 6) and `app.py`, re-ran -- `ImportError:
@@ -421,11 +425,23 @@ narrowed check before and after `run_launcher.py`'s import.
 - [x] `test_missing_executable_is_typed_launch_failed_without_run_claim`
 - [x] `test_pre_run_runtime_exit_does_not_fabricate_runstarted_or_outcome`
 - [x] `test_new_run_is_correlated_only_after_observed_runstarted` --
-      **reconciled**: no stdout run-ID correlation line is implemented in
-      this pass (ADR-30 decision 5 makes it explicitly optional: "may be
-      added"); `run_id_correlation` stays `NULL`/unused. Workflow status
-      continues to come only from the pre-existing, independently tested
-      `/api/repositories/{id}/runs` (event-derived) endpoint.
+      **implemented (2026-08-31, independent-review response)**: at the
+      time this unit was originally written, no stdout run-ID correlation
+      line existed (ADR-30 decision 5 makes it explicitly optional: "may be
+      added") and `run_id_correlation` stayed `NULL`/unused. It is now
+      wired end to end: `runtime.main._emit_run_started` prints a bounded
+      `DRAINDECK_RUN_ID=<id>` line immediately after the fsynced
+      run-lifecycle-start event; `run_launcher.py`'s background stream
+      drain (see the RED 9 pipe-deadlock fix below) captures a small
+      bounded head of stdout for exactly this purpose and discards
+      everything else; `reconcile_launched_command` extracts the hint and
+      persists it only after confirming a matching `run_views` row exists
+      (never trusted from stdout alone). Workflow status continues to come
+      only from the pre-existing, independently tested
+      `/api/repositories/{id}/runs` (event-derived) endpoint — this only
+      lets a caller correlate a queue command with that endpoint's data,
+      it adds no second source of workflow truth. See the new tests in
+      `tests/dashboard/test_run_launcher.py` ("ADR-30 review finding 6").
 - [x] `test_runtime_progress_is_derived_from_issue_and_run_events`
 - [x] `test_controlled_exit_uses_runfinished_over_process_exit_code`
 - [x] `test_abrupt_exit_preserves_no_controlled_finish_observed`
@@ -652,3 +668,43 @@ rendering defect, and a fresh-context-review-found concurrency race); one
 item remains genuinely open by tooling limitation, not omission (native
 keyboard/viewport-resize browser-automation verification — see RED 8's
 entry above and the evidence document for the full diagnostic trail).
+
+## Independent review response (2026-08-31)
+
+An independent review of the BUILD COMPLETE state above found ten findings
+(a runtime-launch environment gap, a runtime dependency/ordering gap, a
+config-drift revalidation gap, a missing autonomous queue-progression
+mechanism, a stdout/stderr pipe deadlock, an unwired run-correlation
+mechanism, a missing config-path registration UI field, a missing
+run-all/active-outside-file refusal, missing terminal-count UI summaries,
+and the two RED 8 tooling-limitation items above). All ten were resolved
+test-first in one pass; see
+`docs/reviews/DASHBOARD_ISSUE_RUN_CONTROL_BUILD_EVIDENCE.md` "Independent
+review response" for the full account, including that the RED 8 keyboard
+gap is now genuinely closed (real native Space/Enter/Tab/Escape confirmed,
+both via the browser-automation transport directly and independently via
+Playwright/Chromium) and that the RED 8 320px viewport claim was
+re-verified via Playwright/Chromium against this session's own fixture
+data and found to hold with no overflow — **a claim a further independent
+review, and this document's own "Blocker resolution" section below,
+subsequently corrected**: a real (if content-dependent) overflow defect
+existed in `.detail-meta` and `#main-content`'s CSS regardless of what this
+session's own fixture happened to trigger, and has now been fixed.
+
+## Independent review response, second pass — blocker resolution (2026-08-31)
+
+A further independent review of the response above found two remaining
+blockers: the queue's `COMPLETED` status was still readable as a runtime
+success claim (no confirmed, event-derived outcome backed it), and a real
+320px document-level overflow existed in `.detail-meta`/`#main-content`'s
+CSS that this session's own earlier fixture data had not happened to
+trigger. Both resolved test-first, in one pass, without widening scope; see
+`docs/reviews/DASHBOARD_ISSUE_RUN_CONTROL_BUILD_EVIDENCE.md` "Blocker
+resolution (2026-08-31)" for the full account. New/changed:
+`run_queue._resolve_runtime_outcome` and a `runtimeOutcome` field on every
+queue command; `run-control.js`'s `queueStatusText` now reuses `format.js`'s
+canonical `runDisplayOutcome`; `.detail-meta` gained a real CSS rule (grid +
+`min-width: 0` + `overflow-wrap: anywhere`, where none existed before);
+`#main-content` gained `min-width: 0` (the standard flex-item fix for a
+descendant `overflow-x: auto` container being defeated by a flex item's
+default refusal to shrink below its content's unconstrained width).

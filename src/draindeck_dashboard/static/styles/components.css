@@ -315,6 +315,42 @@ table.ledger-table {
   align-items: center;
 }
 
+.state-panel--success {
+  border-color: var(--color-success-fg);
+  background: var(--color-success-bg);
+  padding: var(--space-sm) var(--space-md);
+  flex-direction: row;
+  align-items: center;
+}
+
+/* ADR-30 review blocker 2: .detail-meta previously had no rule at all,
+   so its <dd> (used for long absolute config/issue-file paths) fell back
+   to the browser default -- a plain block box with no wrap behavior for
+   an unbroken path string, which can overflow its own box without
+   propagating a scrollbar anywhere, silently pushing the document wider
+   at narrow viewports. Grid (not the default dl block flow) plus
+   min-width: 0 on both the container and the value column is what lets
+   a long unbroken value actually shrink to its track instead of forcing
+   the track wider; overflow-wrap is what then lets it break instead of
+   overflowing once it's shrunk as far as it can. */
+.detail-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--space-sm);
+  row-gap: var(--space-xxs);
+  min-width: 0;
+}
+
+.detail-meta dt {
+  color: var(--color-text-muted);
+}
+
+.detail-meta dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .state-panel-title {
   font-family: var(--font-display);
   font-size: var(--text-headline-size);

@@ -161,6 +161,16 @@ def plan_run_all(specs: Sequence[IssueSpec], states: Mapping[str, str]) -> PlanR
         TerminalExclusion(s.id, states[s.id]) for s in specs if _is_terminal(s.id, states)
     )
 
+    # ADR-30 review finding 8: an authoritative ACTIVE issue absent from the
+    # current file is never silently dropped from a run-all batch -- Run
+    # All is defined as "every current non-terminal configured issue", but
+    # an ACTIVE issue not in specs at all can never appear in non_terminal_ids
+    # (it has no IssueSpec to iterate), so without this check it would be
+    # silently ignored rather than blocking the whole batch the way
+    # plan_selected's own omitted_active_ids check already does.
+    all_active_ids = [iid for iid, st in states.items() if st == _ACTIVE_STATE]
+    omitted_active_ids = tuple(sorted(iid for iid in all_active_ids if iid not in spec_by_id))
+
     blockers: list[Blocker] = []
     for iid in non_terminal_ids:
         for dep in spec_by_id[iid].depends_on:
@@ -172,11 +182,12 @@ def plan_run_all(specs: Sequence[IssueSpec], states: Mapping[str, str]) -> PlanR
 
     ordered, leftover = _topological_order(non_terminal_ids, spec_by_id)
 
-    ok = not (blockers or leftover)
+    ok = not (blockers or leftover or omitted_active_ids)
     return PlanResult(
         ok=ok,
         ordered_ids=ordered if ok else (),
         blockers=tuple(blockers),
         cycle_members=leftover,
+        omitted_active_ids=omitted_active_ids,
         excluded=excluded,
     )

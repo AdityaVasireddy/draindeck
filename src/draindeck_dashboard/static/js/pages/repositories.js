@@ -152,8 +152,24 @@ export async function refresh(root, params, ctx) {
 }
 
 /** Add Repository (docs/27 SS6.2): required absolute project path,
-    optional absolute log path, typed validation inline and as a
-    form-level alert, no browser Browse control. */
+    optional absolute log path, optional absolute config path (ADR-30
+    review finding 7), typed validation inline and as a form-level alert,
+    no browser Browse control. */
+
+// ADR-30 review finding 3/7: once a config path is supplied, it is the
+// sole source of truth for the log path -- never send a possibly
+// mismatching logPath alongside a configPath (the API rejects that
+// combination outright; this keeps the UI from ever constructing it).
+export function buildRegistrationRequestBody({ projectPath, logPath, configPath }) {
+  const body = { projectPath };
+  if (configPath) {
+    body.configPath = configPath;
+  } else if (logPath) {
+    body.logPath = logPath;
+  }
+  return body;
+}
+
 export async function renderAdd(root) {
   clear(root);
   root.appendChild(el("h1", { className: "text-display" }, ["Add repository"]));
@@ -164,16 +180,31 @@ export async function renderAdd(root) {
     el("input", { id: "add-project-path", name: "projectPath", required: true,
                  placeholder: "C:\\Projects\\StockPhotoAgent", autocomplete: "off" }),
   ]);
+  const configField = el("div", { className: "field" }, [
+    el("label", { for: "add-config-path" }, ["Config path (optional)"]),
+    el("input", { id: "add-config-path", name: "configPath",
+                 placeholder: "C:\\Projects\\StockPhotoAgent\\.draindeck\\config.local.yaml",
+                 autocomplete: "off" }),
+    el("p", { className: "field-hint" }, [
+      "The absolute canonical .draindeck/config.local.yaml path. Supplying it enables ",
+      "run launch capability (ADR-30) and becomes the sole source of truth for the log ",
+      "path below -- an independently entered log path is ignored once a config path is set.",
+    ]),
+  ]);
   const logField = el("div", { className: "field" }, [
-    el("label", { for: "add-log-path" }, ["Log path (optional)"]),
+    el("label", { for: "add-log-path" }, ["Log path (optional, observation-only)"]),
     el("input", { id: "add-log-path", name: "logPath",
                  placeholder: "C:\\Projects\\StockPhotoAgent\\.draindeck\\state\\events.jsonl",
                  autocomplete: "off" }),
+    el("p", { className: "field-hint" }, [
+      "Only used when no config path is supplied above; registers the repository as ",
+      "observation-only (no run launch capability) until a valid config path is added.",
+    ]),
   ]);
   const alertEl = el("p", { role: "alert", className: "field-error-text" });
   const submitBtn = el("button", { type: "submit", className: "btn btn-primary" }, ["Add repository"]);
 
-  form.append(projectField, logField, submitBtn, alertEl);
+  form.append(projectField, configField, logField, submitBtn, alertEl);
   root.appendChild(form);
 
   form.addEventListener("submit", async (event) => {
@@ -182,11 +213,12 @@ export async function renderAdd(root) {
     const data = new FormData(form);
     const projectPath = String(data.get("projectPath") || "").trim();
     const logPath = String(data.get("logPath") || "").trim();
+    const configPath = String(data.get("configPath") || "").trim();
     try {
       const created = await apiFetch("/api/repositories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectPath, logPath: logPath || null }),
+        body: JSON.stringify(buildRegistrationRequestBody({ projectPath, logPath, configPath })),
       });
       window.history.pushState({}, "", `/repositories/${created.id}`);
       window.dispatchEvent(new PopStateEvent("popstate"));

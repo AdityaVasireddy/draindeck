@@ -133,6 +133,38 @@ def validate_config_path(raw: str, *, project_path: str) -> tuple[str, Config]:
     return str(path), cfg
 
 
+def verify_config_matches_registration(cfg: Config, registration: dict) -> None:
+    """ADR-30 review finding 3: registration validates project.repository/
+    logPath match once, at registration time. A config file at the same
+    canonical path can be edited afterward to point at a different
+    repository or event log -- this re-runs the identical checks on every
+    subsequent read/plan/dequeue (called from
+    ``configured_issues.get_configured_issues``, which ``run_queue.plan_run``
+    and ``run_queue.revalidate_claimed_command`` both already route
+    through), failing closed rather than silently redirecting planning or
+    launch to the wrong repository."""
+    cfg_repo = os.path.normcase(str(Path(cfg.project.repository).resolve()))
+    registered_repo = os.path.normcase(str(Path(registration["projectPath"]).resolve()))
+    if cfg_repo != registered_repo:
+        raise RegistrationError(
+            "CONFIG_REPOSITORY_DRIFT",
+            f"config's project.repository ({cfg.project.repository!r}) no longer "
+            f"resolves to the registered repository ({registration['projectPath']!r})",
+            status_code=409,
+        )
+    if registration["logPath"] is not None:
+        resolved_log = os.path.normcase(str(resolve_event_log_path(cfg).resolve()))
+        registered_log = os.path.normcase(str(Path(registration["logPath"]).resolve()))
+        if resolved_log != registered_log:
+            raise RegistrationError(
+                "CONFIG_LOG_PATH_DRIFT",
+                f"config's resolved event log path ({resolve_event_log_path(cfg)}) no "
+                f"longer matches the registration's indexed log path "
+                f"({registration['logPath']!r})",
+                status_code=409,
+            )
+
+
 def register_repository(conn: sqlite3.Connection, *, project_path: str,
                         log_path: Optional[str] = None,
                         config_path: Optional[str] = None) -> dict:
@@ -148,23 +180,30 @@ def register_repository(conn: sqlite3.Connection, *, project_path: str,
         canonical_config_path = _canonicalize(validated_config_path)
 
     validated_log_path = validate_log_path(log_path)
-    if validated_log_path is None and loaded_cfg is not None:
-        validated_log_path = str(resolve_event_log_path(loaded_cfg))
+    if loaded_cfg is not None:
+        # Once a config is supplied, it is the sole source of truth for
+        # logPath (ADR-30 review finding 3) -- an independently-supplied
+        # logPath that disagrees with the config-derived one is rejected
+        # rather than silently accepted as a second, divergent source.
+        derived_log_path = str(resolve_event_log_path(loaded_cfg))
+        if (validated_log_path is not None
+                and _canonicalize(validated_log_path) != _canonicalize(derived_log_path)):
+            raise RegistrationError(
+                "LOG_PATH_CONFIG_MISMATCH",
+                f"logPath ({validated_log_path!r}) does not match the event log "
+                f"path derived from configPath ({derived_log_path!r}); when "
+                f"configPath is supplied it is the sole source of truth for logPath",
+                status_code=400,
+            )
+        validated_log_path = derived_log_path
     canonical_log_path = (
         _canonicalize(validated_log_path) if validated_log_path else None
     )
 
-    if canonical_log_path is not None:
-        existing = conn.execute(
-            "SELECT id FROM repositories WHERE canonical_log_path = ?",
-            (canonical_log_path,),
-        ).fetchone()
-        if existing is not None:
-            raise RegistrationError(
-                "LOG_PATH_ALREADY_REGISTERED",
-                f"logPath is already registered under repository {existing[0]}",
-                status_code=409,
-            )
+    # Config-path uniqueness is checked first: once configPath is supplied,
+    # logPath is always derived from it, so a repeat registration of the
+    # same config necessarily collides on both -- checking config first
+    # surfaces the more specific CONFIG_PATH_ALREADY_REGISTERED.
     if canonical_config_path is not None:
         existing = conn.execute(
             "SELECT id FROM repositories WHERE canonical_config_path = ?",
@@ -174,6 +213,17 @@ def register_repository(conn: sqlite3.Connection, *, project_path: str,
             raise RegistrationError(
                 "CONFIG_PATH_ALREADY_REGISTERED",
                 f"configPath is already registered under repository {existing[0]}",
+                status_code=409,
+            )
+    if canonical_log_path is not None:
+        existing = conn.execute(
+            "SELECT id FROM repositories WHERE canonical_log_path = ?",
+            (canonical_log_path,),
+        ).fetchone()
+        if existing is not None:
+            raise RegistrationError(
+                "LOG_PATH_ALREADY_REGISTERED",
+                f"logPath is already registered under repository {existing[0]}",
                 status_code=409,
             )
 
