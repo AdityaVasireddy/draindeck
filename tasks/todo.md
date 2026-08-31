@@ -107,25 +107,48 @@ tests\dashboard\test_proxy_cost_migration.py -q` all green;
 
 ## RED 2 — configured issue reader reuses the existing parser
 
-- [ ] `test_relative_issues_file_resolves_against_config_project_repository`
-- [ ] `test_issues_file_resolution_is_independent_of_dashboard_cwd`
-- [ ] `test_absolute_issues_file_matches_runtime_path_semantics`
-- [ ] `test_config_and_issues_file_are_reread_after_registration`
-- [ ] `test_missing_issues_file_returns_typed_error_not_partial_list`
-- [ ] `test_directory_unreadable_and_invalid_utf8_issue_files_fail_loud`
-- [ ] `test_malformed_heading_and_duplicate_id_surface_existing_parser_error`
-- [ ] `test_configured_issue_reader_delegates_to_runtime_issues_md_parse`
-- [ ] `test_configured_issue_reader_has_no_second_heading_or_dependency_parser`
-- [ ] `test_configured_issues_preserve_file_order_and_all_parser_fields`
-- [ ] `test_response_includes_sha256_revision_of_exact_issue_file_bytes`
-- [ ] `test_bulleted_depends_on_is_not_invented_and_warning_is_returned`
-- [ ] `test_unbulleted_depends_on_is_returned_exactly`
-- [ ] `test_source_status_text_never_sets_runtime_state`
-- [ ] `test_issue_without_event_is_not_ingested_not_pending`
-- [ ] `test_event_issue_removed_from_file_remains_in_historical_views_only`
-- [ ] `test_active_event_issue_missing_from_file_blocks_control`
-- [ ] `test_corrupt_inconsistent_unavailable_or_rebuilding_projection_disables_control`
-- [ ] `test_api_returns_issue_text_even_when_runtime_state_is_unavailable`
+All 19 implemented in `tests/dashboard/test_configured_issues.py`, plus 3
+API-level tests in `tests/dashboard/test_app_configured_issues_api.py`. New
+module `src/draindeck_dashboard/configured_issues.py` reads the materialized
+`issue_views` table (same read model `api_queries.cross_repository_issues`
+uses), scoped to the read model's own current generation — never a
+per-request full-evidence recompute — and delegates all parsing to
+`runtime.queue.issues_md.parse` (verified structurally: exactly one compiled
+regex in the module, used only to disclose the bulleted-`Depends-On:`
+gotcha). Genuine RED confirmed: the module didn't exist yet, so the test
+file failed to import (`ModuleNotFoundError`) rather than collecting —
+the clearest possible form of "missing behavior," not a fixture/typo
+accident — before the module was created and all 19+3 went GREEN.
+
+- [x] `test_relative_issues_file_resolves_against_config_project_repository`
+- [x] `test_issues_file_resolution_is_independent_of_dashboard_cwd`
+- [x] `test_absolute_issues_file_matches_runtime_path_semantics`
+- [x] `test_config_and_issues_file_are_reread_after_registration`
+- [x] `test_missing_issues_file_returns_typed_error_not_partial_list`
+- [x] `test_directory_unreadable_and_invalid_utf8_issue_files_fail_loud` —
+      directory and invalid-UTF-8 cases are live; a genuine
+      permission-denied case is not reliably simulatable on Windows from a
+      test process running as file owner, so `ISSUES_FILE_UNREADABLE`'s
+      `OSError` branch is covered by inspection, documented in the test.
+- [x] `test_malformed_heading_and_duplicate_id_surface_existing_parser_error`
+- [x] `test_configured_issue_reader_delegates_to_runtime_issues_md_parse`
+- [x] `test_configured_issue_reader_has_no_second_heading_or_dependency_parser`
+- [x] `test_configured_issues_preserve_file_order_and_all_parser_fields`
+- [x] `test_response_includes_sha256_revision_of_exact_issue_file_bytes`
+- [x] `test_bulleted_depends_on_is_not_invented_and_warning_is_returned`
+- [x] `test_unbulleted_depends_on_is_returned_exactly`
+- [x] `test_source_status_text_never_sets_runtime_state`
+- [x] `test_issue_without_event_is_not_ingested_not_pending`
+- [x] `test_event_issue_removed_from_file_remains_in_historical_views_only`
+- [x] `test_active_event_issue_missing_from_file_blocks_control` — the
+      reader's contribution only: exposes `activeIssuesOutsideFile`; the
+      planner in RED 4 is what actually refuses the batch on it.
+- [x] `test_corrupt_inconsistent_unavailable_or_rebuilding_projection_disables_control`
+- [x] `test_api_returns_issue_text_even_when_runtime_state_is_unavailable`
+
+Verified: `python -m pytest tests\dashboard\test_configured_issues.py
+tests\dashboard\test_app_configured_issues_api.py -q` -> 22 passed.
+`python -m pytest tests\unit tests\dashboard -q` -> 1152 passed (up from 1130).
 
 ## RED 3 — pure batch admission and deterministic ordering
 

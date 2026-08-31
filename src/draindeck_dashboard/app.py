@@ -21,6 +21,7 @@ from . import api_queries
 from . import proxy_cost_agg
 from .artifacts import artifact_root_for_log, resolve_contained_artifact
 from .config import DashboardConfig
+from .configured_issues import get_configured_issues
 from .db import connect_and_init
 from .diffs import compute_diff
 from .errors import DashboardApiError, InvalidFilterError, NotFoundError, register_error_handlers
@@ -208,6 +209,10 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     @app.get("/api/repositories/{repo_id}")
     async def get_one_repository(repo_id: int) -> dict:
         return get_repository(app.state.db, repo_id)
+
+    @app.get("/api/repositories/{repo_id}/configured-issues")
+    async def get_configured_issues_route(repo_id: int) -> dict:
+        return get_configured_issues(app.state.db, repo_id)
 
     @app.delete("/api/repositories/{repo_id}", status_code=204)
     async def remove_repository(repo_id: int) -> None:
