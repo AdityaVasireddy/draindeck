@@ -15,6 +15,7 @@ export const ROUTES = [
   { pattern: "/repositories/:repoId/runs", name: "repository-runs" },
   { pattern: "/repositories/:repoId/runs/:runId", name: "run-detail" },
   { pattern: "/repositories/:repoId/issues", name: "repository-issues" },
+  { pattern: "/repositories/:repoId/run-control", name: "repository-run-control" },
   { pattern: "/repositories/:repoId/issues/:issueId", name: "issue-detail" },
   { pattern: "/repositories/:repoId/executions", name: "repository-executions" },
   { pattern: "/repositories/:repoId/executions/:executionId", name: "execution-detail" },

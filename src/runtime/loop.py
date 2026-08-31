@@ -71,6 +71,9 @@ class Orchestrator:
         budget: BudgetManager,
         artifacts_dir: Path,
         run_id: str,
+        allowed_issue_ids: "frozenset[str] | None" = None,
+        selection_order: "tuple[str, ...] | None" = None,
+        selection_dependencies: "dict[str, tuple[str, ...]] | None" = None,
     ) -> None:
         self.cfg = cfg
         self.log = log
@@ -85,6 +88,25 @@ class Orchestrator:
         self.target = cfg.project.branch
         self.workspace = Path(cfg.project.repository)
         self.stop_reason = ""
+        # ADR-30: None (the default, and every pre-existing direct-CLI call
+        # site) preserves the original unfiltered scan exactly. When set, it
+        # is an exact allowlist -- an issue outside it is never returned by
+        # _next_actionable regardless of its state, so it can never be
+        # activated, spawned, or otherwise touched by this run.
+        self.allowed_issue_ids = allowed_issue_ids
+        # ADR-30 review finding 2: when both are supplied (only
+        # runtime.main's ADR-30 selection path does), these carry the
+        # validated topological order and a current-configured-file
+        # dependency map through from re-validation, so historical
+        # IssueCreated order/depends_on can never override a freshly
+        # validated selection or run-all batch. When either is None (every
+        # pre-existing direct-CLI call site, and any allowed_issue_ids-only
+        # construction), _next_actionable falls back to the original
+        # unfiltered-except-for-allowlist scan using proj.issues' own
+        # ingest order and event-sourced deps_met -- byte-identical to
+        # this ADR's original behavior.
+        self.selection_order = selection_order
+        self.selection_dependencies = selection_dependencies
 
     # ── durable emit (reconciler._emit pattern: append+fsync, then apply) ──
     def _emit(self, ev: Event) -> None:
@@ -117,12 +139,43 @@ class Orchestrator:
     def _next_actionable(self) -> str | None:
         """First issue in ingest order that has a legal next move: an ACTIVE
         issue (in flight — finish it before starting another, sequential per
-        doc 01), or a PENDING issue whose deps are all DONE."""
+        doc 01), or a PENDING issue whose deps are all DONE.
+
+        When a validated selection order is present, delegates to
+        `_next_actionable_selected` instead (ADR-30 review finding 2)."""
+        if self.allowed_issue_ids is not None and self.selection_order is not None:
+            return self._next_actionable_selected()
         for iid in self.proj.issues:  # dict preserves IssueCreated (file) order
+            if self.allowed_issue_ids is not None and iid not in self.allowed_issue_ids:
+                continue
             st = self.proj.issues[iid]
             if st is IssueState.ACTIVE:
                 return iid
             if st is IssueState.PENDING and self.proj.deps_met(iid):
+                return iid
+        return None
+
+    def _next_actionable_selected(self) -> str | None:
+        """ADR-30 review finding 2: activation order and the dependency gate
+        come from the freshly-validated plan (current configured-file order
+        and dependencies), never `proj.issues`' historical ingest order or
+        `deps_met`'s event-sourced `depends_on` -- so a dependency added, or
+        the running order changed, in the file after ingestion is honored
+        exactly, and a dependent is never activated ahead of a current
+        dependency that has not reached DONE (including one that has
+        already terminated some other way, e.g. NEEDS_HUMAN). An
+        already-ACTIVE selected issue always resumes first, regardless of
+        its own position in the validated order (sequential recovery
+        safety) -- at most one issue is ever ACTIVE at a time in this
+        engine, so a plain membership scan suffices."""
+        for iid in self.proj.issues:
+            if iid in self.allowed_issue_ids and self.proj.issues[iid] is IssueState.ACTIVE:
+                return iid
+        deps = self.selection_dependencies or {}
+        for iid in self.selection_order:
+            if self.proj.issues.get(iid) is not IssueState.PENDING:
+                continue
+            if all(self.proj.issues.get(dep) is IssueState.DONE for dep in deps.get(iid, ())):
                 return iid
         return None
 

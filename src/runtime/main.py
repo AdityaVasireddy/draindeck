@@ -63,6 +63,7 @@ from .observe import (
     validate_log_path,
 )
 from .queue.issues_md import IssuesParseError, parse as parse_issues
+from .queue.selection import Blocker, TerminalExclusion, plan_run_all, plan_selected
 from .recovery.bindings import bind_reconciler
 from .recovery.containment import WorkspaceContainmentBlocked, resolve_startup_containment
 from .recovery.reconciler import recover
@@ -396,6 +397,13 @@ def _emit_run_started(log: EventLog, proj: StateProjection, cfg: Config, run_id:
     _validate_lifecycle_event(candidate)
     eid = log.append(candidate)
     proj.apply(Event(type=EventType.RUN_STARTED, run_id=run_id, payload=payload, event_id=eid))
+    # ADR-30 review finding 6 / spec "Frozen event schema": a bounded,
+    # machine-readable stdout line immediately after the fsynced RunStarted
+    # above, so a launcher can correlate a spawned process with its run. It
+    # is only a hint -- adds no event, schema, or payload field, and a
+    # consumer must independently confirm run_id through the normal
+    # observer/indexed evidence before trusting it for anything.
+    print(f"DRAINDECK_RUN_ID={run_id}")
 
 
 def _emit_run_finished(log: EventLog, proj: StateProjection, run_id: str, outcome: str) -> None:
@@ -420,12 +428,113 @@ def _reviewer_reachable(cfg: Config) -> tuple[bool, str]:
         return False, f"unreachable at {endpoint}: {e}"
 
 
+def _resolve_issues_file_path(cfg: Config) -> Path:
+    return Path(cfg.project.repository) / cfg.project.issues_file
+
+
+def _format_plan_refusal(result) -> str:
+    """ADR-30: names every refusal reason -- never just the first one found."""
+    parts: list[str] = []
+    if result.empty_selection:
+        parts.append("selection is empty")
+    if result.unknown_ids:
+        parts.append(f"unknown issue id(s): {', '.join(result.unknown_ids)}")
+    if result.duplicate_ids:
+        parts.append(f"duplicate issue id(s): {', '.join(result.duplicate_ids)}")
+    if result.terminal_selected:
+        parts.append("terminal issue(s) selected: " + ", ".join(
+            f"{t.issue_id} ({t.state})" for t in result.terminal_selected))
+    if result.blockers:
+        parts.append("unfinished dependencies: " + "; ".join(
+            f"{b.issue_id} needs {b.missing_dependency_id} ({b.dependency_state})"
+            for b in result.blockers))
+    if result.cycle_members:
+        parts.append(f"dependency cycle among: {', '.join(result.cycle_members)}")
+    if result.omitted_active_ids:
+        parts.append(f"active issue(s) omitted from selection: {', '.join(result.omitted_active_ids)}")
+    return "; ".join(parts) if parts else "selection refused"
+
+
+@dataclass(frozen=True)
+class SelectionPlan:
+    """ADR-30 review finding 2: carries the validated topological order and
+    a current-configured-file dependency map (built from the freshly
+    re-read/re-parsed issue file, at this same validation call) through into
+    the Orchestrator, so historical IssueCreated ordering/dependency
+    metadata can never override a freshly validated selection or run-all
+    batch. `dependencies` covers every issue in the freshly parsed file, not
+    only the selected/run-all subset, since a dependency can reference an
+    issue outside the batch."""
+
+    allowed_ids: "frozenset[str]"
+    ordered_ids: "tuple[str, ...]"
+    dependencies: "dict[str, tuple[str, ...]]"
+
+
+class SelectionRunAllEmpty(Exception):
+    """Raised by _validate_selection for the one successful-but-early-exit
+    case: a valid --all-issues batch with zero non-terminal issues remaining.
+    ADR-30 sec2: "a valid zero-item run-all is a successful no-op and emits
+    no empty run lifecycle" -- distinct from a refusal, so it is not folded
+    into the (allowed_ids, error) return shape below."""
+
+
+def _validate_selection(args, cfg: Config, proj: StateProjection) -> tuple[Optional[SelectionPlan], Optional[str]]:
+    """ADR-30 sec2: re-reads the configured issue file fresh (never the
+    Dashboard's cached copy), verifies the issues-digest against those exact
+    bytes, replays authoritative state from `proj` (already fully recovered
+    at this call site, before RunStarted), and re-validates the complete
+    batch through the same pure planner the Dashboard API uses. Returns
+    (None, None) for the legacy no-selection CLI form (unchanged behavior).
+    Raises SelectionRunAllEmpty for a valid, empty --all-issues result."""
+    issue_ids = getattr(args, "issue_ids", None)
+    all_issues = getattr(args, "all_issues", False)
+    if not all_issues and not issue_ids:
+        return None, None
+
+    digest = getattr(args, "issues_digest", None)
+    if not digest or len(digest) != 64 or digest != digest.lower() or not all(c in "0123456789abcdef" for c in digest):
+        return None, "--issues-digest must be exactly 64 lowercase hex characters"
+
+    issues_path = _resolve_issues_file_path(cfg)
+    if not issues_path.exists():
+        return None, f"issues file not found: {issues_path}"
+    raw = issues_path.read_bytes()
+    actual_digest = hashlib.sha256(raw).hexdigest()
+    if actual_digest != digest:
+        return None, f"issues-digest mismatch: expected {digest}, file is now {actual_digest}"
+
+    try:
+        specs = parse_issues(raw.decode("utf-8"))
+    except (UnicodeDecodeError, IssuesParseError) as e:
+        return None, f"issues file could not be parsed: {e}"
+
+    states = {iid: st.value for iid, st in proj.issues.items()}
+
+    if all_issues:
+        result = plan_run_all(specs, states)
+    else:
+        result = plan_selected(specs, states, issue_ids)
+
+    if not result.ok:
+        return None, _format_plan_refusal(result)
+    if all_issues and not result.ordered_ids:
+        raise SelectionRunAllEmpty()
+    dependencies = {s.id: tuple(s.depends_on) for s in specs}
+    plan = SelectionPlan(
+        allowed_ids=frozenset(result.ordered_ids),
+        ordered_ids=tuple(result.ordered_ids),
+        dependencies=dependencies,
+    )
+    return plan, None
+
+
 def _ingest_issues(cfg: Config, log: EventLog, proj: StateProjection,
                    run_id: str) -> int:
     """Read the target repo's Issues.md, emit IssueCreated for ids not already
     in the log (idempotent). Returns the count emitted. Aborts on a malformed
     file (fail-loud, matching the config loader)."""
-    issues_path = Path(cfg.project.repository) / cfg.project.issues_file
+    issues_path = _resolve_issues_file_path(cfg)
     if not issues_path.exists():
         raise FileNotFoundError(f"issues file not found: {issues_path}")
     specs = parse_issues(issues_path.read_text(encoding="utf-8"))
@@ -453,6 +562,21 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
     artifacts_dir = startup.artifacts_dir
     proj = startup.proj
     report = startup.report
+
+    # ADR-30: selection re-validation happens after ownership/recovery (proj
+    # already reflects fully-replayed authoritative state) but strictly
+    # before RunStarted and before any issue activation. Legacy invocations
+    # supplying neither --issue nor --all-issues get (None, None) and are
+    # completely unaffected.
+    try:
+        selection_plan, selection_error = _validate_selection(args, cfg, proj)
+    except SelectionRunAllEmpty:
+        print("[run-all] no non-terminal issues remain — successful no-op, "
+              "no run started")
+        return 0
+    if selection_error is not None:
+        print(f"SELECTION REJECTED: {selection_error}", file=sys.stderr)
+        return 1
 
     # RunStarted is the run's first action after entering normal run work --
     # before checkout, reviewer health, baseline validation, and ingestion
@@ -533,6 +657,9 @@ def _run_after_startup(args, cfg: Config, startup: _StartupRecovery) -> int:
         budget=BudgetManager(cfg.budget.max_executions_per_run,
                              cfg.budget.hard_stop_proxy_cost_per_run_usd),
         artifacts_dir=artifacts_dir, run_id=run_id,
+        allowed_issue_ids=selection_plan.allowed_ids if selection_plan else None,
+        selection_order=selection_plan.ordered_ids if selection_plan else None,
+        selection_dependencies=selection_plan.dependencies if selection_plan else None,
     )
     # COMPLETED and INTERRUPTED both leave exit_code at 0 today (an existing,
     # unchanged property of this loop) -- outcome is therefore decided by
@@ -615,6 +742,14 @@ def main(argv=None) -> int:
     s.add_argument("--config", required=True)
     s.add_argument("--skip-baseline", action="store_true",
                    help="skip the first-run baseline-green health check")
+    s.add_argument("--issues-digest", default=None,
+                   help="SHA-256 (64 lowercase hex) of the issue file presented during "
+                        "planning; required with --issue/--all-issues (ADR-30)")
+    sel = s.add_mutually_exclusive_group()
+    sel.add_argument("--issue", action="append", dest="issue_ids", default=None,
+                     help="exact issue id to run; repeatable (ADR-30)")
+    sel.add_argument("--all-issues", action="store_true",
+                     help="run every current non-terminal configured issue (ADR-30)")
     s.set_defaults(fn=cmd_run)
     s = sub.add_parser("observe")
     observe_sub = s.add_subparsers(dest="observe_cmd", required=True)

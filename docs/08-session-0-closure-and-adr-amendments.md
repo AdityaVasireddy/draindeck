@@ -1216,8 +1216,11 @@ calls, or any `src/runtime`/Doc 03 change.
 
 **Status:** ACCEPTED · **Proposed:** 2026-08-29 · **Accepted:** 2026-08-30.
 Accepted together with `spec/dashboard-target-configuration.md`,
-`docs/30-controlled-target-configuration-outcome-matrix.md`, and the active
-`tasks/plan.md` / `tasks/todo.md`, with explicit local checkpoint-commit
+`docs/30-controlled-target-configuration-outcome-matrix.md`, and its plan/todo
+(preserved after build completion at
+`docs/plans/dashboard-target-configuration-plan.md` /
+`docs/plans/dashboard-target-configuration-todo.md`, once the active
+`tasks/plan.md` / `tasks/todo.md`), with explicit local checkpoint-commit
 authority granted for this build's bounded per-task commit series. Push and
 merge remain separate, later decisions.
 
@@ -1297,6 +1300,43 @@ outcome matrix, test-first implementation, all verification including raw
 review with evidence accounting. `runtime.init.service` owns the policy gate;
 `workspace_lease.py` owns exclusion, `repo/git_adapter.py` owns Git mechanism,
 and `recovery/bindings.py` remains the sole interpreter of provenance.
+
+## 5l. ADR-30 — Dashboard issue selection and run control
+
+**Status:** ACCEPTED · **Proposed:** 2026-08-30 · **Accepted:** 2026-08-30
+(explicit user authorization to implement the full feature in dependency
+order, including local per-unit checkpoint-commit authority; push, merge,
+deploy, and PR creation remain separate, later decisions). This narrowly
+amends ADR-26 and ADR-27's read-only Dashboard boundary to add a single
+launch capability; it does not amend Doc 03's event schema and does not
+accept, supersede, or depend on ADR-29's separate target-configuration write
+authority. The complete decision record, control contract, and rejected
+alternatives are `docs/adr/ADR-30-dashboard-issue-selection-and-run-control.md`;
+that document is normative. The pre-committed verification contract is
+`docs/31-dashboard-issue-run-control-outcome-matrix.md` together with
+`docs/plans/dashboard-issue-run-control-failing-tests.md`, and the
+implementation-facing summary is `spec/dashboard-issue-run-control.md`.
+
+**Summary.** The Dashboard may, for a registered repository, validate its
+canonical `.draindeck/config.local.yaml` with the existing runtime config
+loader, read the configured issue file with the existing
+`runtime.queue.issues_md.parse`, derive per-issue state only from
+`events.jsonl` through the existing observer/indexed projection, plan an
+exact dependency-safe run-selected or run-all batch, persist that command in
+Dashboard-owned SQLite with FIFO per-repository ordering and idempotency, and
+launch at most one `runtime.main run` process per repository using a fixed
+argv vector (`shell=False`) carrying an explicit `--issue`/`--all-issues`
+selection plus a SHA-256 issue-file digest. The runtime independently
+re-validates the selection and digest after workspace ownership and recovery,
+before `RunStarted` and before any issue activation, so a stale or forged
+Dashboard request cannot expand execution scope. No event type, schema
+version, or payload key is added to the frozen Doc 03 schema; queue,
+idempotency, and launcher-correlation state live only in Dashboard SQLite and
+are never written to `events.jsonl`. See the normative ADR for the full
+five-part contract (Dashboard control boundary, runtime exact-selection
+interface, persisted queue ownership, launcher crash behavior, and the frozen
+event schema) and its crash-handling, security, and accessibility
+requirements.
 
 ## 6. Final v1 `config.yaml` (reference example)
 

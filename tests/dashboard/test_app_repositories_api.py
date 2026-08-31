@@ -90,3 +90,83 @@ def test_oversized_request_body_is_rejected(tmp_path):
     resp = client.post("/api/repositories", json={"projectPath": huge_path})
     assert resp.status_code == 413
     assert resp.json()["error"]["code"] == "REQUEST_BODY_TOO_LARGE"
+
+
+_VALID_CONFIG_YAML = """
+project:
+  name: T
+  repository: {repository!r}
+  branch: agent-work
+  issues_file: Issues.md
+  validation:
+    commands: ["echo ok"]
+engine:
+  provider: claude-headless
+  auth_mode: subscription
+  model: default
+  max_turns: 30
+  timeout_seconds: 1800
+reviewer:
+  provider: qwen
+  qwen:
+    endpoint: http://localhost:11434
+    model: qwen2.5-coder
+budget:
+  max_attempts_per_issue: 3
+  max_executions_per_run: 10
+  hard_stop_proxy_cost_per_run_usd: 15.0
+  proxy_pricing: api_list_rates
+experiment:
+  sample_size: 20
+  attempt1_success_min: 0.3
+  cost_per_shipped_issue_max_usd: 3.0
+billing:
+  posture: p
+  headless_split_status: paused
+  verified_on: '2026-07-10'
+  reverify_at: x
+"""
+
+
+def test_registration_with_valid_config_path_is_launch_capable(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_worktree(tmp_path)
+    draindeck_dir = repo / ".draindeck"
+    draindeck_dir.mkdir()
+    config_path = draindeck_dir / "config.local.yaml"
+    config_path.write_text(_VALID_CONFIG_YAML.format(repository=str(repo)), encoding="utf-8")
+
+    created = client.post(
+        "/api/repositories", json={"projectPath": str(repo), "configPath": str(config_path)},
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["configPath"] == str(config_path)
+    assert body["controlCapability"] == "LAUNCH_CAPABLE"
+
+    fetched = client.get(f"/api/repositories/{body['id']}")
+    assert fetched.json()["controlCapability"] == "LAUNCH_CAPABLE"
+
+
+def test_registration_with_invalid_config_path_returns_typed_error(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_worktree(tmp_path)
+    missing = repo / ".draindeck" / "config.local.yaml"
+
+    resp = client.post(
+        "/api/repositories", json={"projectPath": str(repo), "configPath": str(missing)},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "CONFIG_PATH_NOT_FOUND"
+
+    listed = client.get("/api/repositories")
+    assert listed.json()["repositories"] == []
+
+
+def test_registration_without_config_path_is_observation_only(tmp_path):
+    client = _client(tmp_path)
+    repo = _git_worktree(tmp_path)
+    created = client.post("/api/repositories", json={"projectPath": str(repo)})
+    assert created.status_code == 201
+    assert created.json()["configPath"] is None
+    assert created.json()["controlCapability"] == "OBSERVATION_ONLY"

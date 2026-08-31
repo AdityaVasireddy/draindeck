@@ -80,7 +80,7 @@ def test_fresh_database_lands_directly_at_v2_with_all_new_tables(tmp_path):
     conn = db.connect_and_init(tmp_path / "d.sqlite3")
     try:
         version = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == SCHEMA_VERSION == 3
+        assert version == SCHEMA_VERSION == 5
         for table in (
             "issue_views", "run_views", "execution_views", "containment_views",
             "read_model_state", "attention_conditions",
@@ -297,5 +297,48 @@ def test_required_new_indexes_exist(tmp_path):
         }
         missing = expected - names
         assert not missing, f"missing indexes: {missing}"
+    finally:
+        conn.close()
+
+
+def test_repository_migration_adds_config_path_without_losing_existing_rows(tmp_path):
+    """ADR-30 RED 1: the v3->v4 step is additive -- an existing registration's
+    project_path/log_path survive untouched, and the new columns start NULL
+    (observation-only) rather than backfilled or guessed."""
+    db_path = tmp_path / "d.sqlite3"
+    v1 = _v1_only_connect(db_path)
+    v1.execute(
+        "INSERT INTO repositories (project_path, log_path, canonical_log_path, created_at) "
+        "VALUES (?, NULL, NULL, ?)", ("C:/some/repo", "2026-08-30T00:00:00Z"),
+    )
+    v1.commit()
+    v1.close()
+
+    conn = db.connect_and_init(db_path)
+    try:
+        version = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
+        assert version == SCHEMA_VERSION
+        row = conn.execute(
+            "SELECT project_path, config_path, canonical_config_path FROM repositories"
+        ).fetchone()
+        assert row[0] == "C:/some/repo"
+        assert row[1] is None
+        assert row[2] is None
+    finally:
+        conn.close()
+
+
+def test_canonical_config_path_column_is_unique_when_present(tmp_path):
+    conn = db.connect_and_init(tmp_path / "d.sqlite3")
+    try:
+        conn.execute(
+            "INSERT INTO repositories (project_path, canonical_config_path, created_at) "
+            "VALUES ('C:/a', 'c:/a/.draindeck/config.local.yaml', '2026-08-30T00:00:00Z')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO repositories (project_path, canonical_config_path, created_at) "
+                "VALUES ('C:/b', 'c:/a/.draindeck/config.local.yaml', '2026-08-30T00:00:00Z')"
+            )
     finally:
         conn.close()

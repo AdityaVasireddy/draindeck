@@ -12,20 +12,34 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from . import api_queries
 from . import proxy_cost_agg
 from .artifacts import artifact_root_for_log, resolve_contained_artifact
 from .config import DashboardConfig
+from .configured_issues import get_configured_issues
+from .run_launcher import try_launch_next
+from .run_queue import (
+    IdempotencyKeyReusedError,
+    RunPlanError,
+    delete_commands_for_repository,
+    enqueue_command,
+    get_command,
+    list_commands_for_repository,
+    plan_run,
+    reconcile_ambiguous_claims_on_startup,
+    repository_has_active_command,
+)
 from .db import connect_and_init
 from .diffs import compute_diff
 from .errors import DashboardApiError, InvalidFilterError, NotFoundError, register_error_handlers
 from .health import build_health
 from .projections import RUN_METADATA_UNAVAILABLE
+from .queue_scheduler import QueueDrainScheduler
 from .repositories import (
     delete_repository,
     get_repository,
@@ -101,6 +115,7 @@ class _RegisterRepositoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     projectPath: str
     logPath: Optional[str] = None
+    configPath: Optional[str] = None
 
 
 class _TargetConfigurationRequest(BaseModel):
@@ -116,6 +131,54 @@ class _RenderTargetConfigurationRequest(BaseModel):
     projectPath: str
     branch: str
     commands: list[str]
+
+
+# ADR-30: bounds enforced before planning ever runs (never trust MaxBodySize-
+# Middleware's whole-body cap alone for a structured, attacker-shaped field).
+_MAX_RUN_ISSUE_IDS = 500
+_MAX_ISSUE_ID_BYTES = 200
+
+
+class _RunModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: str
+    issueIds: Optional[list[str]] = None
+    expectedIssuesDigest: str
+
+    @field_validator("mode")
+    @classmethod
+    def _mode_is_known(cls, v: str) -> str:
+        if v not in ("SELECTED", "ALL"):
+            raise ValueError("mode must be SELECTED or ALL")
+        return v
+
+    @field_validator("expectedIssuesDigest")
+    @classmethod
+    def _digest_is_well_formed(cls, v: str) -> str:
+        if len(v) != 64 or v != v.lower() or any(c not in "0123456789abcdef" for c in v):
+            raise ValueError("expectedIssuesDigest must be 64 lowercase hex characters")
+        return v
+
+
+def _check_run_request_bounds(payload: "_RunModeRequest") -> None:
+    if payload.mode == "ALL" and payload.issueIds is not None:
+        raise DashboardApiError(
+            "RUN_ALL_REJECTS_ISSUE_IDS", "issueIds must not be supplied for mode=ALL",
+            status_code=422,
+        )
+    if payload.mode == "SELECTED":
+        ids = payload.issueIds or []
+        if len(ids) > _MAX_RUN_ISSUE_IDS:
+            raise DashboardApiError(
+                "TOO_MANY_ISSUE_IDS", f"at most {_MAX_RUN_ISSUE_IDS} issue ids per request",
+                status_code=422,
+            )
+        for iid in ids:
+            if len(iid.encode("utf-8")) > _MAX_ISSUE_ID_BYTES:
+                raise DashboardApiError(
+                    "ISSUE_ID_TOO_LONG", f"issue id exceeds {_MAX_ISSUE_ID_BYTES} bytes",
+                    status_code=422,
+                )
 
 
 def _require_git_worktree(project_path: str) -> Path:
@@ -140,20 +203,32 @@ def _configuration_error(exc: TargetConfigurationError) -> DashboardApiError:
 
 def create_app(cfg: DashboardConfig) -> FastAPI:
     conn = connect_and_init(cfg.db_path)
+    # ADR-30 decision 4: any command left CLAIMED across a restart is an
+    # ambiguous spawn window -- never auto-retried. Done once, here, before
+    # any route can enqueue or launch anything.
+    reconcile_ambiguous_claims_on_startup(conn)
     tailer = ChangeTailer(conn)
     scheduler = Scheduler(conn, cfg.observer_executable)
+    queue_scheduler = QueueDrainScheduler(conn, cfg.observer_executable)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        # One database tailer, and one ingestion scheduler, per process
-        # (docs/19): started once here, not per request/connection. The
+        # One database tailer, one ingestion scheduler, and one queue-drain
+        # scheduler, per process (docs/19 / ADR-30 review finding 4):
+        # started once here, not per request/connection. The ingestion
         # scheduler only actually indexes while this process holds the
-        # single indexer-writer lease -- see scheduler.py.
+        # single indexer-writer lease (see scheduler.py); the queue-drain
+        # scheduler needs no lease -- every registered repository's queue
+        # progresses in every Dashboard process, exactly like the
+        # pre-existing enqueue-triggered and drain-route-triggered calls to
+        # the same try_launch_next it uses.
         tailer.start()
         scheduler.start()
+        queue_scheduler.start()
         try:
             yield
         finally:
+            await queue_scheduler.stop()
             await scheduler.stop()
             tailer.stop()
 
@@ -177,6 +252,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     app.state.config = cfg
     app.state.tailer = tailer
     app.state.scheduler = scheduler
+    app.state.queue_scheduler = queue_scheduler
 
     @app.get("/api/health")
     async def health() -> dict:
@@ -197,6 +273,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             app.state.db,
             project_path=payload.projectPath,
             log_path=payload.logPath,
+            config_path=payload.configPath,
         )
 
     @app.get("/api/repositories")
@@ -207,8 +284,79 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
     async def get_one_repository(repo_id: int) -> dict:
         return get_repository(app.state.db, repo_id)
 
+    @app.get("/api/repositories/{repo_id}/configured-issues")
+    async def get_configured_issues_route(repo_id: int) -> dict:
+        return get_configured_issues(app.state.db, repo_id)
+
+    @app.post("/api/repositories/{repo_id}/run-plans")
+    async def create_run_plan(repo_id: int, payload: _RunModeRequest) -> dict:
+        _check_run_request_bounds(payload)
+        return plan_run(
+            app.state.db, repo_id, mode=payload.mode, issue_ids=payload.issueIds,
+            expected_issues_digest=payload.expectedIssuesDigest,
+        )
+
+    # NOTE: "run-commands" (not "runs") -- Dashboard-owned queue control state
+    # is deliberately a different path segment from the pre-existing
+    # /api/repositories/{repo_id}/runs (runtime RunStarted/RunFinished
+    # history), so this control-plane surface can never shadow or be
+    # shadowed by that route.
+    @app.post("/api/repositories/{repo_id}/run-commands", status_code=201)
+    async def create_run_command(repo_id: int, payload: _RunModeRequest,
+                                 idempotency_key: str = Header(..., alias="Idempotency-Key")) -> dict:
+        _check_run_request_bounds(payload)
+        if not idempotency_key or len(idempotency_key) > 200:
+            raise DashboardApiError(
+                "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be 1-200 characters",
+                status_code=422,
+            )
+        try:
+            result = enqueue_command(
+                app.state.db, repo_id, mode=payload.mode, issue_ids=payload.issueIds,
+                expected_issues_digest=payload.expectedIssuesDigest,
+                idempotency_key=idempotency_key,
+            )
+        except (RunPlanError, IdempotencyKeyReusedError):
+            raise
+        try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable)
+        return get_command(app.state.db, result["id"]) if "id" in result else result
+
+    @app.post("/api/repositories/{repo_id}/run-commands/drain")
+    async def drain_run_commands(repo_id: int) -> dict:
+        """Explicit, idempotent progression: reconciles any completed/exited
+        LAUNCHED command for this repository and claims+launches the next
+        QUEUED one if the repository is now free. Normal queue correctness
+        no longer relies on this route -- QueueDrainScheduler (ADR-30
+        review finding 4) already progresses every registered repository's
+        queue periodically and automatically; this remains only as an
+        idempotent administrative trigger the UI also calls opportunistically
+        on its own SSE-triggered refresh, for a prompt reaction rather than
+        waiting for the next scheduled tick."""
+        get_repository(app.state.db, repo_id)  # 404 if unknown
+        result = try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable)
+        return {"launched": result}
+
+    @app.get("/api/repositories/{repo_id}/run-commands")
+    async def get_run_commands_for_repository(repo_id: int) -> dict:
+        get_repository(app.state.db, repo_id)  # 404 if unknown
+        return {"commands": list_commands_for_repository(app.state.db, repo_id)}
+
+    @app.get("/api/repositories/{repo_id}/run-commands/{command_id}")
+    async def get_run_command(repo_id: int, command_id: int) -> dict:
+        command = get_command(app.state.db, command_id)
+        if command["repositoryId"] != repo_id:
+            raise NotFoundError(f"run command {command_id} not found for repository {repo_id}")
+        return command
+
     @app.delete("/api/repositories/{repo_id}", status_code=204)
     async def remove_repository(repo_id: int) -> None:
+        if repository_has_active_command(app.state.db, repo_id):
+            raise DashboardApiError(
+                "REPOSITORY_HAS_ACTIVE_RUN",
+                "cannot unregister a repository with an active or unresolved run command",
+                status_code=409,
+            )
+        delete_commands_for_repository(app.state.db, repo_id)
         delete_repository(app.state.db, repo_id)
 
     @app.get("/api/target-configurations/detect")
@@ -276,7 +424,8 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
                 branch_change_confirmed=payload.branchChangeConfirmed,
             ))
             registration = register_repository(
-                app.state.db, project_path=payload.projectPath, log_path=str(result.resolved_log_path))
+                app.state.db, project_path=payload.projectPath,
+                log_path=str(result.resolved_log_path), config_path=str(result.config_path))
         except TargetConfigurationError as exc:
             raise _configuration_error(exc) from exc
         return {"result": {"configPath": str(result.config_path), "configDigest": result.config_digest,
@@ -680,6 +829,7 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
             "/repositories/{repo_id}/configuration", "/repositories/{repo_id}",
             "/repositories/{repo_id}/runs", "/repositories/{repo_id}/runs/{run_id}",
             "/repositories/{repo_id}/issues", "/repositories/{repo_id}/issues/{issue_id}",
+            "/repositories/{repo_id}/run-control",
             "/repositories/{repo_id}/executions", "/repositories/{repo_id}/executions/{execution_id}",
             "/repositories/{repo_id}/evidence", "/repositories/{repo_id}/evidence/{evidence_id}",
             "/attention", "/runs", "/issues", "/executions", "/evidence", "/about",
