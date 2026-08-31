@@ -153,4 +153,5 @@ python tests\crash\harness.py "$env:TEMP\draindeck-config-1337" 1337
 The final two commands require retained raw per-scenario stdout/stderr and
 exit codes. A green harness is regression evidence for the frozen runtime;
 the feature-specific safety claims require the focused tests named in
-`tasks/todo.md` and the outcome matrix.
+`docs/plans/dashboard-target-configuration-todo.md` (preserved after build
+completion; the active todo at build time) and the outcome matrix.
