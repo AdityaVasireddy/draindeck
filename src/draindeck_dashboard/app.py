@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import shutil
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
@@ -38,6 +39,8 @@ from .db import connect_and_init
 from .diffs import compute_diff
 from .errors import DashboardApiError, InvalidFilterError, NotFoundError, register_error_handlers
 from .health import build_health
+from .launcher import evaluate_repository_run_readiness
+from .model_pull import ModelPullTracker
 from .projections import RUN_METADATA_UNAVAILABLE
 from .queue_scheduler import QueueDrainScheduler
 from .repositories import (
@@ -139,6 +142,11 @@ _MAX_RUN_ISSUE_IDS = 500
 _MAX_ISSUE_ID_BYTES = 200
 
 
+class _PullModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm: bool = False
+
+
 class _RunModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: str
@@ -201,7 +209,7 @@ def _configuration_error(exc: TargetConfigurationError) -> DashboardApiError:
     return DashboardApiError(exc.code, str(exc), status_code=statuses.get(exc.code, 400))
 
 
-def create_app(cfg: DashboardConfig) -> FastAPI:
+def create_app(cfg: DashboardConfig, *, instance_token: str | None = None) -> FastAPI:
     conn = connect_and_init(cfg.db_path)
     # ADR-30 decision 4: any command left CLAIMED across a restart is an
     # ambiguous spawn window -- never auto-retried. Done once, here, before
@@ -250,13 +258,91 @@ def create_app(cfg: DashboardConfig) -> FastAPI:
 
     app.state.db = conn
     app.state.config = cfg
+    app.state.model_pull_tracker = ModelPullTracker()
     app.state.tailer = tailer
     app.state.scheduler = scheduler
     app.state.queue_scheduler = queue_scheduler
+    app.state.instance_token = instance_token
 
     @app.get("/api/health")
     async def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/api/launcher/identity")
+    async def launcher_identity() -> dict:
+        # Ownership proof for the cross-platform launcher (docs/32 L-08,
+        # L-13): a foreign process that merely answers /api/health cannot
+        # forge this without the token the launcher itself generated and
+        # passed on this process's own command line.
+        return {"instanceToken": app.state.instance_token}
+
+    @app.get("/api/launcher/readiness")
+    async def launcher_readiness(repo_id: Optional[int] = Query(default=None, alias="repoId")) -> dict:
+        # Dashboard-ready and Run-ready are independent facts (docs/32
+        # L-10): this process answering at all already proves
+        # Dashboard-ready; Run-ready is a truthful, per-repository
+        # Claude/Ollama/reviewer-model preflight (review Blocker 2) that
+        # can be false without that implying anything about the Dashboard
+        # itself. Without an explicit repoId, NO repository is selected
+        # (review Blocker 3) -- this must never silently guess "the first
+        # registered repository", even when exactly one exists, because a
+        # caller viewing a genuinely different repository would then be
+        # shown that repository's readiness instead of its own.
+        if repo_id is None:
+            return {
+                "dashboardReady": True, "runReady": False, "runConfigured": False,
+                "missing": ["repository-not-selected"], "model": None, "repositoryId": None,
+            }
+
+        # get_repository raises NotFoundError (-> 404) for an unknown
+        # repoId -- this never falls back to a different repository.
+        registration = get_repository(app.state.db, repo_id)
+        result = evaluate_repository_run_readiness(
+            repo_config_path=registration.get("configPath"),
+            claude_check=lambda: shutil.which("claude") is not None,
+            ollama_check=lambda: shutil.which("ollama") is not None,
+        )
+        return {
+            "dashboardReady": True,
+            "runReady": result.ready,
+            "runConfigured": result.configured,
+            "missing": list(result.missing),
+            "model": result.model,
+            "repositoryId": repo_id,
+        }
+
+    @app.post("/api/repositories/{repo_id}/pull-model")
+    async def pull_reviewer_model(repo_id: int, payload: _PullModelRequest) -> dict:
+        # Review Blocker 1 follow-up: the ONLY input this endpoint accepts
+        # is the repository id and an explicit confirm flag -- the model
+        # pulled is always resolved from that repository's own registered
+        # canonical config (never a client-supplied model or config path;
+        # _PullModelRequest's extra="forbid" rejects either outright).
+        registration = get_repository(app.state.db, repo_id)  # 404 if unknown
+        if not payload.confirm:
+            raise DashboardApiError(
+                "CONFIRMATION_REQUIRED",
+                "explicit confirmation is required before pulling a reviewer model",
+                status_code=400,
+            )
+        config_path = registration.get("configPath")
+        if not config_path:
+            raise DashboardApiError(
+                "NO_CONFIG", "this repository has no registered canonical config", status_code=400,
+            )
+        try:
+            state = app.state.model_pull_tracker.start(repo_id, config_path)
+        except ValueError as exc:
+            raise DashboardApiError("MODEL_NOT_CONFIGURED", str(exc), status_code=400) from exc
+        return {"status": state.status, "model": state.model}
+
+    @app.get("/api/repositories/{repo_id}/pull-model")
+    async def pull_reviewer_model_status(repo_id: int) -> dict:
+        get_repository(app.state.db, repo_id)  # 404 if unknown
+        state = app.state.model_pull_tracker.status(repo_id)
+        if state is None:
+            return {"status": "idle", "model": None, "error": None}
+        return {"status": state.status, "model": state.model, "error": state.error}
 
     @app.get("/api/about")
     async def about() -> dict:

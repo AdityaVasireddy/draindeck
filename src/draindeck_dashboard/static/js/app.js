@@ -5,8 +5,9 @@
 // (Units 10-14 still to come) renders an honest "not yet available"
 // state rather than a blank page or a JS error.
 import { createRequestCoordinator } from "./api.js";
-import { initRailExpandToggle, initThemeControl, renderRailNav, updateConnectionStatus } from
-  "./components/shell.js";
+import {
+  initRailExpandToggle, initThemeControl, mountLauncherReadiness, renderRailNav, updateConnectionStatus,
+} from "./components/shell.js";
 import { initGlobalSearch } from "./components/search.js";
 import { clear, el } from "./dom.js";
 import { createRouter } from "./router.js";
@@ -104,6 +105,13 @@ function boot() {
   let currentMatch = null;
   let router = null;
 
+  const launcherReadinessRegion = document.getElementById("launcher-readiness-region");
+  function refreshLauncherReadiness() {
+    if (!launcherReadinessRegion) return;
+    const repoId = currentMatch && currentMatch.params && currentMatch.params.repoId;
+    mountLauncherReadiness(launcherReadinessRegion, { coordinator, repoId });
+  }
+
   function renderCurrentRoute() {
     if (!pageRoot) return;
     if (!currentMatch) {
@@ -140,6 +148,7 @@ function boot() {
         : "Not found — Draindeck Dashboard";
 
       renderCurrentRoute();
+      refreshLauncherReadiness();
       // Move focus to the main landmark on a real route change so
       // keyboard/AT users land at the new content -- but not on the very
       // first dispatch (the page just loaded; stealing focus from
@@ -154,6 +163,16 @@ function boot() {
       firstDispatch = false;
     },
   });
+
+  if (launcherReadinessRegion) {
+    // Prerequisites can change while the Dashboard stays open (e.g. the
+    // operator installs Ollama or registers a repository mid-session) --
+    // a bounded poll keeps the always-visible region honest without
+    // requiring a page reload, always scoped to whichever repository the
+    // current route names (see refreshLauncherReadiness). Informational
+    // only; see mountLauncherReadiness.
+    setInterval(refreshLauncherReadiness, 30000);
+  }
 
   const statusEl = document.getElementById("connection-status");
   connectChangeStream({

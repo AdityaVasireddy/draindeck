@@ -20,20 +20,45 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    from pydantic import ValidationError
+
     from .app import create_app
-    from .config import DashboardConfigError, load_dashboard_config
+    from .config import DashboardConfig, DashboardConfigError, load_dashboard_config
 
     ap = argparse.ArgumentParser(prog="draindeck-dashboard")
-    ap.add_argument("--config", required=True)
+    ap.add_argument("--config", help="path to a Dashboard config YAML file")
+    # In-memory alternative to --config, used by the launcher (docs/32
+    # "Dashboard process settings are in-memory only") -- no config file is
+    # ever read or written on this path.
+    ap.add_argument("--host", default=None)
+    ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--db-path", default=None)
+    ap.add_argument("--observer-executable", default=None)
+    ap.add_argument("--instance-token", default=None)
     args = ap.parse_args(argv)
 
     try:
-        cfg = load_dashboard_config(args.config)
-    except DashboardConfigError as e:
+        if args.config:
+            cfg = load_dashboard_config(args.config)
+        elif args.db_path and args.observer_executable:
+            cfg = DashboardConfig(
+                host=args.host if args.host is not None else "127.0.0.1",
+                port=args.port if args.port is not None else 8420,
+                db_path=args.db_path,
+                observer_executable=args.observer_executable,
+            )
+        else:
+            print(
+                "CONFIG INVALID: either --config, or both --db-path and "
+                "--observer-executable, are required",
+                file=sys.stderr,
+            )
+            return 1
+    except (DashboardConfigError, ValidationError) as e:
         print(f"CONFIG INVALID: {e}", file=sys.stderr)
         return 1
 
-    app = create_app(cfg)
+    app = create_app(cfg, instance_token=args.instance_token)
     uvicorn.run(app, host=cfg.host, port=cfg.port)
     return 0
 

@@ -4,7 +4,7 @@
 // every repository-scoped explorer/detail page so the exact wording and
 // markup stay identical everywhere this state can occur.
 import { ApiError } from "./api.js";
-import { el } from "./dom.js";
+import { el, statusChip } from "./dom.js";
 
 export const PREPARING_TEXT = "Preparing indexed views.";
 export const PREPARING_DETAIL_TEXT =
@@ -60,4 +60,83 @@ export function projectionIncompleteBanner() {
 export function removeReadinessBanner(root) {
   const existing = root.querySelector(`[${_BANNER_MARKER}]`);
   if (existing) existing.remove();
+}
+
+const _MISSING_PREREQUISITE_TEXT = {
+  claude: { label: "Claude Code", action: "install Claude Code" },
+  ollama: { label: "Ollama", action: "install Ollama" },
+  "reviewer-model": { label: "the configured reviewer model", action: "pull the configured reviewer model" },
+  "repository-not-registered": {
+    label: "no repository registered", action: "register a repository to configure a run",
+  },
+  "repository-not-selected": {
+    label: "no repository selected", action: "open a specific repository to see its run readiness",
+  },
+  "reviewer-model-not-configured": {
+    label: "reviewer model not configured", action: "configure a reviewer model for this repository",
+  },
+  "config-unavailable": {
+    label: "the repository's configuration file is unavailable",
+    action: "check that .draindeck/config.local.yaml still exists and is readable",
+  },
+  "config-invalid": {
+    label: "the repository's configuration file is invalid",
+    action: "fix .draindeck/config.local.yaml, then reload",
+  },
+};
+
+/** Renders the launcher's independent Dashboard-ready / Run-ready states
+    (docs/32 L-10): the Dashboard can be usable while a run is not, and the
+    UI must say so honestly rather than implying both are ready together.
+    `missing` (from /api/launcher/readiness) names each absent
+    prerequisite by id -- shown with its human label and a concrete next
+    action, never a bare "not ready" with no explanation. */
+export function renderLauncherReadiness({ dashboardReady, runReady, missing, model }) {
+  const dashboardChip = statusChip(
+    dashboardReady ? "Dashboard ready" : "Dashboard not ready",
+    dashboardReady ? "success" : "warning",
+  );
+  const runChip = statusChip(
+    runReady ? "Run ready" : "Run not ready",
+    runReady ? "success" : "warning",
+  );
+  const children = [dashboardChip, runChip];
+  if (!runReady && missing && missing.length > 0) {
+    const items = missing.map((id) => {
+      const known = _MISSING_PREREQUISITE_TEXT[id];
+      const li = el("li", null, [known ? `${known.label} — ${known.action}.` : `${id} is missing.`]);
+      // Blocker 1 follow-up: a missing reviewer model gets an explicit,
+      // named, confirmable action right here -- not just descriptive
+      // text. The actual click/confirm/fetch wiring lives in shell.js
+      // (mountLauncherReadiness), which is DOM/fetch-dependent and
+      // verified live in a real browser; this function stays pure and
+      // Node-testable, so it only marks the action via data attributes.
+      if (id === "reviewer-model" && model) {
+        const btn = el("button", {
+          type: "button", className: "btn-ghost",
+          "data-action": "pull-reviewer-model", "data-model": model,
+        }, [`Pull configured reviewer model (${model})`]);
+        li.appendChild(btn);
+      }
+      return li;
+    });
+    children.push(el("ul", { className: "launcher-readiness-missing" }, items));
+  }
+  return el("div", { className: "launcher-readiness", role: "status" }, children);
+}
+
+/** Pure mapping from the `/api/launcher/readiness` JSON response onto
+    `renderLauncherReadiness`'s props -- keeps app.js's fetch/mount glue to
+    a single `fetch()` call with nothing else left to get wrong. `model`
+    and `repositoryId` pass through (unlike the other fields, not coerced
+    to a default) so the pull-model action can name the exact model and
+    the mount glue knows which repository to act on. */
+export function buildLauncherReadinessViewModel(apiResponse) {
+  return {
+    dashboardReady: Boolean(apiResponse.dashboardReady),
+    runReady: Boolean(apiResponse.runReady),
+    missing: Array.isArray(apiResponse.missing) ? apiResponse.missing : [],
+    model: apiResponse.model || null,
+    repositoryId: apiResponse.repositoryId ?? null,
+  };
 }

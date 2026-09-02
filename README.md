@@ -74,7 +74,59 @@ draindeck-intake sync linear --team-key ENG --output C:\target\Issues.md
 Credentials come from environment variables: `GITHUB_TOKEN`, `JIRA_EMAIL` +
 `JIRA_API_TOKEN`, or `LINEAR_API_KEY`.
 
-## Dashboard (optional)
+## Dashboard: one-click launch (recommended)
+
+A single tracked entry point per OS bootstraps everything needed (Python,
+`.venv`, the `dashboard` extra), starts exactly one local Dashboard, waits
+for it to prove it's actually ready, and only then opens your browser.
+System-level or elevated installs (Python via winget/Homebrew/apt, Claude
+Code, Ollama) always require your explicit consent first. Separately, as
+part of ordinary bootstrap, the entry point may create or update its own
+project-local `.venv` and install the `dashboard` extra into it
+automatically — this stays local to the project directory, is never
+elevated, and never touches your system Python. The browser never opens
+against an unverified or foreign process (docs/32).
+
+- **Windows:** double-click `Start-DraindeckDashboard.cmd`, or run it from
+  a shell.
+- **macOS:** double-click `Start-DraindeckDashboard.command` in Finder
+  (grant it "Open" permission if Gatekeeper warns on first run), or run it
+  from Terminal.
+- **Linux:** `./start-draindeck-dashboard.sh`
+
+The first run may show a consent prompt listing exactly which
+system-level prerequisite is missing, where it comes from, and the
+command that would install it (winget on Windows, Homebrew on macOS, one
+detected native manager — apt/dnf/pacman/zypper — on Linux). Only those
+system-level/elevated installs wait for your affirmative accept;
+declining makes no install/elevation/model-pull calls at all. The
+project-local `.venv`/`dashboard`-extra bootstrap described above is not
+gated by this prompt and may still happen automatically. Re-running the
+same entry point later reuses a healthy, already-running Dashboard
+instead of starting a duplicate.
+
+If the port is already occupied by something the launcher doesn't
+recognize as its own, it reports the collision and refuses to start a
+duplicate or open a browser against it, rather than guessing.
+
+**Status / stop:** the launcher's own operational state (PID, port, and
+an instance-identity token — never a second config file) lives under
+`~/.draindeck-dashboard/launcher-state.json`. Run the same entry point
+with `--status` or `--stop` (e.g. `.\Start-DraindeckDashboard.cmd --status`)
+to check or stop a launcher-owned Dashboard without opening a browser.
+Re-running the entry point plainly reports whether it found and reused a
+healthy owned process. Both `--stop` and normal reuse act only on a PID
+the launcher can verify it owns, via that instance token and
+`GET /api/launcher/identity` — it will never stop or reuse a process it
+can't prove is its own, even one that happens to be listening on the
+expected port.
+
+Dashboard-ready and Run-ready are shown as independent states: the
+Dashboard itself can be usable (registering repositories, browsing
+history) even while Claude, Ollama, or the configured reviewer model
+aren't yet available for actually launching a run.
+
+## Dashboard: manual / advanced
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[dashboard]"
@@ -82,6 +134,11 @@ Credentials come from environment variables: `GITHUB_TOKEN`, `JIRA_EMAIL` +
 ```
 
 Open <http://127.0.0.1:8420/>.
+
+`draindeck-dashboard` also accepts explicit `--host`/`--port`/`--db-path`/
+`--observer-executable` flags in place of `--config` — this is the
+in-memory path the one-click launcher itself uses, and it never reads or
+writes a config file.
 
 ## Important
 
