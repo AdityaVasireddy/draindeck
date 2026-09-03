@@ -343,3 +343,16 @@ class GitCliAdapter(RepositoryAdapter):
                     f.unlink()
             repairs.append("aborted in-progress merge state")
         return repairs
+
+
+def read_worktree_status(repo_path: Path | str) -> WorktreeStatus:
+    """Read-only worktree-cleanliness witness for a target repo path.
+
+    A thin, mutation-free wrapper over ``GitCliAdapter(...).worktree_status()``
+    (itself only ``git status --porcelain``) so a *read-only* consumer -- the
+    Dashboard's launch preflight (doc 33) -- can reuse this project's single
+    worktree-status classifier without importing the mutation-capable
+    ``GitCliAdapter`` class. Introduced for that preflight; never writes, never
+    checks out, never merges. Raises ``RepoError`` if ``repo_path`` is not a
+    usable git worktree (the caller fails closed on that)."""
+    return GitCliAdapter(repo_path).worktree_status()

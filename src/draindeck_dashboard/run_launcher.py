@@ -26,6 +26,7 @@ from .run_queue import (
     STATUS_LAUNCH_FAILED,
     claim_next_launchable_command,
     get_command,
+    has_launchable_command,
     revalidate_claimed_command,
 )
 
@@ -338,7 +339,8 @@ def reconcile_launched_command(conn: sqlite3.Connection, command: dict) -> dict:
     return command  # LIVE_MATCH or UNKNOWN: no change
 
 
-def try_launch_next(conn: sqlite3.Connection, repo_id: int, *, executable: str) -> Optional[dict]:
+def try_launch_next(conn: sqlite3.Connection, repo_id: int, *, executable: str,
+                    worktree_probe=None) -> Optional[dict]:
     """The one orchestration entry point: reconciles any existing LAUNCHED
     command for this repository (releasing its slot on a confirmed exit),
     then claims and launches the next QUEUED command if the repository is
@@ -346,7 +348,12 @@ def try_launch_next(conn: sqlite3.Connection, repo_id: int, *, executable: str) 
     drain route (an idempotent administrative trigger), and periodically by
     queue_scheduler.QueueDrainScheduler (ADR-30 review finding 4) -- so a
     queue keeps progressing without depending on any of those callers
-    actually happening."""
+    actually happening.
+
+    ``worktree_probe`` (doc 33 Part A) is passed straight through to the
+    dequeue revalidation so a target that became dirty after enqueue is
+    refused before any subprocess is spawned. The API layer always supplies
+    it; it defaults to None only to keep the queue's own unit fixtures valid."""
     launched_row = conn.execute(
         "SELECT id FROM run_commands WHERE repository_id = ? AND status = ?",
         (repo_id, STATUS_LAUNCHED),
@@ -354,11 +361,25 @@ def try_launch_next(conn: sqlite3.Connection, repo_id: int, *, executable: str) 
     if launched_row is not None:
         reconcile_launched_command(conn, get_command(conn, launched_row[0]))
 
+    # doc 34 Amendment 2: run the clean-worktree preflight BEFORE the atomic
+    # claim. A dirty worktree defers progression -- the waiting command stays
+    # QUEUED -- instead of being claimed and then marked REFUSED at dequeue,
+    # which silently lost the batch. Guarded by has_launchable_command so the
+    # git-status probe runs only when a launch could actually happen (repository
+    # free, not paused, a QUEUED row waiting), never on an idle scheduler tick.
+    # The post-claim revalidation below is kept as a race defense for a worktree
+    # that turns dirty in the claim->spawn window. Every caller (resume,
+    # scheduler tick, drain, enqueue-triggered) shares this one behavior.
+    if worktree_probe is not None and has_launchable_command(conn, repo_id):
+        preflight = worktree_probe(conn, repo_id)
+        if not preflight.clean:
+            return None  # deferred: nothing claimed, nothing refused
+
     claimed = claim_next_launchable_command(conn, repo_id)
     if claimed is None:
         return None
 
-    revalidated = revalidate_claimed_command(conn, claimed)
+    revalidated = revalidate_claimed_command(conn, claimed, worktree_probe=worktree_probe)
     if revalidated["status"] != STATUS_CLAIMED:
         return revalidated  # became REFUSED or COMPLETED (empty run-all) at dequeue
 

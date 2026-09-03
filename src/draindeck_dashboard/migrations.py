@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # The conceptual version of a fresh database once db.py's ``init_schema`` has
 # created the v1 base tables but before any migration step runs. The runner
@@ -311,6 +311,27 @@ def _apply_v4_to_v5_ddl(conn: sqlite3.Connection) -> None:
     )
 
 
+def _apply_v5_to_v6_ddl(conn: sqlite3.Connection) -> None:
+    """v5->v6 (doc 34 Amendment 1, "queue pause on cancel + Resume"): a
+    Dashboard-owned per-repository queue pause. The presence of a row means that
+    repository's FIFO queue is paused -- the atomic claim
+    (run_queue.claim_next_launchable_command) refuses to claim/launch while a row
+    exists. Cancelling a QUEUED command writes this pause in the same
+    transaction as its CANCELLED flip, so a cancel can never auto-start the next
+    waiting batch via the scheduler/drain/enqueue launch paths; an explicit
+    operator Resume deletes the row. Additive only (a new empty table); no
+    existing run_commands/registration/read-model row is touched. Exclusively
+    Dashboard control-plane state -- never written to events.jsonl, never read by
+    src/runtime."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS run_queue_pauses ("
+        "  repository_id INTEGER PRIMARY KEY,"
+        "  paused_at     TEXT NOT NULL,"
+        "  reason        TEXT"
+        ")"
+    )
+
+
 # Ordered migration chain (spec §4.2). Each step (from_version, to_version,
 # apply_fn) is additive and idempotent within its own version gap; the runner
 # applies every step whose to_version exceeds the database's current version, in
@@ -321,6 +342,7 @@ _MIGRATIONS = [
     (2, 3, _apply_v2_to_v3_ddl),
     (3, 4, _apply_v3_to_v4_ddl),
     (4, 5, _apply_v4_to_v5_ddl),
+    (5, 6, _apply_v5_to_v6_ddl),
 ]
 
 

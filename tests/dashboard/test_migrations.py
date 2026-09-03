@@ -80,10 +80,10 @@ def test_fresh_database_lands_directly_at_v2_with_all_new_tables(tmp_path):
     conn = db.connect_and_init(tmp_path / "d.sqlite3")
     try:
         version = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert version == SCHEMA_VERSION == 5
+        assert version == SCHEMA_VERSION == 6
         for table in (
             "issue_views", "run_views", "execution_views", "containment_views",
-            "read_model_state", "attention_conditions",
+            "read_model_state", "attention_conditions", "run_commands", "run_queue_pauses",
         ):
             # must not raise -- table exists
             conn.execute(f"SELECT COUNT(*) FROM {table}")

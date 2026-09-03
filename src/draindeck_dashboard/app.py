@@ -27,14 +27,20 @@ from .run_launcher import try_launch_next
 from .run_queue import (
     IdempotencyKeyReusedError,
     RunPlanError,
+    acknowledge_abnormal_command,
+    cancel_queued_command,
     delete_commands_for_repository,
     enqueue_command,
     get_command,
+    has_launchable_command,
+    is_queue_paused,
     list_commands_for_repository,
     plan_run,
     reconcile_ambiguous_claims_on_startup,
     repository_has_active_command,
+    resume_repository_queue,
 )
+from .worktree_preflight import evaluate_worktree_preflight
 from .db import connect_and_init
 from .diffs import compute_diff
 from .errors import DashboardApiError, InvalidFilterError, NotFoundError, register_error_handlers
@@ -401,11 +407,64 @@ def create_app(cfg: DashboardConfig, *, instance_token: str | None = None) -> Fa
                 app.state.db, repo_id, mode=payload.mode, issue_ids=payload.issueIds,
                 expected_issues_digest=payload.expectedIssuesDigest,
                 idempotency_key=idempotency_key,
+                # doc 33 Part A: the real, GitCliAdapter-backed worktree probe.
+                # Backend enforcement is authoritative, not advisory.
+                worktree_probe=evaluate_worktree_preflight,
             )
         except (RunPlanError, IdempotencyKeyReusedError):
             raise
-        try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable)
+        try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable,
+                        worktree_probe=evaluate_worktree_preflight)
         return get_command(app.state.db, result["id"]) if "id" in result else result
+
+    @app.get("/api/repositories/{repo_id}/worktree-preflight")
+    async def get_worktree_preflight(repo_id: int) -> dict:
+        """Doc 33 Part A (advisory): a read-only report of whether the target
+        worktree is clean enough to launch, for the Run issues page's
+        persistent alert and disabled controls. Never gates by itself -- the
+        authoritative refusal happens in create_run_command / dequeue."""
+        get_repository(app.state.db, repo_id)  # 404 if unknown
+        return evaluate_worktree_preflight(app.state.db, repo_id).to_response()
+
+    @app.post("/api/repositories/{repo_id}/run-commands/{command_id}/acknowledge")
+    async def acknowledge_run_command(repo_id: int, command_id: int) -> dict:
+        """Doc 33 Part B: safely acknowledge an ABNORMAL_EXIT command and
+        unlock the repository for a later, freshly-requested command. Unlocks
+        only -- never retries the prior batch. All safety gates live in
+        run_queue.acknowledge_abnormal_command."""
+        return acknowledge_abnormal_command(app.state.db, repo_id, command_id)
+
+    @app.post("/api/repositories/{repo_id}/run-commands/{command_id}/cancel")
+    async def cancel_run_command(repo_id: int, command_id: int) -> dict:
+        """Doc 34: safely cancel a still-QUEUED command, removing only the
+        waiting batch. Only an exact-QUEUED command is cancelable; cancellation
+        never touches a running process, never mutates runtime events/lease/git,
+        is never blocked by the launch preflight, and never auto-starts the next
+        command (no try_launch_next call here). All safety lives in
+        run_queue.cancel_queued_command."""
+        return cancel_queued_command(app.state.db, repo_id, command_id)
+
+    @app.post("/api/repositories/{repo_id}/run-commands/resume")
+    async def resume_run_command_queue(repo_id: int) -> dict:
+        """Doc 34 Amendment 1: the explicit operator Resume queue action -- the
+        only thing that clears the pause a cancel wrote. Resume is permission to
+        proceed, so after clearing the pause it opportunistically progresses the
+        queue (like the drain route), letting the next QUEUED command claim and
+        launch in normal FIFO order. The clean-worktree preflight still gates the
+        actual dequeue/spawn, so a dirty worktree can still refuse the launch."""
+        get_repository(app.state.db, repo_id)  # 404 if unknown
+        result = resume_repository_queue(app.state.db, repo_id)
+        # Resume permits progression, but the shared try_launch_next path defers
+        # (never claims/refuses) while the worktree is dirty (doc 34 Amendment
+        # 2), so waiting commands stay QUEUED. Report that deferral honestly: a
+        # command still waits AND the worktree is not clean.
+        try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable,
+                        worktree_probe=evaluate_worktree_preflight)
+        result["progressionDeferred"] = (
+            has_launchable_command(app.state.db, repo_id)
+            and not evaluate_worktree_preflight(app.state.db, repo_id).clean
+        )
+        return result
 
     @app.post("/api/repositories/{repo_id}/run-commands/drain")
     async def drain_run_commands(repo_id: int) -> dict:
@@ -419,13 +478,15 @@ def create_app(cfg: DashboardConfig, *, instance_token: str | None = None) -> Fa
         on its own SSE-triggered refresh, for a prompt reaction rather than
         waiting for the next scheduled tick."""
         get_repository(app.state.db, repo_id)  # 404 if unknown
-        result = try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable)
+        result = try_launch_next(app.state.db, repo_id, executable=cfg.observer_executable,
+                                 worktree_probe=evaluate_worktree_preflight)
         return {"launched": result}
 
     @app.get("/api/repositories/{repo_id}/run-commands")
     async def get_run_commands_for_repository(repo_id: int) -> dict:
         get_repository(app.state.db, repo_id)  # 404 if unknown
-        return {"commands": list_commands_for_repository(app.state.db, repo_id)}
+        return {"commands": list_commands_for_repository(app.state.db, repo_id),
+                "queuePaused": is_queue_paused(app.state.db, repo_id)}
 
     @app.get("/api/repositories/{repo_id}/run-commands/{command_id}")
     async def get_run_command(repo_id: int, command_id: int) -> dict:

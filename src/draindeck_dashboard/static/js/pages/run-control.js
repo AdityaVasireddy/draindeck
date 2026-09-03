@@ -20,6 +20,68 @@ const _STATE_TONE = {
   NOT_INGESTED: "muted", UNAVAILABLE: "danger",
 };
 
+// doc 33 Part A/C: the exact persistent dirty-worktree alert copy. Backend
+// enforcement (WORKTREE_NOT_CLEAN) is authoritative; this client gate is
+// advisory -- it only reflects the preflight and never decides on its own.
+export const PREFLIGHT_ALERT_COPY =
+  "Commit or clean all tracked and untracked changes, including Issues.md, before running issues.";
+
+// doc 33 Part B/C: the acknowledge confirmation copy -- unlock only, no retry.
+export const ACK_DIALOG_COPY =
+  "This unlocks the queue only. It does not retry the prior batch — after unlocking you "
+  + "must make a fresh selection and start a new run.";
+
+// doc 34: the cancel confirmation copy -- removes only the waiting batch, never
+// touches a running process, and does not alter runtime events. doc 34
+// Amendment 1: it also pauses the remaining queue until Resume queue is selected.
+export const CANCEL_DIALOG_COPY =
+  "This removes only this waiting batch from the queue. It never touches a running process "
+  + "and does not alter any runtime events. The remaining queue is then paused and will not "
+  + "start any waiting command until you select Resume queue. Cancellation cannot be undone.";
+
+// doc 34 Amendment 1/2: the resume confirmation copy -- resuming permits the
+// next waiting command to start, but a dirty target defers execution and
+// preserves waiting commands (they stay queued until the worktree is clean).
+export const RESUME_DIALOG_COPY =
+  "Resuming the queue permits the next waiting command to start in FIFO order. "
+  + "If the target worktree is dirty, execution is deferred until it is clean and "
+  + "your waiting commands stay queued.";
+
+// doc 34 Amendment 2: an honest status line when a resume cleared the pause but
+// progression is deferred because the worktree is dirty. Null when not deferred.
+export function resumeStatusText(resumeResponse) {
+  if (resumeResponse && resumeResponse.progressionDeferred) {
+    return "Queue resumed. The target worktree is dirty, so runs are deferred until it is "
+      + "clean; your waiting commands stay queued.";
+  }
+  return null;
+}
+
+export function isQueuePaused(queue) {
+  // doc 34 Amendment 1: true only when the queue response reports the
+  // repository paused; an absent/unknown flag is treated as not paused.
+  return !!queue && queue.queuePaused === true;
+}
+
+export function worktreeBlocksRun(preflight) {
+  // Advisory only: absent/unknown preflight never blocks the client controls
+  // (the backend still enforces authoritatively); an explicit clean:false does.
+  return !!preflight && preflight.clean === false;
+}
+
+export function isAcknowledgeable(command) {
+  // Only an ABNORMAL_EXIT command may be acknowledged; a
+  // LAUNCH_OWNERSHIP_UNKNOWN (or any other) blocked command stays blocked.
+  return !!command && command.status === "ABNORMAL_EXIT";
+}
+
+export function isCancellable(command) {
+  // doc 34: only a still-QUEUED command may be cancelled -- a claimed/launched
+  // command owns (or is about to own) a real process, and any other status is
+  // already terminal or is resolved through acknowledge/unlock, never cancel.
+  return !!command && command.status === "QUEUED";
+}
+
 function newIdempotencyKey() {
   return (crypto && crypto.randomUUID) ? crypto.randomUUID()
     : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -131,11 +193,28 @@ function renderInfo(root, data) {
 function updateActionState(root, data, selection) {
   const runSelectedBtn = root.querySelector("#run-control-run-selected");
   const runAllBtn = root.querySelector("#run-control-run-all");
-  const controlsDisabled = data.readModelStatus !== "READY";
+  // doc 33 Part A: a dirty target worktree disables the run controls in
+  // addition to the existing not-READY gate. This is advisory; the backend
+  // refuses authoritatively even if the client state is stale.
+  const controlsDisabled =
+    data.readModelStatus !== "READY" || worktreeBlocksRun(root.__runControlWorktree);
   runSelectedBtn.disabled = controlsDisabled || selection.size === 0;
   runAllBtn.disabled = controlsDisabled;
   const selectAll = root.querySelector("#run-control-select-all");
   if (selectAll) selectAll.disabled = controlsDisabled;
+}
+
+function renderWorktreeAlert(root) {
+  const alert = root.querySelector("#run-control-worktree-alert");
+  if (!alert) return;
+  if (worktreeBlocksRun(root.__runControlWorktree)) {
+    clear(alert);
+    alert.appendChild(el("p", { className: "state-panel-title" }, [PREFLIGHT_ALERT_COPY]));
+    alert.hidden = false;
+  } else {
+    alert.hidden = true;
+    clear(alert);
+  }
 }
 
 function confirmAndSubmit(root, repoId, ctx, { mode, issueIds, digest, plan, budget, projectPath }) {
@@ -273,10 +352,124 @@ export function queueModeSummaryText(command) {
   return `${command.mode}${command.issueIds ? ": " + command.issueIds.join(", ") : ""}`;
 }
 
-function renderQueue(root, commands) {
+function confirmAndAcknowledge(root, repoId, ctx, command) {
+  const body = [
+    el("p", null, [ACK_DIALOG_COPY]),
+    el("dl", { className: "detail-meta" }, [
+      el("dt", null, ["Failed command"]), el("dd", null, [queueModeSummaryText(command)]),
+      el("dt", null, ["Reason"]), el("dd", null, [command.refusalReason || "abnormal exit"]),
+    ]),
+  ];
+  const { close } = openDialog({
+    titleText: "Acknowledge failed command and unlock queue",
+    bodyNodes: body,
+    actions: [
+      { label: "Cancel", className: "btn-ghost", onClick: () => close() },
+      {
+        label: "Acknowledge and unlock", className: "btn btn-primary", autofocus: true,
+        onClick: async () => {
+          close();
+          try {
+            await apiFetchWithDetails(
+              `/api/repositories/${repoId}/run-commands/${command.id}/acknowledge`,
+              { method: "POST" },
+            );
+            clearErrors(root);
+            await loadAndRender(root, repoId, ctx);
+          } catch (err) {
+            showErrors(root, apiErrorLines(err));
+          }
+        },
+      },
+    ],
+  });
+}
+
+function confirmAndCancel(root, repoId, ctx, command) {
+  const body = [
+    el("p", null, [CANCEL_DIALOG_COPY]),
+    el("dl", { className: "detail-meta" }, [
+      el("dt", null, ["Waiting command"]), el("dd", null, [queueModeSummaryText(command)]),
+      el("dt", null, ["Queue position"]),
+      el("dd", null, [command.queuePosition ? String(command.queuePosition) : "—"]),
+    ]),
+  ];
+  const { close } = openDialog({
+    titleText: "Cancel queued command",
+    bodyNodes: body,
+    actions: [
+      { label: "Keep in queue", className: "btn-ghost", onClick: () => close() },
+      {
+        label: "Cancel queued command", className: "btn btn-primary", autofocus: true,
+        onClick: async () => {
+          close();
+          try {
+            await apiFetchWithDetails(
+              `/api/repositories/${repoId}/run-commands/${command.id}/cancel`,
+              { method: "POST" },
+            );
+            clearErrors(root);
+            // Re-fetch so queue positions refresh correctly after removal.
+            await loadAndRender(root, repoId, ctx);
+          } catch (err) {
+            showErrors(root, apiErrorLines(err));
+          }
+        },
+      },
+    ],
+  });
+}
+
+function confirmAndResume(root, repoId, ctx) {
+  const { close } = openDialog({
+    titleText: "Resume queue",
+    bodyNodes: [el("p", null, [RESUME_DIALOG_COPY])],
+    actions: [
+      { label: "Keep paused", className: "btn-ghost", onClick: () => close() },
+      {
+        label: "Resume queue", className: "btn btn-primary", autofocus: true,
+        onClick: async () => {
+          close();
+          try {
+            const resp = await apiFetchWithDetails(
+              `/api/repositories/${repoId}/run-commands/resume`, { method: "POST" },
+            );
+            clearErrors(root);
+            await loadAndRender(root, repoId, ctx);
+            // doc 34 Amendment 2: if a dirty worktree deferred progression, say
+            // so -- the pause is cleared but waiting commands are preserved.
+            const deferred = resumeStatusText(resp);
+            if (deferred) showStatus(root, deferred);
+          } catch (err) {
+            showErrors(root, apiErrorLines(err));
+          }
+        },
+      },
+    ],
+  });
+}
+
+function renderQueue(root, repoId, ctx, commands, queuePaused) {
   const section = root.querySelector(".run-control-queue");
   clear(section);
   section.appendChild(el("h2", { className: "text-headline" }, ["Queue"]));
+  if (queuePaused) {
+    // doc 34 Amendment 1: a persistent "Queue paused" notice with the operator's
+    // only way to clear it. Independent of the dirty-worktree run-control gate --
+    // resume is a control-plane operation, not a runtime launch.
+    const notice = el("div", { className: "state-panel state-panel--warning", role: "status" }, [
+      el("p", { className: "state-panel-title" }, ["Queue paused"]),
+      el("p", null, [
+        "Cancelling a queued command paused this repository's queue. No waiting command "
+        + "will start until you resume.",
+      ]),
+    ]);
+    const resumeBtn = el("button", { type: "button", className: "btn btn-primary" },
+      ["Resume queue"]);
+    resumeBtn.addEventListener("click", () => confirmAndResume(root, repoId, ctx));
+    notice.appendChild(resumeBtn);
+    section.appendChild(notice);
+  }
   const list = el("ul", { className: "entity-list", "aria-label": "Run commands" });
   syncList(list, commands, (c) => c.id, (node, c) => {
     clear(node);
@@ -285,6 +478,25 @@ function renderQueue(root, commands) {
       ` ${queueModeSummaryText(c)}`,
     );
     if (c.refusalReason) node.appendChild(el("p", { className: "text-muted" }, [c.refusalReason]));
+    if (isAcknowledgeable(c)) {
+      // doc 33 Part B/C: only an ABNORMAL_EXIT command offers the unlock
+      // action. Other blocked commands (e.g. LAUNCH_OWNERSHIP_UNKNOWN) stay
+      // visibly blocked with their explanation above and no acknowledge button.
+      const ackBtn = el("button", { type: "button", className: "btn btn-secondary" },
+        ["Acknowledge failed command and unlock queue"]);
+      ackBtn.addEventListener("click", () => confirmAndAcknowledge(root, repoId, ctx, c));
+      node.appendChild(ackBtn);
+    }
+    if (isCancellable(c)) {
+      // doc 34: only a still-QUEUED command offers cancel. This is independent
+      // of the dirty-worktree run-control gate -- removing a waiting batch is
+      // state-safe, so an operator can cancel even when the run controls are
+      // disabled for a dirty worktree.
+      const cancelBtn = el("button", { type: "button", className: "btn btn-secondary" },
+        ["Cancel queued command"]);
+      cancelBtn.addEventListener("click", () => confirmAndCancel(root, repoId, ctx, c));
+      node.appendChild(cancelBtn);
+    }
   }, "No run commands yet.");
   section.appendChild(list);
 }
@@ -308,6 +520,16 @@ async function loadAndRender(root, repoId, ctx) {
   table.closest("table").hidden = false;
   renderInfo(root, data);
 
+  // doc 33 Part A: advisory clean-worktree preflight. A failure to read it
+  // never blocks the page and never disables controls on its own -- the
+  // backend still enforces authoritatively at run-request time.
+  try {
+    root.__runControlWorktree = await apiFetch(`/api/repositories/${repoId}/worktree-preflight`);
+  } catch (e) {
+    root.__runControlWorktree = null;
+  }
+  renderWorktreeAlert(root);
+
   const selection = root.__runControlSelection;
   // Never keep a now-terminal or now-vanished id selected.
   const validIds = new Set(data.issues.filter((i) => !_TERMINAL_STATES.has(i.state)).map((i) => i.issueId));
@@ -326,7 +548,7 @@ async function loadAndRender(root, repoId, ctx) {
 
   try {
     const queue = await apiFetch(`/api/repositories/${repoId}/run-commands`);
-    renderQueue(root, queue.commands);
+    renderQueue(root, repoId, ctx, queue.commands, isQueuePaused(queue));
   } catch (e) { /* queue is supplementary -- a failure here doesn't block the page */ }
 }
 
@@ -337,6 +559,11 @@ export async function render(root, params, ctx) {
 
   root.appendChild(el("h1", { className: "text-display" }, ["Run issues"]));
   root.appendChild(el("div", { className: "run-control-info" }));
+  // doc 33 Part A: persistent dirty-worktree alert (populated by the preflight).
+  root.appendChild(el("div", {
+    id: "run-control-worktree-alert", className: "state-panel state-panel--error",
+    role: "alert", hidden: true,
+  }));
   root.appendChild(el("div", {
     id: "run-control-errors", className: "state-panel state-panel--error",
     role: "alert", tabindex: "-1", hidden: true,

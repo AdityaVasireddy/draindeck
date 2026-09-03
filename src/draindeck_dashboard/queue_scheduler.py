@@ -22,6 +22,7 @@ from typing import Optional
 
 from .repositories import list_repositories
 from .run_launcher import try_launch_next
+from .worktree_preflight import evaluate_worktree_preflight
 
 # Short enough that a queued command starts promptly without a browser open;
 # long enough not to hammer SQLite. Tests pass a much shorter interval.
@@ -64,6 +65,11 @@ class QueueDrainScheduler:
         delay another, and never crashes the loop itself."""
         for repo in list_repositories(self._conn):
             try:
-                try_launch_next(self._conn, repo["id"], executable=self._observer_executable)
+                # doc 33 Part A: the scheduler-driven dequeue enforces the same
+                # authoritative clean-worktree gate as the request/drain paths,
+                # so a target that turned dirty after enqueue is refused here
+                # too rather than spawning a doomed CHECKOUT_FAILED run.
+                try_launch_next(self._conn, repo["id"], executable=self._observer_executable,
+                                worktree_probe=evaluate_worktree_preflight)
             except Exception:
                 pass

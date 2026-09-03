@@ -57,9 +57,21 @@ billing:
 """
 
 
+def _git(cwd, *args):
+    import subprocess
+    p = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       cwd=cwd, capture_output=True, text=True, encoding="utf-8")
+    if p.returncode != 0:
+        raise RuntimeError(f"git {args} failed: {p.stderr}")
+
+
 def _git_worktree(tmp_path, name="repo"):
+    # doc 33 Part A: the scheduler-driven dequeue enforces the clean-worktree
+    # preflight, so the fixture is a real (committed, clean) git worktree.
     repo = tmp_path / name
-    (repo / ".git").mkdir(parents=True)
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-b", "agent-work")
+    _git(repo, "config", "core.autocrlf", "false")
     return repo
 
 
@@ -70,6 +82,8 @@ def _register_ready(conn, tmp_path, name="repo"):
     draindeck_dir.mkdir()
     config_path = draindeck_dir / "config.local.yaml"
     config_path.write_text(_VALID_CONFIG_YAML.format(repository=str(repo)), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "seed")
     registration = register_repository(conn, project_path=str(repo), config_path=str(config_path))
     repo_id = registration["id"]
     conn.execute(
@@ -208,10 +222,11 @@ def test_a_failing_repository_tick_never_blocks_another_repository(tmp_path, mon
     import draindeck_dashboard.queue_scheduler as qs_module
     real_try_launch_next = qs_module.try_launch_next
 
-    def flaky_try_launch_next(conn_arg, repo_id_arg, *, executable):
+    def flaky_try_launch_next(conn_arg, repo_id_arg, *, executable, worktree_probe=None):
         if repo_id_arg == repo_a:
             raise RuntimeError("boom")
-        return real_try_launch_next(conn_arg, repo_id_arg, executable=executable)
+        return real_try_launch_next(conn_arg, repo_id_arg, executable=executable,
+                                    worktree_probe=worktree_probe)
 
     monkeypatch.setattr(qs_module, "try_launch_next", flaky_try_launch_next)
 

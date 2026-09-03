@@ -6,6 +6,7 @@ security".
 """
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -60,23 +61,38 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(_cfg(tmp_path)), base_url="http://127.0.0.1")
 
 
+def _git(cwd, *args):
+    p = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       cwd=cwd, capture_output=True, text=True, encoding="utf-8")
+    if p.returncode != 0:
+        raise RuntimeError(f"git {args} failed: {p.stderr}")
+
+
 def _git_worktree(tmp_path, name="repo"):
+    # doc 33 Part A: launching requires a clean git worktree, so the fixture is
+    # a real (initially empty) git repo; _register_ready commits its files so
+    # the target is clean when the run-request worktree preflight runs.
     repo = tmp_path / name
-    (repo / ".git").mkdir(parents=True)
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-b", "agent-work")
+    _git(repo, "config", "core.autocrlf", "false")
     return repo
 
 
 def _register_ready(client, tmp_path, *, issues_text="## a: A\nbody\n\n## b: B\nbody\n",
                     name="repo", issue_states=None):
-    """Registers a repository with a valid config + issues file, and
-    publishes a READY read model with the given issue states (default: both
-    non-terminal PENDING) so run-plan admission is exercisable end to end."""
+    """Registers a repository with a valid config + issues file (committed so
+    the worktree is clean), and publishes a READY read model with the given
+    issue states (default: both non-terminal PENDING) so run-plan admission is
+    exercisable end to end."""
     repo = _git_worktree(tmp_path, name)
     (repo / "Issues.md").write_text(issues_text, encoding="utf-8", newline="")
     draindeck_dir = repo / ".draindeck"
     draindeck_dir.mkdir()
     config_path = draindeck_dir / "config.local.yaml"
     config_path.write_text(_VALID_CONFIG_YAML.format(repository=str(repo)), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "seed")
 
     created = client.post(
         "/api/repositories", json={"projectPath": str(repo), "configPath": str(config_path)},

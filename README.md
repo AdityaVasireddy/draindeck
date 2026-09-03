@@ -39,6 +39,48 @@ Create a simple health endpoint.
 - Tests pass.
 ```
 
+## Before running an issue
+
+The target repository's Git worktree must be **clean** before you launch a run
+— every tracked, staged, and untracked change, **including `Issues.md`**, must
+be committed (or otherwise cleaned) first. Draindeck checks out an attempt
+branch before it starts, and an uncommitted file it would overwrite makes that
+checkout fail (`CHECKOUT_FAILED`).
+
+The Dashboard enforces this: a run request against a dirty worktree is refused
+with a typed `WORKTREE_NOT_CLEAN` result before any process starts, and the Run
+issues page shows a persistent alert — *"Commit or clean all tracked and
+untracked changes, including Issues.md, before running issues."* — with the run
+controls disabled until the worktree is clean.
+
+### Queue controls
+
+Only one batch runs per repository at a time; later batches wait in FIFO order.
+The Run issues page has three distinct queue actions — never edit the Dashboard
+database or delete queue rows by hand:
+
+- **Cancel queued command** — removes a *waiting* (`QUEUED`) batch that hasn't
+  started yet. It removes only that one waiting batch: it never touches a
+  running process and never alters any runtime events, so it is safe to use even
+  when the worktree is dirty and the run controls are disabled. Only a `QUEUED`
+  command shows this button. To make sure cancelling never *promotes* the next
+  waiting batch, a cancel also **pauses** the repository's queue: while paused,
+  nothing waiting will start (not the scheduler, not an explicit drain, not a
+  new run request), and the pause survives a Dashboard restart.
+- **Resume queue** — the only action that clears that pause. The Run issues page
+  shows a persistent "Queue paused" notice with a Resume button; resuming is
+  permission to proceed, after which the next waiting command starts again in
+  normal FIFO order. If the target worktree is dirty when you resume, execution
+  is **deferred** — the waiting commands stay queued (they are never claimed or
+  refused) and start automatically once the worktree is clean; resume tells you
+  when progression is deferred for this reason. A new run request may be queued
+  while paused, but it will not launch until you resume.
+- **Acknowledge failed command and unlock queue** — for a batch that ran and
+  ended abnormally (`ABNORMAL_EXIT`), blocking the repository. Acknowledging
+  **unlocks only** — it never retries the failed batch; after unlocking, make a
+  fresh selection and start a new run. Use this (not Cancel) for a failed run;
+  Cancel is only for a batch that never started.
+
 ## Run
 
 Check your configuration first:
