@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import hashlib
 import shutil
+import asyncio
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
@@ -303,7 +304,11 @@ def create_app(cfg: DashboardConfig, *, instance_token: str | None = None) -> Fa
         # get_repository raises NotFoundError (-> 404) for an unknown
         # repoId -- this never falls back to a different repository.
         registration = get_repository(app.state.db, repo_id)
-        result = evaluate_repository_run_readiness(
+        # The configured-reviewer probe performs synchronous local I/O
+        # (including urllib to Ollama). Keep it off FastAPI's event loop so
+        # a slow or unavailable endpoint cannot starve unrelated requests.
+        result = await asyncio.to_thread(
+            evaluate_repository_run_readiness,
             repo_config_path=registration.get("configPath"),
             claude_check=lambda: shutil.which("claude") is not None,
             ollama_check=lambda: shutil.which("ollama") is not None,

@@ -262,7 +262,7 @@ def detect_missing_prerequisites(
         candidates.append(Prerequisite(
             name=name, source=_PREREQUISITE_SOURCES[name],
             command=command or (),
-            may_prompt_elevation=installer.package_manager != "brew" or name != "claude",
+            may_prompt_elevation=installer.package_manager != "brew" or name == "claude",
             large_download=(name == "ollama"),
             manual_instructions=manual,
         ))

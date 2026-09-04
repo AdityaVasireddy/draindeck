@@ -71,9 +71,14 @@ def check_reviewer_model_present(endpoint: str, model: str, *, timeout: float = 
     try:
         with urllib.request.urlopen(f"{endpoint.rstrip('/')}/api/tags", timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError, OSError):
+        if not isinstance(body, dict):
+            return False
+        models = body.get("models")
+        if not isinstance(models, list):
+            return False
+        names = {entry.get("name") for entry in models if isinstance(entry, dict)}
+    except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError, OSError, TypeError, AttributeError):
         return False
-    names = {entry.get("name") for entry in body.get("models", [])}
     return model in names
 
 

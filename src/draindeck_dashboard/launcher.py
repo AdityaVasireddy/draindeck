@@ -473,7 +473,13 @@ def stop_dashboard(
     live_token = identity_probe(state.host, state.port)
     if live_token != state.instance_token:
         return "REFUSE_UNVERIFIED_OWNERSHIP"
-    terminate(state.pid)
+    try:
+        terminate(state.pid)
+    except ProcessLookupError:
+        # The ownership proof succeeded, but the process exited before the
+        # kill reached the OS. It is already stopped; let the caller clean
+        # the stale state record just as it does after a normal termination.
+        pass
     return "STOPPED"
 
 
@@ -501,11 +507,21 @@ def default_lock_path() -> Path:
 
 def terminate_process(pid: int) -> None:
     """Argv-only process termination (L-12) -- never a shell string."""
+    # POSIX pid <= 0 targets a process group rather than the intended child.
+    # Disk-loaded launcher state is untrusted, so refuse such values before
+    # either OS-specific termination path.
+    if pid <= 0:
+        return
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/PID", str(pid), "/F"], shell=False, capture_output=True)
     else:
         import signal
-        os.kill(pid, signal.SIGTERM)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            # A concurrently-exited process is indistinguishable from one
+            # successfully terminated for launcher cleanup purposes.
+            pass
 
 
 def _cmd_status(state_path: Path) -> int:
@@ -900,15 +916,16 @@ def _resolve_process_action(args, existing: Optional[LauncherState]) -> ProcessR
         )
 
     _UNVERIFIED_OCCUPANT_PID = -1
+    recorded_pid = existing.pid if existing is not None and existing.pid > 0 else None
     if not port_listening:
         observed_port_pid = None
-    elif existing is not None and probe_identity(args.host, args.port) == existing.instance_token:
-        observed_port_pid = existing.pid
+    elif existing is not None and recorded_pid is not None and probe_identity(args.host, args.port) == existing.instance_token:
+        observed_port_pid = recorded_pid
     else:
         observed_port_pid = _UNVERIFIED_OCCUPANT_PID
 
     return resolve_dashboard_process(
-        recorded_pid=existing.pid if existing else None,
+        recorded_pid=recorded_pid,
         port_pid=observed_port_pid,
         process_alive=is_process_alive,
         health_ok=lambda: probe_health(args.host, args.port) == (200, {"status": "ok"}),

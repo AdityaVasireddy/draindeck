@@ -83,6 +83,9 @@ def test_terminate_process_never_calls_os_kill_with_an_invalid_pid(monkeypatch):
             "the signal to an entire process GROUP for pid<=0, not one process)."
         )
 
+    launcher.terminate_process(4242)
+    assert calls == [4242], "the invalid-PID guard must not disable valid POSIX termination"
+
 
 def test_spawn_under_lock_never_terminates_the_unverified_occupant_sentinel_pid(tmp_path, monkeypatch):
     # A corrupted/legacy state record whose pid (-1) collides with

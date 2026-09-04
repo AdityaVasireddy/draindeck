@@ -126,7 +126,7 @@ function _confirmAndPullReviewerModel(container, ctx, model) {
       ]),
     ],
     actions: [
-      { label: "Cancel", className: "btn-ghost" },
+      { label: "Cancel", className: "btn-ghost", onClick: () => close() },
       {
         label: "Pull model", className: "btn btn-primary", autofocus: true,
         onClick: () => {

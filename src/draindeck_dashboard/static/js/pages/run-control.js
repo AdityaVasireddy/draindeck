@@ -242,7 +242,7 @@ function confirmAndSubmit(root, repoId, ctx, { mode, issueIds, digest, plan, bud
     titleText: "Confirm run",
     bodyNodes: body,
     actions: [
-      { label: "Cancel", className: "btn-ghost" },
+      { label: "Cancel", className: "btn-ghost", onClick: () => close() },
       {
         label: "Start run", className: "btn btn-primary", autofocus: true,
         onClick: async () => {

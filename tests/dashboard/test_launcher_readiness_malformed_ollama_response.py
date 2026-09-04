@@ -28,7 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from draindeck_dashboard import app as app_module
-from draindeck_dashboard import launcher
+from draindeck_dashboard import launcher_readiness
 from draindeck_dashboard.app import create_app
 from draindeck_dashboard.config import DashboardConfig
 
@@ -138,7 +138,7 @@ def test_readiness_endpoint_does_not_500_on_malformed_but_valid_ollama_json(
     client = _client(tmp_path)
     repo_id = _register_repo_with_config(client, tmp_path)
     monkeypatch.setattr(app_module.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
-    monkeypatch.setattr(launcher.urllib.request, "urlopen", _fake_raw_urlopen(malformed_body))
+    monkeypatch.setattr(launcher_readiness.urllib.request, "urlopen", _fake_raw_urlopen(malformed_body))
 
     resp = client.get(f"/api/launcher/readiness?repoId={repo_id}")
 
